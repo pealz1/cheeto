@@ -1,0 +1,280 @@
+{
+	"$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+	"name": "Cheeto",
+	"scopeName": "source.cheeto",
+	"patterns": [
+		{ "include": "#comments" },
+		{ "include": "#scope" },
+		{ "include": "#brackets" },
+		{ "include": "#autoClosingPairs" },
+		{ "include": "#surroundingPairs" },
+		{ "include": "#typeKeywords" },
+		{ "include": "#keywords" },
+		{ "include": "#types" },
+		{ "include": "#setting" },
+		{ "include": "#operators" },
+		{ "include": "#symbols" },
+		{ "include": "#tokenizer" }
+	],
+	"repository": {
+		"comments": {
+			"patterns": [
+				{
+					"begin": "--\\[([=]*)\\[",
+					"end": "\\]([=]*)\\]",
+					"captures": {
+						"0": { "name": "comment.block.documentation.cheeto" },
+						"1": { "name": "comment.block.documentation.cheeto" }
+					},
+					"name": "comment.block.documentation.cheeto"
+				},
+				{
+					"match": "--.*$",
+					"name": "comment.line.double-dash.cheeto"
+				}
+			]
+		},
+		"scope": {
+			"patterns": [
+				{
+					"begin": "\\b(scope)\\b\\s+([a-zA-Z_]*)\\b\\s+(\\{)",
+					"end": "(\\})",
+					"beginCaptures": {
+						"1": { "name": "keyword.control.cheeto" },
+						"2": { "name": "storage.type.namespace.cheeto" },
+						"3": { "name": "punctuation.section.braces.cheeto" }
+					},
+					"endCaptures": { "1": { "name": "punctuation.section.braces.cheeto" } },
+					"patterns": [ { "include": "source.cheeto" } ]
+				}
+			]
+		},
+		"brackets": {
+			"patterns": [
+				{
+					"begin": "\\{",
+					"end": "\\}",
+					"name": "punctuation.section.braces.cheeto",
+					"patterns": [
+						{ "include": "#types" },
+						{ "include": "#typeKeywords" },
+						{ "include": "#operators" },
+						{ "include": "#setting" },
+						{ "include": "#symbols" },
+						{ "include": "#comments" },
+						{ "include": "#brackets" },
+						{
+							"match": "([a-zA-Z_]\\w*):",
+							"captures": { "1": { "name": "variable.other.cheeto" } }
+						},
+						{
+							"match": "([a-zA-Z_]\\w*)\\s*,",
+							"captures": {
+								"1": { "name": "variable.other.cheeto" },
+								"2": { "name": "variable.other.cheeto" }
+							},
+							"name": "meta.array-assignment.cheeto"
+						},
+						{
+							"match": "([a-zA-Z_]\\w*)\\s*",
+							"captures": { "1": { "name": "variable.other.cheeto" } },
+							"name": "meta.array-assignment.cheeto"
+						}
+					]
+				},
+				{
+					"begin": "\\[",
+					"end": "\\]",
+					"name": "punctuation.section.brackets.cheeto",
+					"patterns": [
+						{ "include": "#types" },
+						{ "include": "#numbers" },
+						{ "include": "#delimiters" },
+						{ "include": "#strIdentifiers" },
+						{
+							"match": "([a-zA-Z_]\\w*)",
+							"captures": { "1": { "name": "variable.other.cheeto" } }
+						}
+					]
+				},
+				{
+					"begin": "\\(",
+					"end": "\\)",
+					"name": "punctuation.section.parens.cheeto",
+					"patterns": [
+						{ "include": "#numbers" },
+						{ "include": "#delimiters" },
+						{ "include": "#strIdentifiers" },
+						{ "include": "#types" }
+					]
+				},
+				{
+					"begin": "<",
+					"end": ">",
+					"name": "punctuation.section.chevrons.cheeto",
+					"patterns": [
+						{ "include": "#numbers" },
+						{ "include": "#delimiters" },
+						{ "include": "#strIdentifiers" },
+						{
+							"match": "([a-zA-Z_]\\w*)\\s*,?",
+							"captures": { "1": { "name": "storage.type.cheeto" } }
+						}
+					]
+				}
+			]
+		},
+		"autoClosingPairs": {
+			"patterns": [
+				{ "include": "#brackets" },
+				{
+					"begin": "\"",
+					"end": "\"",
+					"name": "string.quoted.double.cheeto"
+				},
+				{
+					"begin": "'",
+					"end": "'",
+					"name": "string.quoted.single.cheeto"
+				}
+			]
+		},
+		"surroundingPairs": {
+			"patterns": [
+				{ "include": "#brackets" },
+				{
+					"begin": "\"",
+					"end": "\"",
+					"name": "string.quoted.double.cheeto"
+				},
+				{
+					"begin": "'",
+					"end": "'",
+					"name": "string.quoted.single.cheeto"
+				}
+			]
+		},
+		"keywords": {
+			"patterns": [
+				{
+					"match": "\\b(?:event|option|type|function|import|export|as|scope)\\b",
+					"name": "keyword.control.cheeto"
+				}
+			]
+		},
+		"typeKeywords": {
+			"patterns": [
+				{
+					"match": "\\b(?:enum|map|struct|set)\\b",
+					"name": "keyword.control.cheeto"
+				}
+			]
+		},
+		"types": {
+			"patterns": [
+				{
+					"match": "\\b(?:u8|u16|u32|i8|i16|i32|f16|f32|f64|boolean|string|buffer|unknown|Instance|Color3|vector|CFrame|BrickColor|DateTime|DateTimeMillis)\\b",
+					"name": "storage.type.cheeto"
+				}
+			]
+		},
+		"setting": {
+			"patterns": [
+				{
+					"match": "\\b(?:Server|Client|Reliable|Unreliable|SingleSync|SingleAsync|ManySync|ManyAsync|Polling|Coroutine|Future|Promise|Pascal|Camel|Snake)\\b",
+					"name": "entity.name.type.enum.cheeto"
+				}
+			]
+		},
+		"operators": {
+			"patterns": [
+				{
+					"match": "\\b(?::|true|false)\\b",
+					"name": "constant.language.boolean.cheeto"
+				}
+			]
+		},
+		"symbols": {
+			"patterns": [
+				{
+					"match": "[=:]|\\.\\.+",
+					"name": "keyword.operator.cheeto"
+				},
+				{
+					"match": "\\?",
+					"name": "keyword.operator.optional.cheeto"
+				},
+				{
+					"match": ",",
+					"name": "punctuation.separator.comma.cheeto"
+				}
+			]
+		},
+		"tokenizer": {
+			"patterns": [
+				{ "include": "#whitespace" },
+				{ "include": "#numbers" },
+				{ "include": "#delimiters" },
+				{ "include": "#strIdentifiers" },
+				{ "include": "#identifiersKeywords" }
+			]
+		},
+		"whitespace": {
+			"patterns": [
+				{
+					"match": "[ \\t\\r\\n]+",
+					"name": "text.whitespace.cheeto"
+				},
+				{
+					"begin": "--\\[([=]*)\\[",
+					"end": "$",
+					"captures": { "1": { "name": "punctuation.definition.comment.cheeto" } },
+					"name": "comment.block.documentation.cheeto"
+				},
+				{
+					"match": "--.*$",
+					"name": "comment.line.double-dash.cheeto"
+				}
+			]
+		},
+		"numbers": {
+			"patterns": [
+				{
+					"match": "\\d+?",
+					"name": "constant.numeric.cheeto"
+				}
+			]
+		},
+		"delimiters": {
+			"patterns": [
+				{
+					"match": "[{}()\\[\\]]",
+					"name": "punctuation.section.cheeto"
+				}
+			]
+		},
+		"strIdentifiers": {
+			"patterns": [
+				{
+					"match": "\"\\w+\"",
+					"name": "string.quoted.double.cheeto"
+				}
+			]
+		},
+		"identifiersKeywords": {
+			"patterns": [
+				{ "include": "#symbols" },
+				{ "include": "#types" },
+				{ "include": "#keywords" },
+				{
+					"match": "([a-zA-Z_]\\w*):",
+					"captures": { "1": { "name": "variable.other.readwrite.cheeto" } }
+				},
+				{
+					"match": "[a-zA-Z_]\\w*",
+					"name": "variable.other.cheeto"
+				}
+			]
+		}
+	}
+}

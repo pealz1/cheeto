@@ -1,0 +1,18 @@
+authors = ["1axen"]
+description = "An IDL compiler written in Luau for ROBLOX buffer networking"
+includes = [
+    "README.md",
+    "pesde.toml",
+    "release/cheeto_pesde.luau",
+]
+license = "MIT"
+name = "pealz1/cheeto"
+repository = "https://github.com/pealz1/cheeto"
+version = "0.18.8"
+
+[indices]
+default = "https://github.com/pesde-pkg/index"
+
+[target]
+bin = "release/cheeto_pesde.luau"
+environment = "lune"

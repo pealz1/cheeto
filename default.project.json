@@ -1,0 +1,6 @@
+{
+    "name": "Cheeto",
+    "tree": {
+      "$path": "plugin/src"
+    }
+  }

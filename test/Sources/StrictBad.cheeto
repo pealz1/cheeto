@@ -1,0 +1,22 @@
+option Casing = Pascal
+option ClientOutput = "../../Network/StrictBadClient.luau"
+option ServerOutput = "../../Network/StrictBadServer.luau"
+option SecurityProfile = Production
+option ProtocolVersion = 2
+option MaxPacketBytes = 0
+option RateLimitPerSecond = 0
+option InvokeTimeoutSeconds = 0
+option SyncValidation = true
+
+event UnsafeClientEvent {
+    From: Client,
+    Type: Reliable,
+    Call: SingleSync,
+    Data: u8
+}
+
+function UnsafeFunction {
+    Yield: Coroutine,
+    Data: u8,
+    Return: u8
+}

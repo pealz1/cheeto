@@ -1,0 +1,143 @@
+import { Callout } from 'nextra/components'
+
+# Events
+Events are Cheeto's version of Roblox's `ReliableEvent` and `UnreliableEvent`.<br/>
+They are the main way to communicate between client and server.
+
+## Usage in Cheeto
+
+Events can be defined using the `event` keyword.
+```cheeto copy
+event MyEvent {
+    From: Server,
+    Type: Reliable,
+    Call: SingleAsync,
+    Auth: "AlivePlayer",
+    Data: f64
+}
+```
+
+#### `From`
+Determines the side from which the event is fired. <br/>
+Currently Cheeto supports either `Server` or `Client`.
+
+#### `Type`
+Determines the type (reliability) of the event.
+* `Reliable` - Events are guaranteed to arrive at their destination in the order they were sent in.
+* `Unreliable` - Events are not guaranteed to arrive at their destination or to arrive in the order they were sent in. They also have a maximum size of 1000 bytes.
+
+#### `Call`
+Determines the listening API exposed on the receiving side.
+* `SingleSync` - Events can only have one listener, but that listener cannot yield.
+* `ManySync` - Events can have many listeners, but those listeners cannot yield.
+* `SingleAsync` - Events can only have one listener, and that listener may yield.
+* `ManyAsync` - Events can have many listeners, and those listeners may yield.
+* `Polling` - Events are iterated through `Event.Iter()`.
+
+<Callout type="error">
+    Sync events should be avoided unless performance is critical.<br/>
+    Yielding or erroring in sync event can cause <b>undefined and sometimes game-breaking behaviour</b>.
+</Callout>
+
+#### `Data`
+Determines the data that is sent through the event, can be any [type](./4-types.mdx).<br/>
+This field can be omitted if no data is required.
+
+#### `Auth`
+Names an auth rule for generated middleware. Register the rule at runtime with `cheeto.UseAuth(name, callback)`.
+If an auth rule returns false, the incoming event is dropped before the listener runs.
+
+```lua filename="server.luau" copy
+cheeto.UseAuth("AlivePlayer", function(context)
+    return context.Source.Character ~= nil
+end)
+```
+
+#### Guard Overrides
+Events can override runtime guardrails:
+
+```cheeto copy
+event Attack {
+    From: Client,
+    Type: Reliable,
+    Call: SingleAsync,
+    Auth: "AlivePlayer",
+    RateLimitPerSecond: 20,
+    RateLimitBurst: 40,
+    MaxQueuedEvents: 64,
+    MaxPacketBytes: 512,
+    Data: u16
+}
+```
+
+##### Type Packs
+Multiple data values are supported through the usage of a type pack (commonly referred to as a tuple).
+Type packs can be defined as a list of [types](./4-types.mdx) seperated by a comma within parenthesis.<br/>
+For example, a type pack of different [number types](./4-types#numbers) can be written like so:
+```cheeto  copy
+event MyTypePackEvent {
+    From: Server,
+    Type: Reliable,
+    Call: SingleAsync,
+    Data: (u8, u16, u32)
+}
+```
+
+## Usage in Luau
+
+### Firing an Event
+```lua filename="client.luau" copy
+cheeto.MyEvent.Fire(5)
+cheeto.MyTypePackEvent.Fire(2^8 - 1, 2^16 - 1, 2^32 - 1)
+```
+```lua filename="server.luau" copy
+cheeto.MyEvent.Fire(Player, 5)
+cheeto.MyEvent.FireAll(5)
+cheeto.MyEvent.FireList({Player}, 5)
+cheeto.MyEvent.FireExcept(Player, 5)
+cheeto.MyEvent.FireGroup("RedTeam", 5)
+```
+
+Client-origin events also expose `Predict(...)`, which sends the event and returns a local prediction id that can be passed to `cheeto.Prediction.Ack(id)` or `cheeto.Prediction.Rollback(id)`.
+
+### Listening to an Event
+```lua filename="client.luau" copy
+cheeto.MyEvent.On(function(Value)
+    -- ...
+end)
+
+cheeto.MyTypePackEvent.On(function(Foo, Bar, FooBar)
+    -- ...
+end)
+```
+```lua filename="server.luau" copy
+cheeto.MyEvent.On(function(Player, Value)
+    -- ...
+end)
+
+cheeto.MyTypePackEvent.On(function(Player, Foo, Bar, FooBar)
+    -- ...
+end)
+```
+```lua filename="disconnect.luau" copy
+local Disconnect = cheeto.MyEvent.On(...)
+Disconnect()
+```
+
+### Iterating an Event (Polling)
+```lua filename="client.luau" copy
+for Index, Value in MyEvent.Iter() do
+    -- ...
+end
+for Index, Foo, Bar, FooBar in MyTypePackEvent.Iter() do
+    -- ...
+end
+```
+```lua filename="server.luau" copy
+for Index, Player, Value in MyEvent.Iter() do
+    -- ...
+end
+for Index, Player, Foo, Bar, FooBar in MyTypePackEvent.Iter() do
+    -- ...
+end
+```
