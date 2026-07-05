@@ -7,6 +7,9 @@ local task = require("@lune/task")
 
 local Compiler = "init"
 local Sources = fs.readDir("./Sources")
+--> Compile in a deterministic order; fs.readDir ordering is platform dependent
+--> (NTFS sorts, ext4 does not), which otherwise makes builds non-reproducible.
+table.sort(Sources)
 
 local COMPILE_TEST_FILE = "../../test/Sources/Test"
 local CI_MODE = table.find(process.args, "--ci") ~= nil
