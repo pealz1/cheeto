@@ -16,7 +16,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install Rokit tools
-        uses: roblox-ts/setup-rokit@v0.2.1
+        uses: CompeyDev/setup-rokit@v0.2.1
         with:
           cache: true
 
