@@ -1140,16 +1140,18 @@ RunClosure("CLI compile prompt", function()
 		fs.removeDir("../Network")
 	end)
 
-	local Result: process.ExecResult
-	local Thread = task.spawn(function()
-		Result = process.exec("lune", { "run", Compiler, COMPILE_TEST_FILE }, { cwd = "../src/CLI" })
-	end)
+	--> Without --yes the CLI must ask before creating the output directory.
+	--> Give the child a non-interactive stdin so the confirm prompt fails fast
+	--> instead of blocking on a stdin read forever. A blocked child is only
+	--> detached by task.cancel on the Lua side, leaving an orphan process that
+	--> hangs lune on exit under Linux CI (the job then runs to the 6h timeout).
+	local Result = process.exec("lune", { "run", Compiler, COMPILE_TEST_FILE }, {
+		cwd = "../src/CLI",
+		stdin = "",
+	})
 
-	if coroutine.status(Thread) ~= "suspended" then
-		error(Result and Result.stderr or "CLI didn't prompt")
-	end
-
-	task.cancel(Thread)
+	assert(not Result.ok, "Expected compile without --yes to refuse instead of compiling.")
+	assert(not fs.isDir("../Network"), "Expected CLI not to create output without confirmation.")
 end)
 
 RunClosure("CLI compile --yes", function()
