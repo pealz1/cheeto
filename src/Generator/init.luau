@@ -137,7 +137,9 @@ local function OptionalString(Value: string?): string
 end
 
 local function RuntimeConfigLines(): { string }
-	local Profile = Options.SecurityProfile or "Development"
+	local SecurityPreset = Options.SecurityPreset or "Custom"
+	local MaximumSecurity = SecurityPreset == "Maximum"
+	local Profile = Options.SecurityProfile or (if MaximumSecurity then "Competitive" else "Development")
 	local ProfileDefaults = {
 		Development = {
 			MaxPacketBytes = 1048576,
@@ -176,6 +178,9 @@ local function RuntimeConfigLines(): { string }
 	local Defaults = ProfileDefaults[Profile] or ProfileDefaults.Development
 	local MaxPacketBytes = Options.MaxPacketBytes or Defaults.MaxPacketBytes
 	local SchemaVersion = Options.SchemaVersion or Options.Version or 1
+	local ClientShieldDefault = MaximumSecurity
+	local RemoteNameRotationDefault = MaximumSecurity
+	local RemoteDecoyDefault = MaximumSecurity
 	return {
 		"local RuntimeConfig = {\n",
 		"\tProtocolVersion = 2,\n",
@@ -184,6 +189,7 @@ local function RuntimeConfigLines(): { string }
 		`\tMinimumSchemaVersion = {NumberLiteral(Options.MinimumSchemaVersion, 1)},\n`,
 		`\tSchemaHash = "schema-{SchemaVersion}",\n`,
 		`\tSecurityProfile = "{Profile}",\n`,
+		`\tSecurityPreset = "{SecurityPreset}",\n`,
 		`\tMaxReliablePacketBytes = {NumberLiteral(Options.MaxReliablePacketBytes, MaxPacketBytes)},\n`,
 		`\tMaxUnreliablePacketBytes = {NumberLiteral(
 			Options.MaxUnreliablePacketBytes,
@@ -221,13 +227,24 @@ local function RuntimeConfigLines(): { string }
 		`\tBufferPoolLimit = {NumberLiteral(Options.BufferPoolLimit, 64)},\n`,
 		`\tEnablePacketCapture = {BooleanLiteral(Options.EnablePacketCapture, false)},\n`,
 		`\tNoRawCaptureInProduction = {BooleanLiteral(Options.NoRawCaptureInProduction, true)},\n`,
-		`\tRequirePolicies = {BooleanLiteral(Options.RequirePolicies, false)},\n`,
+		`\tRequirePolicies = {BooleanLiteral(Options.RequirePolicies, MaximumSecurity)},\n`,
 		`\tEnableMicroProfiler = {BooleanLiteral(Options.EnableMicroProfiler, true)},\n`,
 		`\tEnableHoneypots = {BooleanLiteral(Options.EnableHoneypots, true)},\n`,
 		`\tCaptureRedactions = "{Options.CaptureRedactions or ""}",\n`,
 		`\tCaptureLimit = {NumberLiteral(Options.CaptureLimit, 1024)},\n`,
 		`\tEnableInspector = {BooleanLiteral(Options.EnableInspector, false)},\n`,
 		`\tEnableReplicationAdapters = {BooleanLiteral(Options.EnableReplicationAdapters, true)},\n`,
+		`\tEnableClientShield = {BooleanLiteral(Options.EnableClientShield, ClientShieldDefault)},\n`,
+		`\tClientShieldStrict = {BooleanLiteral(Options.ClientShieldStrict, MaximumSecurity)},\n`,
+		`\tClientShieldKick = {BooleanLiteral(Options.ClientShieldKick, MaximumSecurity)},\n`,
+		`\tClientShieldKickMessage = {StringLiteral(Options.ClientShieldKickMessage, "Security check failed.")},\n`,
+		`\tClientShieldProbeIntervalSeconds = {NumberLiteral(Options.ClientShieldProbeIntervalSeconds, 1.25)},\n`,
+		`\tClientShieldReportCooldownSeconds = {NumberLiteral(Options.ClientShieldReportCooldownSeconds, 2)},\n`,
+		`\tClientShieldScoreThreshold = {NumberLiteral(Options.ClientShieldScoreThreshold, 10)},\n`,
+		`\tEnableRemoteNameRotation = {BooleanLiteral(Options.EnableRemoteNameRotation, RemoteNameRotationDefault)},\n`,
+		`\tRemoteNameRotationSeconds = {NumberLiteral(Options.RemoteNameRotationSeconds, 45)},\n`,
+		`\tEnableRemoteDecoys = {BooleanLiteral(Options.EnableRemoteDecoys, RemoteDecoyDefault)},\n`,
+		`\tRemoteDecoyCount = {NumberLiteral(Options.RemoteDecoyCount, if MaximumSecurity then 8 else 0)},\n`,
 		"}\n",
 	}
 end
@@ -433,6 +450,9 @@ local function PushRuntimeApi(Target: Builder.Builder, Indent: number, ReplayRaw
 	Target.Push(`KillPolicyGroup = RuntimeSupport.SetPolicyGroupKillSwitch,`, 0, Indent + 1)
 	Target.Push(`UnkillPolicyGroup = RuntimeSupport.ClearPolicyGroupKillSwitch,`, 0, Indent + 1)
 	Target.Push(`AbuseScores = RuntimeSupport.AbuseScores,`, 0, Indent + 1)
+	Target.Push(`ReportClientShield = RuntimeSupport.ReportClientShield,`, 0, Indent + 1)
+	Target.Push(`ClientShield = RuntimeSupport.ClientShieldSnapshot,`, 0, Indent + 1)
+	Target.Push(`StartClientShield = RuntimeSupport.StartClientShield,`, 0, Indent + 1)
 	Target.Push(`}),`, 0, Indent)
 	Target.Push(`Diagnostics = table.freeze(\{`, 0, Indent)
 	Target.Push(`Listeners = RuntimeSupport.ListenerSnapshot,`, 0, Indent + 1)
@@ -2554,6 +2574,15 @@ function Generator.Generate(FileContext: Context, AbstractSyntaxTree: Parser.Bod
 	Reliables:Line("EndReadMessage()", Reliables.Indent + 1)
 	Reliables:Line("continue", Reliables.Indent + 1)
 	Reliables:Line("end")
+	Reliables:Line("if Index == CLIENT_SHIELD_INDEX then")
+	Reliables:Line("local ShieldSuccess, ShieldError = pcall(ReadClientShieldPayload)", Reliables.Indent + 1)
+	Reliables:Line(
+		`if not ShieldSuccess then DropPacket({SourceExpression()}, "Reliable", "MalformedPacket", Size) RunHooks("Error", \{ Name = "$clientShield", Source = {SourceExpression()}, Channel = "Reliable", Error = ShieldError \}) RecoverMessage() continue end`,
+		Reliables.Indent + 1
+	)
+	Reliables:Line("EndReadMessage()", Reliables.Indent + 1)
+	Reliables:Line("continue", Reliables.Indent + 1)
+	Reliables:Line("end")
 	Unreliables:Line("local FrameSuccess, Index = pcall(BeginReadMessage, Size)")
 	Unreliables:Line(
 		"if not FrameSuccess then DropPacket("
@@ -2573,6 +2602,15 @@ function Generator.Generate(FileContext: Context, AbstractSyntaxTree: Parser.Bod
 	Unreliables:Line("local AckSuccess, AckError = pcall(ReadPredictionAckPayload)", Unreliables.Indent + 1)
 	Unreliables:Line(
 		`if not AckSuccess then DropPacket({SourceExpression()}, "Unreliable", "MalformedPacket", Size) RunHooks("Error", \{ Name = "$predictionAck", Source = {SourceExpression()}, Channel = "Unreliable", Error = AckError \}) RecoverMessage() continue end`,
+		Unreliables.Indent + 1
+	)
+	Unreliables:Line("EndReadMessage()", Unreliables.Indent + 1)
+	Unreliables:Line("continue", Unreliables.Indent + 1)
+	Unreliables:Line("end")
+	Unreliables:Line("if Index == CLIENT_SHIELD_INDEX then")
+	Unreliables:Line("local ShieldSuccess, ShieldError = pcall(ReadClientShieldPayload)", Unreliables.Indent + 1)
+	Unreliables:Line(
+		`if not ShieldSuccess then DropPacket({SourceExpression()}, "Unreliable", "MalformedPacket", Size) RunHooks("Error", \{ Name = "$clientShield", Source = {SourceExpression()}, Channel = "Unreliable", Error = ShieldError \}) RecoverMessage() continue end`,
 		Unreliables.Indent + 1
 	)
 	Unreliables:Line("EndReadMessage()", Unreliables.Indent + 1)

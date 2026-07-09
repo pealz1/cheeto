@@ -1577,6 +1577,19 @@ RunClosure("Transport hardening runtime APIs", function()
 	ReleaseViolation()
 	assert(Violations >= 2, "Expected kill-switch and required-policy violations.")
 
+	local ShieldViolations = 0
+	local ReleaseShieldViolation = Server.Security.OnViolation(function(Context)
+		if Context.Event == "$clientShield" and Context.Reason == "UnitTestShield" then
+			ShieldViolations += 1
+		end
+	end)
+	local ShieldScore = Server.Security.ReportClientShield(Shared.Player, "UnitTestShield", "test", 5, false)
+	local ShieldSnapshot = Server.Security.ClientShield()
+	ReleaseShieldViolation()
+	assert(ShieldScore >= 5, "Expected client shield report to add weighted abuse score.")
+	assert(ShieldViolations == 1, "Expected client shield report to emit a violation.")
+	assert(#ShieldSnapshot.Reports >= 1, "Expected client shield report to be retained in the snapshot.")
+
 	local Handle = Server.Handles.Register(Shared.ServerOnlyInstance, Shared.Player, os.clock() + 10)
 	assert(
 		Server.Handles.Resolve(Handle, Shared.Player) == Shared.ServerOnlyInstance,

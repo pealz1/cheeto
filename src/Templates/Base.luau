@@ -35,6 +35,7 @@ local Tombstone = newproxy()
 local PREDICTION_ACK_INDEX = 255
 local CAPABILITY_HANDSHAKE_INDEX = 254
 local FRAGMENT_INDEX = 253
+local CLIENT_SHIELD_INDEX = 252
 local PROTOCOL_VERSION = 2
 local SERVER_PEER_KEY = "__server"
 
@@ -82,7 +83,8 @@ local Metrics: {[string]: MetricBucket} = {
     QueueDrops = {},
     InvokeTimeouts = {},
     HookErrors = {},
-    MiddlewareRejections = {}
+    MiddlewareRejections = {},
+    ClientShieldReports = {}
 }
 
 local Hooks: {[string]: {(...any) -> any}} = {
@@ -121,6 +123,14 @@ local TransportError = table.freeze({
     Canonicalization = "Canonicalization",
     DecodeBudget = "DecodeBudget",
     MiddlewareRejected = "MiddlewareRejected",
+    ClientShield = "ClientShield",
+    ExploitEnvironment = "ExploitEnvironment",
+    MetamethodHook = "MetamethodHook",
+    InfiniteYield = "InfiniteYield",
+    SaveInstance = "SaveInstance",
+    DexExplorer = "DexExplorer",
+    RemoteSpy = "RemoteSpy",
+    RemoteDecoy = "RemoteDecoy",
 })
 
 local PriorityOrder = table.freeze({
@@ -212,6 +222,18 @@ local RuntimeState = {
     },
     Inspector = {
         Enabled = false
+    },
+    ClientShield = {
+        Reports = {},
+        LastReport = {} :: {[any]: {[string]: number}},
+        Local = {
+            Started = false,
+            Reported = {} :: {[string]: number},
+            Sweep = 0
+        }
+    },
+    RemoteSecurity = {
+        Decoys = {}
     },
     SchemaMigrations = {} :: {[number]: (any) -> any},
     SchemaDefaults = {} :: {[string]: any},
@@ -566,6 +588,150 @@ local function DropPacket(Source: any, Channel: string, Reason: string, Size: nu
         Size = Size or 0
     })
     ReportViolation(Source, Channel, Channel, Reason, Size, "drop")
+end
+
+function RuntimeSupport.CreateRemoteName(Prefix: string?): string
+    local Token = tostring(math.random(100000000, 999999999))
+    local Success, Guid = pcall(function()
+        local HttpService = game:GetService("HttpService")
+        return HttpService:GenerateGUID(false)
+    end)
+
+    if Success and type(Guid) == "string" then
+        local Clean = string.gsub(Guid, "-", "")
+        Token = string.sub(Clean, 1, 18)
+    end
+
+    local SafePrefix = string.gsub(tostring(Prefix or "R"), "[^%w_]", "")
+    if SafePrefix == "" then
+        SafePrefix = "R"
+    end
+
+    return `_CHEETO_{SafePrefix}_{Token}`
+end
+
+local function ShouldThrottleClientShield(Source: any, Reason: string): boolean
+    local Cooldown = RuntimeConfig.ClientShieldReportCooldownSeconds
+    if Cooldown <= 0 then
+        return false
+    end
+
+    local Key = RuntimeSupport.PeerKey(Source)
+    local ByReason = RuntimeState.ClientShield.LastReport[Key]
+    if ByReason == nil then
+        ByReason = {}
+        RuntimeState.ClientShield.LastReport[Key] = ByReason
+    end
+
+    local Now = os.clock()
+    local Last = ByReason[Reason]
+    if Last ~= nil and Now - Last < Cooldown then
+        return true
+    end
+
+    ByReason[Reason] = Now
+    return false
+end
+
+local function KickClientShieldSource(Source: any)
+    if typeof(Source) ~= "Instance" then
+        return
+    end
+
+    pcall(function()
+        if Source:IsA("Player") then
+            Source:Kick(RuntimeConfig.ClientShieldKickMessage)
+        end
+    end)
+end
+
+function RuntimeSupport.ReportClientShield(
+    Source: any,
+    Reason: string,
+    Detail: string?,
+    Score: number?,
+    ImmediateKick: boolean?
+)
+    Reason = if Reason == nil or Reason == "" then TransportError.ClientShield else Reason
+    local Weight = math.max(1, math.floor(Score or 1))
+    local SpecificScore = AddAbuse(Source, Reason, Weight)
+    local ShouldKick = RuntimeConfig.ClientShieldKick
+        and (ImmediateKick == true or RuntimeConfig.ClientShieldStrict or SpecificScore >= RuntimeConfig.ClientShieldScoreThreshold)
+
+    if not ShouldThrottleClientShield(Source, Reason) then
+        local Entry = {
+            Source = Source,
+            UserId = TryGetUserId(Source),
+            Reason = Reason,
+            Detail = Detail or "",
+            Score = SpecificScore,
+            Weight = Weight,
+            Action = if ShouldKick then "kick" else "report",
+            Time = os.clock()
+        }
+
+        table.insert(RuntimeState.ClientShield.Reports, Entry)
+        while #RuntimeState.ClientShield.Reports > 256 do
+            table.remove(RuntimeState.ClientShield.Reports, 1)
+        end
+
+        MetricAdd("ClientShieldReports", Reason)
+        ReportViolation(Source, "$clientShield", "ClientShield", Reason, Weight, Entry.Action)
+        EmitTelemetry("security.clientShield", Entry)
+    end
+
+    if ShouldKick then
+        KickClientShieldSource(Source)
+    end
+
+    return SpecificScore
+end
+
+function RuntimeSupport.ClientShieldSnapshot()
+    local Reports = {}
+    for Index, Entry in RuntimeState.ClientShield.Reports do
+        Reports[Index] = table.clone(Entry)
+    end
+
+    return {
+        Reports = Reports,
+        Enabled = RuntimeConfig.EnableClientShield,
+        Strict = RuntimeConfig.ClientShieldStrict,
+        Kick = RuntimeConfig.ClientShieldKick,
+        ScoreThreshold = RuntimeConfig.ClientShieldScoreThreshold
+    }
+end
+
+function RuntimeSupport.InstallRemoteDecoys(Parent: Instance?, Count: number?): {Instance}
+    if not RuntimeConfig.EnableRemoteDecoys then
+        return {}
+    end
+
+    local Created = {}
+    local Total = math.max(0, math.floor(Count or RuntimeConfig.RemoteDecoyCount))
+    for Index = 1, Total do
+        local Success, Remote = pcall(function()
+            return Instance.new("RemoteEvent")
+        end)
+
+        if not Success or Remote == nil then
+            break
+        end
+
+        Remote.Name = RuntimeSupport.CreateRemoteName(`D{Index}`)
+        Remote.Parent = Parent
+        table.insert(RuntimeState.RemoteSecurity.Decoys, Remote)
+        table.insert(Created, Remote)
+
+        local Connection = Remote.OnServerEvent
+        if Connection then
+            Connection:Connect(function(Player)
+                RuntimeSupport.ReportClientShield(Player, TransportError.RemoteDecoy, Remote.Name, 100, true)
+            end)
+        end
+    end
+
+    return Created
 end
 
 local function BeforeSend(Name: string, Channel: string, Target: any?): boolean
@@ -2392,6 +2558,378 @@ local function ReadStringValue(LengthBytes: number): string
     return Value
 end
 
+function RuntimeSupport.SendClientShieldReport(Reason: string, Detail: string?, Score: number?, ImmediateKick: boolean?)
+    if not RuntimeConfig.EnableClientShield then
+        return
+    end
+
+    local Now = os.clock()
+    local Last = RuntimeState.ClientShield.Local.Reported[Reason]
+    if Last ~= nil and Now - Last < RuntimeConfig.ClientShieldReportCooldownSeconds then
+        return
+    end
+    RuntimeState.ClientShield.Local.Reported[Reason] = Now
+
+    local Frame = BeginMessage(CLIENT_SHIELD_INDEX)
+    WriteStringValue(Reason, 2)
+    WriteStringValue(Detail or "", 2)
+    WriteVarint(math.max(1, math.floor(Score or 1)))
+    WriteBit(ImmediateKick == true)
+    EndMessage(Frame)
+end
+
+local function ReadClientShieldPayload()
+    local Reason = ReadStringValue(2)
+    local Detail = ReadStringValue(2)
+    local Score = ReadVarint()
+    local ImmediateKick = ReadBit()
+    RuntimeSupport.ReportClientShield(RecieveSource, Reason, Detail, Score, ImmediateKick)
+end
+
+function RuntimeSupport.StartClientShield()
+    if not RuntimeConfig.EnableClientShield or RuntimeState.ClientShield.Local.Started then
+        return
+    end
+
+    RuntimeState.ClientShield.Local.Started = true
+    task.spawn(function()
+        local EnvironmentKeys = {
+            "IY_LOADED",
+            "hookmetamethod",
+            "getrawmetatable",
+            "getgenv",
+            "getgc",
+            "getconnections",
+            "gethui",
+            "syn",
+            "fluxus",
+            "is_sirhurt_closure",
+            "SimpleSpy",
+            "saveinstance",
+            "synsaveinstance",
+            "gethiddenproperty",
+            "get_hidden_property",
+            "getnilinstances",
+            "getscriptbytecode",
+            "decompile",
+            "writefile",
+            "appendfile",
+            "protectgui",
+        }
+        local GuiTerms = {
+            "infinite yield",
+            "infiniteyield",
+            "simple spy",
+            "simplespy",
+            "remote spy",
+            "dex explorer",
+            "saveinstance",
+            "synsaveinstance",
+        }
+        local WeakServices = {
+            { Name = "WebSocketService", Reason = TransportError.DexExplorer, Weight = 8 },
+            { Name = "InsertService", Reason = TransportError.InfiniteYield, Weight = 4 },
+            { Name = "UGCValidationService", Reason = TransportError.SaveInstance, Weight = 4 },
+            { Name = "ScriptContext", Reason = TransportError.SaveInstance, Weight = 4 },
+        }
+
+        local RunServiceSuccess, RunService = pcall(function()
+            return game:GetService("RunService")
+        end)
+        if not RunServiceSuccess or not RunService:IsClient() then
+            RuntimeState.ClientShield.Local.Started = false
+            return
+        end
+
+        local function KickLocal()
+            pcall(function()
+                local Players = game:GetService("Players")
+                local LocalPlayer = Players.LocalPlayer
+                if LocalPlayer then
+                    LocalPlayer:Kick(RuntimeConfig.ClientShieldKickMessage)
+                end
+            end)
+        end
+
+        local function ReportLocal(Reason: string, Detail: string?, Weight: number?, ImmediateKick: boolean?)
+            RuntimeSupport.SendClientShieldReport(Reason, Detail, Weight, ImmediateKick)
+            if RuntimeConfig.ClientShieldKick and (ImmediateKick == true or RuntimeConfig.ClientShieldStrict) then
+                KickLocal()
+            end
+        end
+
+        local function ScanEnvironment(Reason: string): boolean
+            local GetEnv = getfenv
+            if type(GetEnv) ~= "function" then
+                return false
+            end
+
+            for Level = 0, 24 do
+                local Success, Environment = pcall(GetEnv, Level)
+                if Success and type(Environment) == "table" then
+                    for _, Key in EnvironmentKeys do
+                        if rawget(Environment, Key) ~= nil then
+                            ReportLocal(Reason, `env:{Key}:level:{Level}`, 10, true)
+                            return true
+                        end
+                    end
+                end
+            end
+
+            return false
+        end
+
+        local function StackTrap(Reason: string, Callback: () -> any)
+            xpcall(Callback, function()
+                ScanEnvironment(Reason)
+            end)
+        end
+
+        local function ProbeStackHooks()
+            local Proxy = newproxy(true)
+            local Meta = getmetatable(Proxy)
+            if type(Meta) == "table" then
+                Meta.__index = function()
+                    error("cheeto-client-shield-index", 0)
+                end
+                Meta.__newindex = function()
+                    error("cheeto-client-shield-newindex", 0)
+                end
+                Meta.__add = function()
+                    error("cheeto-client-shield-add", 0)
+                end
+                Meta.__tostring = function()
+                    error("cheeto-client-shield-tostring", 0)
+                end
+
+                local ProxyAny: any = Proxy
+                StackTrap(TransportError.MetamethodHook, function()
+                    return ProxyAny.__cheeto
+                end)
+                StackTrap(TransportError.MetamethodHook, function()
+                    ProxyAny.__cheeto = true
+                end)
+                StackTrap(TransportError.MetamethodHook, function()
+                    return ProxyAny + ProxyAny
+                end)
+                StackTrap(TransportError.MetamethodHook, function()
+                    return tostring(ProxyAny)
+                end)
+            end
+
+            local TableRemove: any = table.remove
+            local MathSqrt: any = math.sqrt
+            local MathAbs: any = math.abs
+            StackTrap(TransportError.MetamethodHook, function()
+                TableRemove("not a table")
+            end)
+            StackTrap(TransportError.MetamethodHook, function()
+                MathSqrt("not a number")
+            end)
+            StackTrap(TransportError.MetamethodHook, function()
+                MathAbs(nil)
+            end)
+
+            local Success, Workspace = pcall(function()
+                return game:GetService("Workspace")
+            end)
+            if Success then
+                local WorkspaceAny: any = Workspace
+                StackTrap(TransportError.MetamethodHook, function()
+                    return WorkspaceAny.__cheeto_missing
+                end)
+                StackTrap(TransportError.MetamethodHook, function()
+                    return WorkspaceAny:__cheeto_missing()
+                end)
+            end
+        end
+
+        local function ProbeGlobals()
+            local Environments = { _G }
+            if type(shared) == "table" then
+                table.insert(Environments, shared)
+            end
+
+            for _, Environment in Environments do
+                for _, Key in EnvironmentKeys do
+                    if rawget(Environment, Key) ~= nil then
+                        local Reason = TransportError.ExploitEnvironment
+                        if Key == "IY_LOADED" then
+                            Reason = TransportError.InfiniteYield
+                        elseif Key == "saveinstance" or Key == "synsaveinstance" or Key == "getscriptbytecode" then
+                            Reason = TransportError.SaveInstance
+                        elseif Key == "SimpleSpy" then
+                            Reason = TransportError.RemoteSpy
+                        end
+                        ReportLocal(Reason, `global:{Key}`, 10, true)
+                        return
+                    end
+                end
+            end
+        end
+
+        local function ProbeGuiTree()
+            local Roots = {}
+            local CoreGuiSuccess, CoreGui = pcall(function()
+                return game:GetService("CoreGui")
+            end)
+            if CoreGuiSuccess and CoreGui ~= nil then
+                table.insert(Roots, CoreGui)
+            end
+
+            local PlayerGuiSuccess, PlayerGui = pcall(function()
+                local Players = game:GetService("Players")
+                local LocalPlayer = Players.LocalPlayer
+                return LocalPlayer and LocalPlayer:FindFirstChildOfClass("PlayerGui")
+            end)
+            if PlayerGuiSuccess and PlayerGui ~= nil then
+                table.insert(Roots, PlayerGui)
+            end
+
+            local Checked = 0
+            for _, Root in Roots do
+                local Success, Descendants = pcall(function()
+                    return Root:GetDescendants()
+                end)
+                if not Success then
+                    continue
+                end
+
+                for _, Descendant in Descendants do
+                    Checked += 1
+                    if Checked > 900 then
+                        return
+                    end
+
+                    local Text = ""
+                    pcall(function()
+                        Text = tostring(Descendant.Name)
+                        local TextValue = (Descendant :: any).Text
+                        if TextValue ~= nil then
+                            Text ..= " " .. tostring(TextValue)
+                        end
+                    end)
+
+                    local Lower = string.lower(Text)
+                    for _, Term in GuiTerms do
+                        if string.find(Lower, Term, 1, true) then
+                            local Reason = if string.find(Term, "save", 1, true) then TransportError.SaveInstance else TransportError.InfiniteYield
+                            if string.find(Term, "spy", 1, true) then
+                                Reason = TransportError.RemoteSpy
+                            elseif string.find(Term, "dex", 1, true) then
+                                Reason = TransportError.DexExplorer
+                            end
+                            ReportLocal(Reason, `gui:{Term}`, 8, true)
+                            return
+                        end
+                    end
+                end
+            end
+        end
+
+        local function ProbeWeakService(ServiceName: string, Reason: string, Weight: number)
+            local Success, Service = pcall(function()
+                return game:GetService(ServiceName)
+            end)
+            if not Success or Service == nil then
+                return
+            end
+
+            local Weak = setmetatable({ Service }, { __mode = "v" })
+            Service = nil
+            pcall(collectgarbage, "collect")
+            task.wait(0.15)
+            pcall(collectgarbage, "collect")
+            task.wait(0.15)
+
+            if Weak[1] ~= nil then
+                ReportLocal(Reason, `weak-service:{ServiceName}`, Weight, RuntimeConfig.ClientShieldStrict)
+            end
+        end
+
+        local function ProbeTextChatTripwire()
+            local Success, TextChatService = pcall(function()
+                return game:GetService("TextChatService")
+            end)
+            if not Success or TextChatService == nil then
+                return
+            end
+
+            local Channels = TextChatService:FindFirstChild("TextChannels")
+            if Channels == nil then
+                return
+            end
+
+            local Before = game.CreatorId
+            local Sentinel = 900000000 + math.random(10000, 99999)
+            local ChannelSuccess, Channel = pcall(function()
+                local TextChannel = Instance.new("TextChannel")
+                TextChannel.Name = RuntimeSupport.CreateRemoteName("TC")
+                TextChannel.Parent = Channels
+                return TextChannel
+            end)
+
+            if not ChannelSuccess or Channel == nil then
+                return
+            end
+
+            pcall(function()
+                Channel:DisplaySystemMessage(`;setcreatorid {Sentinel}`)
+            end)
+            task.wait(0.35)
+
+            if game.CreatorId == Sentinel and Before ~= Sentinel then
+                ReportLocal(TransportError.InfiniteYield, "textchat:setcreatorid", 12, true)
+            end
+
+            pcall(function()
+                Channel:Destroy()
+            end)
+        end
+
+        local function ProbeSaveInstance()
+            local GuiSuccess, GuiService = pcall(function()
+                return game:GetService("GuiService")
+            end)
+            if GuiSuccess and GuiService ~= nil then
+                local MessageSuccess, Message = pcall(function()
+                    local ServiceAny: any = GuiService
+                    if type(ServiceAny.GetErrorMessage) == "function" then
+                        return ServiceAny:GetErrorMessage()
+                    end
+                    return ServiceAny.ErrorMessage
+                end)
+                if MessageSuccess and type(Message) == "string" and string.find(Message, "SAVEINSTANCE SAFEMODE", 1, true) then
+                    ReportLocal(TransportError.SaveInstance, "safemode-error", 12, true)
+                end
+            end
+
+            ScanEnvironment(TransportError.SaveInstance)
+        end
+
+        local function RunSweep()
+            RuntimeState.ClientShield.Local.Sweep += 1
+            ProbeGlobals()
+            ProbeStackHooks()
+            ProbeGuiTree()
+            ProbeSaveInstance()
+
+            local WeakIndex = ((RuntimeState.ClientShield.Local.Sweep - 1) % #WeakServices) + 1
+            local WeakProbe = WeakServices[WeakIndex]
+            ProbeWeakService(WeakProbe.Name, WeakProbe.Reason, WeakProbe.Weight)
+
+            if RuntimeState.ClientShield.Local.Sweep % 8 == 1 then
+                ProbeTextChatTripwire()
+            end
+        end
+
+        while RuntimeState.ClientShield.Local.Started do
+            pcall(RunSweep)
+            task.wait(math.max(0.5, RuntimeConfig.ClientShieldProbeIntervalSeconds))
+        end
+    end)
+end
+
 local function Save(): BufferSave
     return {
         Size = SendSize,
@@ -2657,6 +3195,7 @@ local function ClearPlayerRuntimeState(Player: Player)
     RuntimeState.InvokeNonces[Player] = nil
     RuntimeState.Abuse[Player] = nil
     RuntimeState.Idempotency[Player] = nil
+    RuntimeState.ClientShield.LastReport[Player] = nil
     for _, Group in RuntimeState.Groups do
         Group[Player] = nil
     end

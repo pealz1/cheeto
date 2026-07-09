@@ -6,8 +6,40 @@ if not RunService:IsClient() then
     error("Client network module can only be required from the client.")
 end
 
-local Reliable: RemoteEvent = ReplicatedStorage:WaitForChild(BASE_EVENT_NAME .. "_RELIABLE_REMOTE") :: RemoteEvent
-local Unreliable: UnreliableRemoteEvent = ReplicatedStorage:WaitForChild(BASE_EVENT_NAME .. "_UNRELIABLE_REMOTE") :: UnreliableRemoteEvent
+local Reliable: RemoteEvent
+local Unreliable: UnreliableRemoteEvent
+
+if RuntimeConfig.EnableRemoteNameRotation then
+    local RemoteRoot = ReplicatedStorage:WaitForChild(BASE_EVENT_NAME .. "_REMOTE_ROOT")
+
+    local function WaitForRemoteName(Attribute: string): string
+        local Name = RemoteRoot:GetAttribute(Attribute)
+        while type(Name) ~= "string" or Name == "" do
+            RemoteRoot:GetAttributeChangedSignal(Attribute):Wait()
+            Name = RemoteRoot:GetAttribute(Attribute)
+        end
+
+        return Name
+    end
+
+    local function WaitForNamedRemote(Attribute: string): Instance
+        while true do
+            local Name = WaitForRemoteName(Attribute)
+            local Remote = RemoteRoot:WaitForChild(Name, 5)
+            if Remote then
+                return Remote
+            end
+        end
+    end
+
+    Reliable = WaitForNamedRemote("ReliableName") :: RemoteEvent
+    Unreliable = WaitForNamedRemote("UnreliableName") :: UnreliableRemoteEvent
+else
+    Reliable = ReplicatedStorage:WaitForChild(BASE_EVENT_NAME .. "_RELIABLE_REMOTE") :: RemoteEvent
+    Unreliable = ReplicatedStorage:WaitForChild(BASE_EVENT_NAME .. "_UNRELIABLE_REMOTE") :: UnreliableRemoteEvent
+end
+
+RuntimeSupport.StartClientShield()
 
 local function StepReplication()
     ProfileBegin("Cheeto.Flush.Client")

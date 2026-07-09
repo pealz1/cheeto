@@ -133,10 +133,22 @@ option Version = 2
 option MinimumSchemaVersion = 1
 option ProtocolVersion = 2
 option EnableProtocolHandshake = true
+option SecurityPreset = Maximum
 option NoRawCaptureInProduction = true
 option RequirePolicies = true
 option EnableMicroProfiler = true
 option EnableHoneypots = true
+option EnableClientShield = true
+option ClientShieldStrict = true
+option ClientShieldKick = true
+option ClientShieldKickMessage = "Security check failed."
+option ClientShieldProbeIntervalSeconds = 1.25
+option ClientShieldReportCooldownSeconds = 2
+option ClientShieldScoreThreshold = 10
+option EnableRemoteNameRotation = true
+option RemoteNameRotationSeconds = 45
+option EnableRemoteDecoys = true
+option RemoteDecoyCount = 8
 option UseVarints = true
 option UseBitPacking = true
 option UseStringDictionaries = false
@@ -161,7 +173,7 @@ This fork only emits and accepts protocol v2. `ProtocolVersion` must be `2`; `Pr
 
 `CaptureRedactions` is a comma-separated default list of payload field names to hide in capture summaries. `NoRawCaptureInProduction` removes raw packet buffers from production captures so exports can be shared for diagnostics without enabling raw replay.
 
-Client-origin events and functions should declare `Policy`, `PolicyGroup`, or `Auth`. Production hardening with `RequirePolicies = true` fails risky client-origin remotes without a policy surface. Built-in policy presets cover damage, currency, trade, inventory, teleport, admin, crafting, marketplace, and moderation; games can replace or extend them at runtime with `Network.Security.RegisterPolicy`.
+Client-origin events and functions should declare `Policy`, `PolicyGroup`, or `Auth`. Production hardening with `RequirePolicies = true` fails risky client-origin remotes without a policy surface. `SecurityPreset = Maximum` also enables the client shield, strict client kicks, randomized remote names, decoy remotes, and the stricter Competitive transport defaults unless you override them. Built-in policy presets cover damage, currency, trade, inventory, teleport, admin, crafting, marketplace, and moderation; games can replace or extend them at runtime with `Network.Security.RegisterPolicy`.
 
 State channels can also be declared in schema:
 ```cheeto copy

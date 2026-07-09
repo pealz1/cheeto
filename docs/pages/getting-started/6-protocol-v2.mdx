@@ -14,6 +14,7 @@ Use this page as the handoff document for future integrations. It describes the 
 - Production client-origin remotes must have `Auth`, `Policy`, or `PolicyGroup`.
 - High-risk production payloads must have bounded packet sizes, rate limits, policies, and server authority.
 - Remote spying cannot be fully prevented. This fork makes spying less useful by avoiding secrets in remotes, validating every client request on the server, rejecting replay, using compact server-issued handles, and scoring abuse.
+- New games should start with `SecurityPreset = Maximum` and only override individual security switches during measured rollout.
 
 ## Minimal production schema
 
@@ -29,6 +30,7 @@ option Version = 7
 option MinimumSchemaVersion = 7
 
 option SecurityProfile = Production
+option SecurityPreset = Maximum
 option RequirePolicies = true
 option MaxPacketBytes = 65536
 option MaxUnreliablePacketBytes = 900

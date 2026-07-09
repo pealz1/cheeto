@@ -8,20 +8,90 @@ if not RunService:IsServer() then
     error("Server network module can only be required from the server.")
 end
 
-local Reliable: RemoteEvent = ReplicatedStorage:FindFirstChild(BASE_EVENT_NAME .. "_RELIABLE_REMOTE") :: RemoteEvent
-if not Reliable then
-    local RemoteEvent = Instance.new("RemoteEvent")
-    RemoteEvent.Name = BASE_EVENT_NAME .. "_RELIABLE_REMOTE"
-    RemoteEvent.Parent = ReplicatedStorage
-    Reliable = RemoteEvent
-end
+local Reliable: RemoteEvent
+local Unreliable: UnreliableRemoteEvent
 
-local Unreliable: UnreliableRemoteEvent = ReplicatedStorage:FindFirstChild(BASE_EVENT_NAME .. "_UNRELIABLE_REMOTE") :: UnreliableRemoteEvent
-if not Unreliable then
-    local UnreliableRemoteEvent = Instance.new("UnreliableRemoteEvent")
-    UnreliableRemoteEvent.Name = BASE_EVENT_NAME .. "_UNRELIABLE_REMOTE"
-    UnreliableRemoteEvent.Parent = ReplicatedStorage
-    Unreliable = UnreliableRemoteEvent
+do
+    local RemoteRoot: Folder? = nil
+    if RuntimeConfig.EnableRemoteNameRotation then
+        local ExistingRoot = ReplicatedStorage:FindFirstChild(BASE_EVENT_NAME .. "_REMOTE_ROOT")
+        if ExistingRoot and ExistingRoot:IsA("Folder") then
+            RemoteRoot = ExistingRoot :: Folder
+        else
+            local Folder = Instance.new("Folder")
+            Folder.Name = BASE_EVENT_NAME .. "_REMOTE_ROOT"
+            Folder.Parent = ReplicatedStorage
+            RemoteRoot = Folder
+        end
+    end
+
+    local function GetRemoteParent(): Instance
+        return RemoteRoot or ReplicatedStorage
+    end
+
+	local function GetInitialRemoteName(Prefix: string, Fallback: string): string
+		if RuntimeConfig.EnableRemoteNameRotation then
+			return RuntimeSupport.CreateRemoteName(Prefix)
+		end
+
+		return Fallback
+	end
+
+	local function HasRemoteShape(Object: any, ClassName: string): boolean
+		if Object == nil then
+			return false
+		end
+
+		local IsAOk, IsAResult = pcall(function()
+			return Object:IsA(ClassName)
+		end)
+		if IsAOk then
+			return IsAResult == true
+		end
+
+		return type(Object) == "table" and Object.FireClient ~= nil
+	end
+
+	local ReliableName = GetInitialRemoteName("R", BASE_EVENT_NAME .. "_RELIABLE_REMOTE")
+	Reliable = GetRemoteParent():FindFirstChild(ReliableName) :: RemoteEvent
+	if not HasRemoteShape(Reliable, "RemoteEvent") then
+		Reliable = Instance.new("RemoteEvent")
+		Reliable.Name = ReliableName
+		Reliable.Parent = GetRemoteParent()
+	end
+
+	local UnreliableName = GetInitialRemoteName("U", BASE_EVENT_NAME .. "_UNRELIABLE_REMOTE")
+	Unreliable = GetRemoteParent():FindFirstChild(UnreliableName) :: UnreliableRemoteEvent
+	if not HasRemoteShape(Unreliable, "UnreliableRemoteEvent") then
+		Unreliable = Instance.new("UnreliableRemoteEvent")
+		Unreliable.Name = UnreliableName
+        Unreliable.Parent = GetRemoteParent()
+    end
+
+    local function PublishRemoteNames()
+        if RemoteRoot == nil then
+            return
+        end
+
+        RemoteRoot:SetAttribute("ReliableName", Reliable.Name)
+        RemoteRoot:SetAttribute("UnreliableName", Unreliable.Name)
+        RemoteRoot:SetAttribute("Epoch", (RemoteRoot:GetAttribute("Epoch") :: number? or 0) + 1)
+    end
+
+    PublishRemoteNames()
+
+    if RuntimeConfig.EnableRemoteNameRotation and RuntimeConfig.RemoteNameRotationSeconds > 0 then
+        task.spawn(function()
+            while Reliable.Parent ~= nil and Unreliable.Parent ~= nil do
+                task.wait(RuntimeConfig.RemoteNameRotationSeconds)
+                Reliable.Name = RuntimeSupport.CreateRemoteName("R")
+                Unreliable.Name = RuntimeSupport.CreateRemoteName("U")
+                PublishRemoteNames()
+            end
+        end)
+    end
+
+    RuntimeSupport.InstallRemoteDecoys(GetRemoteParent(), RuntimeConfig.RemoteDecoyCount)
 end
 
 Players.PlayerRemoving:Connect(function(Player)

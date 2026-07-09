@@ -1,6 +1,7 @@
 option Casing = Pascal
 option ClientOutput = "Network/HardeningGoodClient.luau"
 option ServerOutput = "Network/HardeningGoodServer.luau"
+option SecurityPreset = Maximum
 option SecurityProfile = Production
 option RequirePolicies = true
 option MaxPacketBytes = 65536

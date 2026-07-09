@@ -1,0 +1,91 @@
+# Maximum Security
+
+Use `SecurityPreset = Maximum` for new production integrations. It turns on the v2 hardened defaults in one place: policy enforcement, strict client shield reporting, client kicks, randomized remote names, RemoteEvent decoys, protocol handshakes, compact frame parsing, replay rejection, and production capture redaction.
+
+```cheeto copy
+option Casing = Pascal
+option ClientOutput = "Network/Client.luau"
+option ServerOutput = "Network/Server.luau"
+option TypesOutput = "Network/Types.luau"
+
+option SecurityPreset = Maximum
+option Version = 1
+option MinimumSchemaVersion = 1
+
+event DamageRequest {
+    From: Client,
+    Type: Reliable,
+    Call: SingleAsync,
+    Policy: "damage",
+    Risk: Damage,
+    Priority: Critical,
+    MaxPacketBytes: 128,
+    Data: u16
+}
+```
+
+Compile the schema:
+
+```sh copy
+cheeto path/to/network.cheeto --yes
+```
+
+## Server Bootstrap
+
+Put this in a normal Script under `ServerScriptService`.
+
+```lua copy
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Network = require(ReplicatedStorage.Network.Server)
+
+Network.Security.OnViolation(function(report)
+    warn("[Cheeto]", report.Reason, report.Player, report.Action)
+end)
+```
+
+## Client Bootstrap
+
+Put this in a LocalScript under `StarterPlayerScripts`.
+
+```lua copy
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+require(ReplicatedStorage.Network.Client)
+```
+
+The generated client module starts the shield automatically when `SecurityPreset = Maximum` is compiled in. The generated server module creates the real remotes, rotates their names, publishes their current names through the generated remote root, and installs decoy remotes that report and kick when exploit tooling fires them.
+
+## What The Shield Detects
+
+The client shield is a best-effort tripwire layer. It reports through Cheeto's internal buffer frame, not a separate public RemoteEvent.
+
+- Hooked metamethod and `getrawmetatable` style environments through stack-environment leakage checks.
+- Infinite Yield signatures including `IY_LOADED`, executor helper globals, CoreGui text signatures, cached services, and the TextChatService `;setcreatorid` bait pattern.
+- Dex Explorer style service caching through weak-reference probes.
+- Remote spy UI signatures and decoy remote usage.
+- UniversalSynSaveInstance and safe-mode signals including `saveinstance`, `getscriptbytecode`, hidden-property helpers, write-file helpers, and safemode error text.
+
+## Remote Spy Boundary
+
+No Roblox networking library can hide data from the client that receives it. Maximum security makes captured traffic less useful by rotating remote names, using compact buffer frames, trapping decoy remotes, rejecting replay, requiring server-side policies, and keeping sensitive state out of client-origin payloads.
+
+Use server-issued handles or ids instead of sending privileged Instances, secrets, prices, damage, currency, inventory ownership, or admin authority through client requests.
+
+## Optional Tuning
+
+`SecurityPreset = Maximum` is the recommended profile. These options exist for controlled rollouts:
+
+```cheeto copy
+option EnableClientShield = true
+option ClientShieldStrict = true
+option ClientShieldKick = true
+option ClientShieldKickMessage = "Security check failed."
+option ClientShieldProbeIntervalSeconds = 1.25
+option ClientShieldReportCooldownSeconds = 2
+option ClientShieldScoreThreshold = 10
+option EnableRemoteNameRotation = true
+option RemoteNameRotationSeconds = 45
+option EnableRemoteDecoys = true
+option RemoteDecoyCount = 8
+```
+
+Avoid unpinned `loadstring(game:HttpGet(...))` loaders in production. If you use an HTTP loader for a private test place, pin it to an immutable commit and replace it with generated ModuleScripts before release.
