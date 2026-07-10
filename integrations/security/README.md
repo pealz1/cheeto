@@ -1,18 +1,26 @@
-# Cheeto Security — Infinite Yield detection
+# Cheeto Security
 
-Client/server module that detects the [Infinite Yield](https://github.com/EdgeIY/infiniteyield)
-admin/exploit script and kicks the player, over a signed report channel with a
-heartbeat-timeout fallback.
+Client/server security layer for Cheeto. It runs two detectors over one shared,
+signed report channel with a heartbeat-timeout fallback:
+
+- **Infinite Yield detection** — fingerprints the [Infinite Yield](https://github.com/EdgeIY/infiniteyield)
+  admin/exploit script and kicks the player.
+- **Movement anti-cheat** — speed / fly / noclip / infinite-jump / mass / void-teleport
+  / anti-gravity detection with self-correcting rollback before it ever escalates.
 
 ## Files
 
 | File | Role |
 |------|------|
-| `IYSignatures.luau` | Pure fingerprint matcher. Given a GUI container, reports whether Infinite Yield is present and which signal matched. No side effects — this is the tested core. |
+| `IYSignatures.luau` | Pure IY fingerprint matcher. Given a GUI container, reports whether Infinite Yield is present and which signal matched. No side effects — a tested core. |
+| `SuspicionScore.luau` | Pure suspicion-scoring engine for the movement anti-cheat — the false-positive safety. A tested core. |
 | `SecureReport.luau` | Signing helpers (`sign` / `verify`) for the report channel. |
-| `Config.luau` | Shared constants (remote name, intervals, timeouts) so client and server never drift. |
-| `IYDetector.client.luau` | LocalScript. Handshakes, sweeps readable GUI containers, sends signed detection reports + heartbeats. Put in `StarterPlayerScripts`. |
-| `IYGuard.server.luau` | Server Script. Issues session secrets, verifies reports, kicks on detection or on heartbeat timeout. Put in `ServerScriptService`. |
+| `SecureChannel.luau` | Shared client channel: one handshake + heartbeat + signed `send`, used by every detector. |
+| `Config.luau` | Shared channel constants (remote name, intervals, timeouts). |
+| `MovementConfig.luau` | Movement-detector tuning, grouped per detector. |
+| `IYDetector.client.luau` | LocalScript. Sweeps readable GUI containers, reports IY hits. `StarterPlayerScripts`. |
+| `MovementAnticheat.client.luau` | LocalScript. Runs the movement detectors, self-corrects, reports. `StarterPlayerScripts`. |
+| `IYGuard.server.luau` | Server Script. Issues session secrets, verifies reports, kicks on detection or heartbeat timeout. `ServerScriptService`. |
 
 ## How it works
 
@@ -43,6 +51,25 @@ games do not:
 Multiple independent signals mean IY randomizing its root `ScreenGui` name does not
 defeat detection — the inner text and structure stay constant.
 
+## Movement anti-cheat
+
+Runs per character. Each detector computes a per-tick "cheating right now?" boolean
+and feeds it to `SuspicionScore`, which ramps a score while the condition holds and
+decays it otherwise. Crossing a low **rollback** threshold self-corrects the player
+(resets the offending property + CFrame); crossing a much higher **report** threshold
+reports over the secure channel and the server kicks. A teleport-grace window and a
+lag-skip guard mean legitimate physics glitches, lag spikes, and server teleports
+never accumulate suspicion — that gap between rollback and report is what keeps it
+free of false kicks.
+
+Ported detectors: walkspeed / jump-power / hip-height / illegal humanoid state /
+infinite-jump, CFrame walk-fly mismatch, mass-density, panic void-teleport, and
+frozen-Y anti-gravity.
+
+> The reference anti-cheat's **anti-knockback** detector is intentionally not ported
+> yet: it depends on the game using `VectorForce`-based knockback in `Terrain`, which
+> is game-specific. `MovementConfig.Knockback` keeps its tuning for when it is added.
+
 ## Honest limitations
 
 Read this before trusting it as a guarantee — it is not one:
@@ -61,8 +88,15 @@ Read this before trusting it as a guarantee — it is not one:
 
 ## Tests
 
-`test/Security.luau` builds real instance trees with `@lune/roblox`: it asserts every
-IY-shaped tree is detected with the right signal, asserts legitimate GUIs (including
-one with a `Holder` frame and a `Cmdbar`-adjacent search box) are **not** detected —
-the false-positive guard — and checks that tampered, replayed, and malformed
-signatures are rejected. Run with `lune run Security` from `test/`.
+- `test/Security.luau` builds real instance trees with `@lune/roblox`: asserts every
+  IY-shaped tree is detected with the right signal, asserts legitimate GUIs (including
+  one with a `Holder` frame and a `Cmdbar`-adjacent search box) are **not** detected —
+  the false-positive guard — and checks tampered / replayed / malformed signatures are
+  rejected.
+- `test/Movement.luau` drives the `SuspicionScore` engine deterministically: scores
+  ramp only under sustained conditions and decay when clean, the grace window
+  suppresses scoring and actions, per-action cooldowns hold, and the rollback
+  threshold trips well before the report threshold.
+
+Both run inside the CI `Test` suite; run individually with `lune run Security` /
+`lune run Movement` from `test/`.

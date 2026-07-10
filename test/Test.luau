@@ -1924,6 +1924,7 @@ RunClosure("Fuzz malformed packets", function()
 end)
 
 require("./Security")
+require("./Movement")
 
 PrettyPrint("green", `All tests passed successfully!`)
 
