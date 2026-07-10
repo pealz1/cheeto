@@ -394,11 +394,52 @@ type MyCFrame = CFrame<i16, f16>
 </Callout>
 
 ## Other Roblox Types
-Cheeto also supports a handful of other Roblox types like:
+Cheeto serializes a wide range of additional Roblox value types. Each one packs into
+the same buffer as everything else, so they remain opaque on the wire.
+
+### Colors and time
     * `BrickColor`
     * `Color3`
     * `DateTime`
     * `DateTimeMillis`
+
+### Additional vectors
+`Vector2` behaves like [`vector`](#vectors): it defaults to `f32` encoding and accepts a
+[number type](#numbers) in angular brackets, e.g. `Vector2<i16>`. The fixed-width
+integer vectors take no encoding argument.
+    * `Vector2`
+    * `Vector2int16`
+    * `Vector3int16`
+
+### GUI and layout
+    * `UDim` — scale (`f32`) and offset (`i32`)
+    * `UDim2`
+    * `Rect`
+
+### Geometry and physics
+    * `Region3` — serialized as its two axis-aligned corners
+    * `Ray`
+    * `PhysicalProperties`
+    * `Axes` — the three axis flags packed into a single byte
+    * `Faces` — the six face flags packed into a single byte
+
+### Ranges, sequences and tweens
+    * `NumberRange`
+    * `NumberSequence` — a length-prefixed list of keypoints
+    * `ColorSequence` — a length-prefixed list of keypoints
+    * `TweenInfo`
+    * `Font`
+
+### Generic enum values
+The `EnumItem` type serializes any Roblox `EnumItem`. It stores the enum type and item
+names, so any enum value can be sent without declaring it up front:
+```cheeto copy
+type AnyKey = EnumItem
+```
+<Callout type="info">
+    `EnumItem` is the general-purpose escape hatch. If you always send values from one
+    known enum, a schema [enum](#enums) is smaller on the wire.
+</Callout>
 
 ## Exports
 Cheeto supports exporting write and read functions for a specific type.<br/>

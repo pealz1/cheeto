@@ -596,6 +596,424 @@ do
 	}
 end
 
+--> Vector2
+do
+	Types.Vector2 = {
+		Read = function(Variable: string, Block: Block, _, Components: { string }?)
+			local Prefab: TypePrefab = Types.f32
+			if Components then
+				Prefab = Types[Components[#Components]] or Prefab
+			end
+
+			Prefab.Read("X", Block)
+			Prefab.Read("Y", Block)
+			Block:Line(`{Block:Declare(Variable)} = Vector2.new(X, Y)`)
+		end,
+		Write = function(Value: string, Block: Block, _, Components: { string }?)
+			local Prefab: TypePrefab = Types.f32
+			if Components then
+				Prefab = Types[Components[#Components]] or Prefab
+			end
+
+			Prefab.Write(`{Value}.X`, Block)
+			Prefab.Write(`{Value}.Y`, Block)
+		end,
+	}
+
+	Primitives.Vector2 = {
+		Type = "Vector2",
+		Generate = GeneratePrimitivePrefab("Vector2", Types.Vector2),
+	}
+end
+
+--> Vector2int16
+do
+	Types.Vector2int16 = {
+		Read = function(Variable: string, Block: Block)
+			Types.i16.Read("X", Block)
+			Types.i16.Read("Y", Block)
+			Block:Line(`{Block:Declare(Variable)} = Vector2int16.new(X, Y)`)
+		end,
+		Write = function(Value: string, Block: Block)
+			Types.i16.Write(`{Value}.X`, Block)
+			Types.i16.Write(`{Value}.Y`, Block)
+		end,
+	}
+
+	Primitives.Vector2int16 = {
+		Type = "Vector2int16",
+		Generate = GeneratePrimitivePrefab("Vector2int16", Types.Vector2int16),
+	}
+end
+
+--> Vector3int16
+do
+	Types.Vector3int16 = {
+		Read = function(Variable: string, Block: Block)
+			Types.i16.Read("X", Block)
+			Types.i16.Read("Y", Block)
+			Types.i16.Read("Z", Block)
+			Block:Line(`{Block:Declare(Variable)} = Vector3int16.new(X, Y, Z)`)
+		end,
+		Write = function(Value: string, Block: Block)
+			Types.i16.Write(`{Value}.X`, Block)
+			Types.i16.Write(`{Value}.Y`, Block)
+			Types.i16.Write(`{Value}.Z`, Block)
+		end,
+	}
+
+	Primitives.Vector3int16 = {
+		Type = "Vector3int16",
+		Generate = GeneratePrimitivePrefab("Vector3int16", Types.Vector3int16),
+	}
+end
+
+--> Region3 (axis-aligned; serialized as min/max corners)
+do
+	Types.Region3 = {
+		Read = function(Variable: string, Block: Block)
+			Types.vector.Read("Minimum", Block)
+			Types.vector.Read("Maximum", Block)
+			Block:Line(`{Block:Declare(Variable)} = Region3.new(Minimum, Maximum)`)
+		end,
+		Write = function(Value: string, Block: Block)
+			Block:Line(`local Region = {Value}`)
+			Block:Line(`local RegionHalf = Region.Size / 2`)
+			Block:Line(`local RegionCenter = Region.CFrame.Position`)
+			Types.vector.Write("RegionCenter - RegionHalf", Block)
+			Types.vector.Write("RegionCenter + RegionHalf", Block)
+		end,
+	}
+
+	Primitives.Region3 = {
+		Type = "Region3",
+		Generate = GeneratePrimitivePrefab("Region3", Types.Region3),
+	}
+end
+
+--> UDim
+do
+	Types.UDim = {
+		Read = function(Variable: string, Block: Block)
+			Types.f32.Read("Scale", Block)
+			Types.i32.Read("Offset", Block)
+			Block:Line(`{Block:Declare(Variable)} = UDim.new(Scale, Offset)`)
+		end,
+		Write = function(Value: string, Block: Block)
+			Types.f32.Write(`{Value}.Scale`, Block)
+			Types.i32.Write(`{Value}.Offset`, Block)
+		end,
+	}
+
+	Primitives.UDim = {
+		Type = "UDim",
+		Generate = GeneratePrimitivePrefab("UDim", Types.UDim),
+	}
+end
+
+--> UDim2
+do
+	Types.UDim2 = {
+		Read = function(Variable: string, Block: Block)
+			Types.UDim.Read("HorizontalUDim", Block)
+			Types.UDim.Read("VerticalUDim", Block)
+			Block:Line(
+				`{Block:Declare(Variable)} = UDim2.new(HorizontalUDim.Scale, HorizontalUDim.Offset, VerticalUDim.Scale, VerticalUDim.Offset)`
+			)
+		end,
+		Write = function(Value: string, Block: Block)
+			Types.UDim.Write(`{Value}.X`, Block)
+			Types.UDim.Write(`{Value}.Y`, Block)
+		end,
+	}
+
+	Primitives.UDim2 = {
+		Type = "UDim2",
+		Generate = GeneratePrimitivePrefab("UDim2", Types.UDim2),
+	}
+end
+
+--> Rect
+do
+	Types.Rect = {
+		Read = function(Variable: string, Block: Block)
+			Types.Vector2.Read("MinimumCorner", Block)
+			Types.Vector2.Read("MaximumCorner", Block)
+			Block:Line(`{Block:Declare(Variable)} = Rect.new(MinimumCorner, MaximumCorner)`)
+		end,
+		Write = function(Value: string, Block: Block)
+			Types.Vector2.Write(`{Value}.Min`, Block)
+			Types.Vector2.Write(`{Value}.Max`, Block)
+		end,
+	}
+
+	Primitives.Rect = {
+		Type = "Rect",
+		Generate = GeneratePrimitivePrefab("Rect", Types.Rect),
+	}
+end
+
+--> Ray
+do
+	Types.Ray = {
+		Read = function(Variable: string, Block: Block)
+			Types.vector.Read("Origin", Block)
+			Types.vector.Read("Direction", Block)
+			Block:Line(`{Block:Declare(Variable)} = Ray.new(Origin, Direction)`)
+		end,
+		Write = function(Value: string, Block: Block)
+			Types.vector.Write(`{Value}.Origin`, Block)
+			Types.vector.Write(`{Value}.Direction`, Block)
+		end,
+	}
+
+	Primitives.Ray = {
+		Type = "Ray",
+		Generate = GeneratePrimitivePrefab("Ray", Types.Ray),
+	}
+end
+
+--> NumberRange
+do
+	Types.NumberRange = {
+		Read = function(Variable: string, Block: Block)
+			Types.f32.Read("Minimum", Block)
+			Types.f32.Read("Maximum", Block)
+			Block:Line(`{Block:Declare(Variable)} = NumberRange.new(Minimum, Maximum)`)
+		end,
+		Write = function(Value: string, Block: Block)
+			Types.f32.Write(`{Value}.Min`, Block)
+			Types.f32.Write(`{Value}.Max`, Block)
+		end,
+	}
+
+	Primitives.NumberRange = {
+		Type = "NumberRange",
+		Generate = GeneratePrimitivePrefab("NumberRange", Types.NumberRange),
+	}
+end
+
+--> PhysicalProperties
+do
+	Types.PhysicalProperties = {
+		Read = function(Variable: string, Block: Block)
+			Types.f32.Read("Density", Block)
+			Types.f32.Read("Friction", Block)
+			Types.f32.Read("Elasticity", Block)
+			Types.f32.Read("FrictionWeight", Block)
+			Types.f32.Read("ElasticityWeight", Block)
+			Block:Line(
+				`{Block:Declare(Variable)} = PhysicalProperties.new(Density, Friction, Elasticity, FrictionWeight, ElasticityWeight)`
+			)
+		end,
+		Write = function(Value: string, Block: Block)
+			Types.f32.Write(`{Value}.Density`, Block)
+			Types.f32.Write(`{Value}.Friction`, Block)
+			Types.f32.Write(`{Value}.Elasticity`, Block)
+			Types.f32.Write(`{Value}.FrictionWeight`, Block)
+			Types.f32.Write(`{Value}.ElasticityWeight`, Block)
+		end,
+	}
+
+	Primitives.PhysicalProperties = {
+		Type = "PhysicalProperties",
+		Generate = GeneratePrimitivePrefab("PhysicalProperties", Types.PhysicalProperties),
+	}
+end
+
+--> Axes (X/Y/Z packed into one byte)
+do
+	Types.Axes = {
+		Read = function(Variable: string, Block: Block)
+			Types.u8.Read("AxesBits", Block)
+			Block:Line("local AxesList = {}")
+			Block:Line(`if AxesBits // 1 % 2 == 1 then table.insert(AxesList, Enum.Axis.X) end`)
+			Block:Line(`if AxesBits // 2 % 2 == 1 then table.insert(AxesList, Enum.Axis.Y) end`)
+			Block:Line(`if AxesBits // 4 % 2 == 1 then table.insert(AxesList, Enum.Axis.Z) end`)
+			Block:Line(`{Block:Declare(Variable)} = Axes.new(table.unpack(AxesList))`)
+		end,
+		Write = function(Value: string, Block: Block)
+			Block:Line(`local AxesValue = {Value}`)
+			Block:Line(
+				`local AxesBits = (AxesValue.X and 1 or 0) + (AxesValue.Y and 2 or 0) + (AxesValue.Z and 4 or 0)`
+			)
+			Types.u8.Write("AxesBits", Block)
+		end,
+	}
+
+	Primitives.Axes = {
+		Type = "Axes",
+		Generate = GeneratePrimitivePrefab("Axes", Types.Axes),
+	}
+end
+
+--> Faces (six normals packed into one byte)
+do
+	Types.Faces = {
+		Read = function(Variable: string, Block: Block)
+			Types.u8.Read("FacesBits", Block)
+			Block:Line("local FacesList = {}")
+			Block:Line(`if FacesBits // 1 % 2 == 1 then table.insert(FacesList, Enum.NormalId.Right) end`)
+			Block:Line(`if FacesBits // 2 % 2 == 1 then table.insert(FacesList, Enum.NormalId.Top) end`)
+			Block:Line(`if FacesBits // 4 % 2 == 1 then table.insert(FacesList, Enum.NormalId.Back) end`)
+			Block:Line(`if FacesBits // 8 % 2 == 1 then table.insert(FacesList, Enum.NormalId.Left) end`)
+			Block:Line(`if FacesBits // 16 % 2 == 1 then table.insert(FacesList, Enum.NormalId.Bottom) end`)
+			Block:Line(`if FacesBits // 32 % 2 == 1 then table.insert(FacesList, Enum.NormalId.Front) end`)
+			Block:Line(`{Block:Declare(Variable)} = Faces.new(table.unpack(FacesList))`)
+		end,
+		Write = function(Value: string, Block: Block)
+			Block:Line(`local FacesValue = {Value}`)
+			Block:Line(
+				`local FacesBits = (FacesValue.Right and 1 or 0) + (FacesValue.Top and 2 or 0) + (FacesValue.Back and 4 or 0) + (FacesValue.Left and 8 or 0) + (FacesValue.Bottom and 16 or 0) + (FacesValue.Front and 32 or 0)`
+			)
+			Types.u8.Write("FacesBits", Block)
+		end,
+	}
+
+	Primitives.Faces = {
+		Type = "Faces",
+		Generate = GeneratePrimitivePrefab("Faces", Types.Faces),
+	}
+end
+
+--> Enum (generic EnumItem; portable across Roblox and Lune via name double-index)
+do
+	Types.EnumItem = {
+		Read = function(Variable: string, Block: Block)
+			Types.string.Read("EnumTypeName", Block)
+			Types.string.Read("EnumItemName", Block)
+			Block:Line(`{Block:Declare(Variable)} = Enum[EnumTypeName][EnumItemName]`)
+		end,
+		Write = function(Value: string, Block: Block)
+			Block:Line(`local EnumItem = {Value}`)
+			Block:Line(`local EnumTypeName = string.sub(tostring(EnumItem.EnumType), 6)`)
+			Types.string.Write("EnumTypeName", Block)
+			Types.string.Write("EnumItem.Name", Block)
+		end,
+	}
+
+	Primitives.EnumItem = {
+		Type = "EnumItem",
+		Generate = GeneratePrimitivePrefab("EnumItem", Types.EnumItem),
+	}
+end
+
+--> TweenInfo
+do
+	Types.TweenInfo = {
+		Read = function(Variable: string, Block: Block)
+			Types.f32.Read("TweenTime", Block)
+			Types.EnumItem.Read("EasingStyle", Block)
+			Types.EnumItem.Read("EasingDirection", Block)
+			Types.i32.Read("RepeatCount", Block)
+			Types.boolean.Read("Reverses", Block)
+			Types.f32.Read("DelayTime", Block)
+			Block:Line(
+				`{Block:Declare(Variable)} = TweenInfo.new(TweenTime, EasingStyle, EasingDirection, RepeatCount, Reverses, DelayTime)`
+			)
+		end,
+		Write = function(Value: string, Block: Block)
+			Types.f32.Write(`{Value}.Time`, Block)
+			Types.EnumItem.Write(`{Value}.EasingStyle`, Block)
+			Types.EnumItem.Write(`{Value}.EasingDirection`, Block)
+			Types.i32.Write(`{Value}.RepeatCount`, Block)
+			Types.boolean.Write(`{Value}.Reverses`, Block)
+			Types.f32.Write(`{Value}.DelayTime`, Block)
+		end,
+	}
+
+	Primitives.TweenInfo = {
+		Type = "TweenInfo",
+		Generate = GeneratePrimitivePrefab("TweenInfo", Types.TweenInfo),
+	}
+end
+
+--> Font
+do
+	Types.Font = {
+		Read = function(Variable: string, Block: Block)
+			Types.string.Read("FontFamily", Block)
+			Types.EnumItem.Read("FontWeight", Block)
+			Types.EnumItem.Read("FontStyle", Block)
+			Block:Line(`{Block:Declare(Variable)} = Font.new(FontFamily, FontWeight, FontStyle)`)
+		end,
+		Write = function(Value: string, Block: Block)
+			Types.string.Write(`{Value}.Family`, Block)
+			Types.EnumItem.Write(`{Value}.Weight`, Block)
+			Types.EnumItem.Write(`{Value}.Style`, Block)
+		end,
+	}
+
+	Primitives.Font = {
+		Type = "Font",
+		Generate = GeneratePrimitivePrefab("Font", Types.Font),
+	}
+end
+
+--> NumberSequence (variable-length keypoints)
+do
+	Types.NumberSequence = {
+		Read = function(Variable: string, Block: Block)
+			Block:Line(`local NumberSequenceCount = ReadLength(2)`)
+			Block:Line(`local NumberSequenceKeypoints = table.create(NumberSequenceCount)`)
+			local Loop = Block:Loop("Index = 1", "NumberSequenceCount")
+			Types.f32.Read("KeypointTime", Loop)
+			Types.f32.Read("KeypointValue", Loop)
+			Types.f32.Read("KeypointEnvelope", Loop)
+			Loop:Line(
+				`table.insert(NumberSequenceKeypoints, NumberSequenceKeypoint.new(KeypointTime, KeypointValue, KeypointEnvelope))`
+			)
+			Loop:End()
+			Block:Line(`{Block:Declare(Variable)} = NumberSequence.new(NumberSequenceKeypoints)`)
+		end,
+		Write = function(Value: string, Block: Block)
+			Block:Line(`local NumberSequenceKeypoints = ({Value}).Keypoints`)
+			Block:Line(`WriteLength(#NumberSequenceKeypoints, 2)`)
+			local Loop = Block:Loop("Index = 1", "#NumberSequenceKeypoints")
+			Loop:Line(`local Keypoint = NumberSequenceKeypoints[Index]`)
+			Types.f32.Write("Keypoint.Time", Loop)
+			Types.f32.Write("Keypoint.Value", Loop)
+			Types.f32.Write("Keypoint.Envelope", Loop)
+			Loop:End()
+		end,
+	}
+
+	Primitives.NumberSequence = {
+		Type = "NumberSequence",
+		Generate = GeneratePrimitivePrefab("NumberSequence", Types.NumberSequence),
+	}
+end
+
+--> ColorSequence (variable-length keypoints)
+do
+	Types.ColorSequence = {
+		Read = function(Variable: string, Block: Block)
+			Block:Line(`local ColorSequenceCount = ReadLength(2)`)
+			Block:Line(`local ColorSequenceKeypoints = table.create(ColorSequenceCount)`)
+			local Loop = Block:Loop("Index = 1", "ColorSequenceCount")
+			Types.f32.Read("KeypointTime", Loop)
+			Types.Color3.Read("KeypointColor", Loop)
+			Loop:Line(`table.insert(ColorSequenceKeypoints, ColorSequenceKeypoint.new(KeypointTime, KeypointColor))`)
+			Loop:End()
+			Block:Line(`{Block:Declare(Variable)} = ColorSequence.new(ColorSequenceKeypoints)`)
+		end,
+		Write = function(Value: string, Block: Block)
+			Block:Line(`local ColorSequenceKeypoints = ({Value}).Keypoints`)
+			Block:Line(`WriteLength(#ColorSequenceKeypoints, 2)`)
+			local Loop = Block:Loop("Index = 1", "#ColorSequenceKeypoints")
+			Loop:Line(`local Keypoint = ColorSequenceKeypoints[Index]`)
+			Types.f32.Write("Keypoint.Time", Loop)
+			Types.Color3.Write("Keypoint.Value", Loop)
+			Loop:End()
+		end,
+	}
+
+	Primitives.ColorSequence = {
+		Type = "ColorSequence",
+		Generate = GeneratePrimitivePrefab("ColorSequence", Types.ColorSequence),
+	}
+end
+
 return {
 	Types = Types,
 	Asserts = Asserts,

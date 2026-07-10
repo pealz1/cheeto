@@ -1,0 +1,27 @@
+option Casing = Pascal
+option Typescript = false
+option TypesOutput = "../../Network/DatatypesTypes.luau"
+option ClientOutput = "../../Network/DatatypesClient.luau"
+option ServerOutput = "../../Network/DatatypesServer.luau"
+option WriteValidations = true
+
+export type EVector2 = Vector2
+export type EVector2Encoded = Vector2<i16>
+export type EVector2int16 = Vector2int16
+export type EVector3int16 = Vector3int16
+export type ERegion3 = Region3
+export type EUDim = UDim
+export type EUDim2 = UDim2
+export type ERect = Rect
+export type ERay = Ray
+export type ENumberRange = NumberRange
+export type EPhysicalProperties = PhysicalProperties
+export type EAxes = Axes
+export type EFaces = Faces
+export type EEnum = EnumItem
+export type ETweenInfo = TweenInfo
+export type EFont = Font
+export type ENumberSequence = NumberSequence
+export type EColorSequence = ColorSequence
+export type EOptionalUDim = UDim2?
+export type EArrayVector2 = Vector2[4]

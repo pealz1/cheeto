@@ -196,6 +196,108 @@ local Primitives: { [string]: Primitive } = {
 		AllowsOptional = true,
 		AllowedComponents = 0,
 	},
+	Vector2 = {
+		Component = false,
+		AllowsRange = false,
+		AllowsOptional = true,
+		AllowedComponents = 1,
+	},
+	Vector2int16 = {
+		Component = false,
+		AllowsRange = false,
+		AllowsOptional = true,
+		AllowedComponents = 0,
+	},
+	Vector3int16 = {
+		Component = false,
+		AllowsRange = false,
+		AllowsOptional = true,
+		AllowedComponents = 0,
+	},
+	Region3 = {
+		Component = false,
+		AllowsRange = false,
+		AllowsOptional = true,
+		AllowedComponents = 0,
+	},
+	UDim = {
+		Component = false,
+		AllowsRange = false,
+		AllowsOptional = true,
+		AllowedComponents = 0,
+	},
+	UDim2 = {
+		Component = false,
+		AllowsRange = false,
+		AllowsOptional = true,
+		AllowedComponents = 0,
+	},
+	Rect = {
+		Component = false,
+		AllowsRange = false,
+		AllowsOptional = true,
+		AllowedComponents = 0,
+	},
+	Ray = {
+		Component = false,
+		AllowsRange = false,
+		AllowsOptional = true,
+		AllowedComponents = 0,
+	},
+	NumberRange = {
+		Component = false,
+		AllowsRange = false,
+		AllowsOptional = true,
+		AllowedComponents = 0,
+	},
+	PhysicalProperties = {
+		Component = false,
+		AllowsRange = false,
+		AllowsOptional = true,
+		AllowedComponents = 0,
+	},
+	Axes = {
+		Component = false,
+		AllowsRange = false,
+		AllowsOptional = true,
+		AllowedComponents = 0,
+	},
+	Faces = {
+		Component = false,
+		AllowsRange = false,
+		AllowsOptional = true,
+		AllowedComponents = 0,
+	},
+	EnumItem = {
+		Component = false,
+		AllowsRange = false,
+		AllowsOptional = true,
+		AllowedComponents = 0,
+	},
+	TweenInfo = {
+		Component = false,
+		AllowsRange = false,
+		AllowsOptional = true,
+		AllowedComponents = 0,
+	},
+	Font = {
+		Component = false,
+		AllowsRange = false,
+		AllowsOptional = true,
+		AllowedComponents = 0,
+	},
+	NumberSequence = {
+		Component = false,
+		AllowsRange = false,
+		AllowsOptional = true,
+		AllowedComponents = 0,
+	},
+	ColorSequence = {
+		Component = false,
+		AllowsRange = false,
+		AllowsOptional = true,
+		AllowedComponents = 0,
+	},
 }
 
 return {
