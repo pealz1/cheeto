@@ -2696,7 +2696,7 @@ function Generator.Generate(FileContext: Context, AbstractSyntaxTree: Parser.Bod
 		ScopeValidationBody = {
 			"_G._CHEETO = _G._CHEETO or {}\n",
 			`if _G._CHEETO["{RemoteScope}"] then\n`,
-			`\terror("[Cheeto]: An instance of cheeto is already running with the remote scope \\"{RemoteScope}\\". Change the remote scope of either instance to avoid conflicts.")\n`,
+			`\terror("[Cheeto]: An instance of Cheeto is already running with the remote scope \\"{RemoteScope}\\". Change the remote scope of either instance to avoid conflicts.")\n`,
 			"end\n",
 			`_G._CHEETO["{RemoteScope}"] = true\n`,
 		}
