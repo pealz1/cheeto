@@ -14,10 +14,12 @@ const config: DocsThemeConfig = {
   logo: (
       <>
         <img
-          width="40"
-          height="40"
-          src="https://raw.githubusercontent.com/pealz1/cheeto/main/docs/public/letter.png"
+          width="36"
+          height="36"
+          src="/cheeto.svg"
+          alt="Cheeto"
         />
+        <span style={{ marginLeft: "0.5em", fontWeight: 700, fontSize: "1.15em" }}>Cheeto</span>
       </>
   ),
   project: {
@@ -25,12 +27,12 @@ const config: DocsThemeConfig = {
   },
   docsRepositoryBase: 'https://github.com/pealz1/cheeto',
   footer: {
-    text: '© 2024 Cheeto',
+    text: '© 2026 Cheeto',
   },
   head: (
     <>
-      <link rel="shortcut icon" href="https://raw.githubusercontent.com/pealz1/cheeto/main/docs/public/letter.png" type="img/png"/>
-      <meta property="og:description" content="An IDL compiler written in Luau for ROBLOX buffer networking." />
+      <link rel="shortcut icon" href="/cheeto.svg" type="image/svg+xml"/>
+      <meta property="og:description" content="A secure IDL compiler written in Luau for ROBLOX buffer networking." />
     </>
   )
 }
