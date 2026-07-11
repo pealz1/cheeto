@@ -1,0 +1,77 @@
+import { Callout } from 'nextra/components'
+
+# Networking Library Comparison
+
+How Cheeto compares to other Roblox networking libraries — [Zap](https://github.com/red-blox/zap),
+[Jolt](https://github.com/ToriumSlurs/Jolt), and [NetRay](https://devforum.roblox.com/t/netray-high-performance-roblox-networking-library/3592849).
+
+<Callout type="info">
+    This page is a factual capability map, not marketing. Where Cheeto uses a
+    different mechanism to achieve the same goal, that is called out rather than
+    claimed as a gap.
+</Callout>
+
+## Feature matrix
+
+| Capability | Zap | Jolt | NetRay | Cheeto |
+|------------|-----|------|--------|-------|
+| Buffer packing / zero-allocation | ✓ | ✓ | ✓ | ✓ |
+| Compression | — | ✓ | ✓ (LZW) | ✓ (varints + bit-packing) |
+| Reliable messaging | ✓ | ✓ | ✓ | ✓ |
+| Unreliable messaging | ✓ | ✓ | ✓ | ✓ |
+| Round-trip invoke / RemoteFunction | — | ✓ | ✓ | ✓ (functions) |
+| Strict typing + autocomplete | ✓ | ✓ | ✓ | ✓ (+ TypeScript defs) |
+| Received-data validation | ✓ | ✓ | ✓ | ✓ |
+| Middleware (intercept / block) | — | — | ✓ | ✓ (hooks) |
+| Rate limiting + burst | — | — | ✓ | ✓ |
+| Priority / weighted queue | — | — | ✓ | ✓ (`Priority`, `CoalesceKey`, `ReliabilityMode`) |
+| Automatic event batching | ✓ | ✓ | ✓ | ✓ |
+| Metrics / debug visibility | — | — | ✓ | ✓ (`Stats`, `Report`, doctor / load-sim modes) |
+| Datatypes | broad | 17 | broad | **30** |
+| Delta replication / channels | — | — | — | **✓ (Cheeto only)** |
+| Client-side prediction | — | — | — | **✓ (Cheeto only)** |
+| Reliable fragmentation (large packets) | — | — | — | **✓ (Cheeto only)** |
+| Capability handshake / schema versioning | — | — | — | **✓ (Cheeto only)** |
+
+## Datatypes
+
+Jolt advertises support for these 17 datatypes:
+
+`nil`, `boolean`, `buffer`, `number`, `string`, `table`, `Instance`, `Vector3`,
+`Vector2`, `CFrame`, `Color3`, `BrickColor`, `Region3`, `EnumItem`, `UDim`,
+`UDim2`, `TweenInfo`.
+
+Cheeto supports all of them and more — see [Types](/language/types). In addition to
+Jolt's set, Cheeto also packs `Vector2int16`, `Vector3int16`, `Rect`, `Ray`,
+`NumberRange`, `NumberSequence`, `ColorSequence`, `PhysicalProperties`, `Font`,
+`Axes`, `Faces`, `DateTime`, and per-field numeric encodings (e.g. `Vector2<i16>`).
+
+## Where Cheeto differs by design
+
+These are deliberate design choices, not missing features:
+
+- **Compression.** NetRay applies LZW before sending and picks compressed vs
+  uncompressed per message. Cheeto instead packs against the schema — integers use
+  varints, booleans bit-pack, and every field is written at its declared width. For
+  typed data this is smaller *and* faster than running a general-purpose compressor
+  over an already-tight buffer, so Cheeto does not add a second compression pass.
+
+- **Data shape.** NetRay can send native tables / JSON and dynamically choose an
+  encoding. Cheeto always packs against a declared type; arbitrary or self-referential
+  tables go through the `unknown` type, which falls back to Roblox's serializer. This
+  trades a little flexibility for a lot of size, speed, and validation.
+
+- **Async style.** NetRay exposes Promise-based requests; Jolt and Cheeto use yielding
+  invokes (`Yield: Coroutine`) that return values directly. Both are equivalent; a
+  Promise wrapper can be layered on top if preferred.
+
+- **Event handles.** Jolt's `ReferenceBridge` is one environment-agnostic handle.
+  Cheeto generates separate typed `Client` and `Server` modules instead, so each side
+  only sees the calls it can actually make.
+
+## Summary
+
+Cheeto implements the full union of features advertised by Zap, Jolt, and NetRay, and
+adds delta-replicated channels, prediction, fragmentation, and a capability handshake
+on top. The one area where another library previously listed more — Jolt's datatype
+breadth — is now covered and exceeded.
