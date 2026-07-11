@@ -26,3 +26,6 @@ sourcemap.json
 test/Sources/Issue.cheeto
 node_modules/
 .env
+
+# Stray root output from running the CLI at repo root
+/generated
