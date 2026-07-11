@@ -1,0 +1,25 @@
+<svg width="128" height="128" viewBox="0 0 128 128" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Cheeto logo">
+  <defs>
+    <linearGradient id="cheetoBadge" x1="16" y1="12" x2="112" y2="116" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#F97316"/>
+      <stop offset="1" stop-color="#EA580C"/>
+    </linearGradient>
+    <linearGradient id="cheetoCurl" x1="34" y1="30" x2="94" y2="98" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFF7ED"/>
+      <stop offset="1" stop-color="#FFE7C4"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Badge -->
+  <rect x="8" y="8" width="112" height="112" rx="30" fill="url(#cheetoBadge)"/>
+  <rect x="8.75" y="8.75" width="110.5" height="110.5" rx="29.25" fill="none" stroke="#FDBA74" stroke-opacity="0.5" stroke-width="1.5"/>
+
+  <!-- "C" cheese-curl monogram, open on the right with a curled lower terminal -->
+  <path d="M92 40 A34 34 0 1 0 92 88" fill="none" stroke="url(#cheetoCurl)" stroke-width="17" stroke-linecap="round"/>
+  <path d="M92 88 q11 6 6 17" fill="none" stroke="url(#cheetoCurl)" stroke-width="17" stroke-linecap="round"/>
+
+  <!-- Cheese-dust texture -->
+  <circle cx="99" cy="30" r="4.5" fill="#FFF7ED" fill-opacity="0.9"/>
+  <circle cx="30" cy="95" r="3.5" fill="#FFF7ED" fill-opacity="0.75"/>
+  <circle cx="103" cy="103" r="2.6" fill="#FFF7ED" fill-opacity="0.6"/>
+</svg>

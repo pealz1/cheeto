@@ -1,5 +1,5 @@
-authors = ["1axen"]
-description = "An IDL compiler written in Luau for ROBLOX buffer networking"
+authors = ["pealz1"]
+description = "A secure IDL compiler written in Luau for ROBLOX buffer networking"
 includes = [
     "README.md",
     "pesde.toml",

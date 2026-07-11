@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="./docs/public/Logo.png" class="center">
+  <img src="./docs/public/cheeto.svg" class="center">
 </div>
 
 [![GitHub License](https://img.shields.io/github/license/pealz1/cheeto?style=flat-square&color=%23a350af)](LICENSE)
@@ -28,3 +28,7 @@ Credits to [Zap](https://zap.redblox.dev/) for the range and array syntax
 Credits to [ArvidSilverlock](https://github.com/ArvidSilverlock) for the float16 implementation  
 Studio plugin auto completion icons are sourced from [Microsoft](https://github.com/microsoft/vscode-icons) and are under the [CC BY 4.0](https://github.com/microsoft/vscode-icons/blob/main/LICENSE) license.  
 <a href="https://www.flaticon.com/free-icons/speed" title="speed icons">Speed icons created by alkhalifi design - Flaticon</a>
+
+---
+
+_Cheeto's compiler core is derived from MIT-licensed work by [1Axen](https://github.com/1Axen)._
