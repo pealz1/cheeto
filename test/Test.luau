@@ -1923,6 +1923,8 @@ RunClosure("Fuzz malformed packets", function()
 	end
 end)
 
+require("./Datatypes")
+
 PrettyPrint("green", `All tests passed successfully!`)
 
 process.exit(0)
