@@ -23,6 +23,7 @@ local Workspace = game:GetService("Workspace")
 local Config = require(script.Parent.MovementConfig)
 local Suspicion = require(script.Parent.SuspicionScore)
 local SecureChannel = require(script.Parent.SecureChannel)
+local KnockbackForce = require(script.Parent.KnockbackForce)
 
 local player = Players.LocalPlayer
 
@@ -105,10 +106,7 @@ local function raycastBlocked(from: Vector3, direction: Vector3, character: Mode
 	return instance ~= nil
 end
 
-local function runDetectors(character: Model)
-	activeToken += 1
-	local token = activeToken
-
+local function runDetectors(character: Model, token: number)
 	local root = character:WaitForChild("HumanoidRootPart", 10) :: BasePart
 	local humanoid = character:WaitForChild("Humanoid", 10) :: Humanoid
 	if not root or not humanoid then
@@ -267,12 +265,133 @@ local function runDetectors(character: Model)
 	end
 end
 
+--> Anti-knockback: a strong horizontal knockback force with no matching movement
+--> response means the player is ignoring knockback. Kept as its own loop because
+--> it carries its own idle/active timers. (Following the reference anti-cheat, the
+--> disabled-force / missing-force variants are deliberately NOT flagged — they have
+--> too many legitimate triggers.)
+local function isWallBlockingForce(character: Model, root: BasePart, netForce: Vector3): boolean
+	if netForce.Magnitude < 1e-3 then
+		return false
+	end
+	local direction = netForce.Unit * Config.Knockback.wallCheckDistance
+	return raycastBlocked(root.Position + Vector3.new(0, 1.5, 0), direction, character)
+		or raycastBlocked(root.Position + Vector3.new(0, 0.8, 0), direction, character)
+end
+
+local function runKnockbackDetector(character: Model, token: number)
+	local root = character:WaitForChild("HumanoidRootPart", 10) :: BasePart
+	if not root then
+		return
+	end
+	local rootAttachment = root:WaitForChild("RootAttachment", 5)
+	if not rootAttachment then
+		return
+	end
+
+	local cfg = Config.Knockback
+	local suspicionState = Suspicion.createState()
+	local safeCFrame = root.CFrame
+	local lastPositionXZ = Vector3.new(root.Position.X, 0, root.Position.Z)
+	local idleNoResponse = 0
+	local knockbackActive = 0
+	local lastClock = os.clock()
+
+	while task.wait(Config.StepInterval) do
+		if token ~= activeToken or not character.Parent or not root.Parent or not rootAttachment.Parent then
+			break
+		end
+
+		local dt, realDt, now = stepDt(lastClock)
+		lastClock = now
+		local currentPositionXZ = Vector3.new(root.Position.X, 0, root.Position.Z)
+
+		if realDt > Config.LagSkipThreshold or graceActive() then
+			lastPositionXZ = currentPositionXZ
+			safeCFrame = root.CFrame
+			idleNoResponse = 0
+			knockbackActive = 0
+			continue
+		end
+
+		local moveVectorXZ = currentPositionXZ - lastPositionXZ
+		local movedSpeedXZ = moveVectorXZ.Magnitude / realDt
+
+		local applied, netForce =
+			KnockbackForce.sumHorizontalForce(Workspace.Terrain:GetChildren(), rootAttachment, character.PrimaryPart)
+
+		local isBeingPushed = applied > cfg.forceThreshold
+		local isWallBlocking = isWallBlockingForce(character, root, netForce)
+		local hasPush = netForce.Magnitude > 1e-3
+		local hasMove = moveVectorXZ.Magnitude > 1e-3
+		local pushDot = if hasPush and hasMove then moveVectorXZ.Unit:Dot(netForce.Unit) else 0
+		local movingOpposite = hasPush
+			and hasMove
+			and movedSpeedXZ >= cfg.minResponseSpeed
+			and pushDot <= cfg.oppositeDotThreshold
+		local walkingInAura = movedSpeedXZ >= cfg.minWalkSpeed and not movingOpposite
+
+		if isBeingPushed and not isWallBlocking then
+			knockbackActive += dt
+		else
+			knockbackActive = 0
+		end
+		if isBeingPushed and not isWallBlocking and movedSpeedXZ < cfg.minResponseSpeed then
+			idleNoResponse += dt
+		else
+			idleNoResponse = 0
+		end
+
+		--> Suspicious only after a grace period of genuinely ignoring the force —
+		--> either standing still inside it, or shoving straight through it.
+		local suspicious = false
+		local rate = cfg.rate
+		if isBeingPushed and not isWallBlocking then
+			if movingOpposite and knockbackActive >= cfg.oppositeGraceSeconds then
+				suspicious = true
+				rate = cfg.rate * 2
+			elseif idleNoResponse >= cfg.idleGraceSeconds then
+				suspicious = true
+			end
+		end
+
+		local decayRate = if walkingInAura then cfg.decay * cfg.walkDecayMultiplier else cfg.decay
+		Suspicion.update(suspicionState, suspicious, dt, rate, decayRate, graceActive())
+		local action = Suspicion.process(
+			suspicionState,
+			suspicious,
+			now,
+			cfg.rollback,
+			cfg.report,
+			cfg.rollbackCooldown,
+			cfg.reportCooldown,
+			graceActive()
+		)
+		if action.rollback then
+			rollback(root, safeCFrame)
+		end
+		if action.report then
+			SecureChannel.send("detect", "AntiKnockbackIgnoredForce")
+		end
+
+		if not isBeingPushed or isWallBlocking or walkingInAura then
+			safeCFrame = root.CFrame
+		end
+		lastPositionXZ = currentPositionXZ
+	end
+end
+
 --> Server teleports should not be flagged; the server tells us via the channel.
 --> (The server can send { k = "grace", time = n }; wire it here if desired.)
 
-if player.Character then
-	task.spawn(runDetectors, player.Character)
+local function startAll(character: Model)
+	activeToken += 1
+	local token = activeToken
+	task.spawn(runDetectors, character, token)
+	task.spawn(runKnockbackDetector, character, token)
 end
-player.CharacterAdded:Connect(function(character)
-	task.spawn(runDetectors, character)
-end)
+
+if player.Character then
+	task.spawn(startAll, player.Character)
+end
+player.CharacterAdded:Connect(startAll)

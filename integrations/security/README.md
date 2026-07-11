@@ -14,6 +14,7 @@ signed report channel with a heartbeat-timeout fallback:
 |------|------|
 | `IYSignatures.luau` | Pure IY fingerprint matcher. Given a GUI container, reports whether Infinite Yield is present and which signal matched. No side effects — a tested core. |
 | `SuspicionScore.luau` | Pure suspicion-scoring engine for the movement anti-cheat — the false-positive safety. A tested core. |
+| `KnockbackForce.luau` | Pure horizontal-force summation over `Terrain` VectorForces for the anti-knockback detector. A tested core. |
 | `SecureReport.luau` | Signing helpers (`sign` / `verify`) for the report channel. |
 | `SecureChannel.luau` | Shared client channel: one handshake + heartbeat + signed `send`, used by every detector. |
 | `Config.luau` | Shared channel constants (remote name, intervals, timeouts). |
@@ -63,12 +64,11 @@ never accumulate suspicion — that gap between rollback and report is what keep
 free of false kicks.
 
 Ported detectors: walkspeed / jump-power / hip-height / illegal humanoid state /
-infinite-jump, CFrame walk-fly mismatch, mass-density, panic void-teleport, and
-frozen-Y anti-gravity.
-
-> The reference anti-cheat's **anti-knockback** detector is intentionally not ported
-> yet: it depends on the game using `VectorForce`-based knockback in `Terrain`, which
-> is game-specific. `MovementConfig.Knockback` keeps its tuning for when it is added.
+infinite-jump, CFrame walk-fly mismatch, mass-density, panic void-teleport,
+frozen-Y anti-gravity, and **anti-knockback** (ignoring a strong `VectorForce`
+knockback aura in `Terrain`, or shoving straight through it). Following the
+reference, the disabled-force / missing-force variants are deliberately not flagged —
+they have too many legitimate triggers.
 
 ## Honest limitations
 
@@ -97,6 +97,10 @@ Read this before trusting it as a guarantee — it is not one:
   ramp only under sustained conditions and decay when clean, the grace window
   suppresses scoring and actions, per-action cooldowns hold, and the rollback
   threshold trips well before the report threshold.
+- `test/Knockback.luau` builds real `VectorForce` instances with `@lune/roblox` and
+  asserts the horizontal-force summation: world- and attachment-relative forces,
+  disabled forces (a bypass signal, not counted), wrong-attachment and non-force
+  children ignored, and vertical-only forces contributing no horizontal push.
 
 Both run inside the CI `Test` suite; run individually with `lune run Security` /
 `lune run Movement` from `test/`.
