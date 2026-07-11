@@ -1926,6 +1926,7 @@ end)
 require("./Datatypes")
 require("./Security")
 require("./Movement")
+require("./Knockback")
 
 PrettyPrint("green", `All tests passed successfully!`)
 
