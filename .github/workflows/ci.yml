@@ -19,6 +19,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Reset rokit auth (persistent self-hosted runner state)
+        run: rm -f "$HOME/.rokit/auth.toml"
+
       - name: Install Rokit tools
         uses: CompeyDev/setup-rokit@v0.2.1
         with:
