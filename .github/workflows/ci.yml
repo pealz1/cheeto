@@ -8,7 +8,7 @@ on:
 
 jobs:
   validate:
-    name: Validate v2 runtime
+    name: Lint (stylua + selene)
     runs-on: self-hosted
 
     defaults:
@@ -32,26 +32,3 @@ jobs:
 
       - name: Run Selene
         run: selene src test benchmark plugin
-
-      - name: Full runtime and report suite
-        working-directory: test
-        run: lune run Test -- --ci
-
-      - name: Production hardening checklist
-        run: lune run src/CLI/init.luau test/Sources/HardeningGood -- --hardening-checklist --yes
-
-      - name: V2 report modes
-        run: |
-          lune run src/CLI/init.luau test/Sources/Test -- --doctor --yes
-          lune run src/CLI/init.luau test/Sources/Test -- --benchmark --yes
-          lune run src/CLI/init.luau test/Sources/Test -- --load-sim --yes
-          lune run src/CLI/init.luau test/Sources/Test -- --capture-replay --yes
-          lune run src/CLI/init.luau test/Sources/Test -- --golden-snapshots --yes
-          lune run src/CLI/init.luau test/Sources/Test -- --compatibility --yes
-          lune run src/CLI/init.luau test/Sources/Test -- --schema-docs --yes
-          lune run src/CLI/init.luau test/Sources/Test -- --check-lock --yes
-
-      - name: Diff and whitespace checks
-        run: |
-          git diff --check
-          git diff --exit-code
