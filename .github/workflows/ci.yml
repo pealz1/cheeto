@@ -9,8 +9,10 @@ on:
 jobs:
   validate:
     name: Lint (stylua + selene)
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # GitHub-hosted runners are blocked on this account (billing), so this
+    # job must stay on the self-hosted PEALZ runner. See CONTRIBUTING notes.
+    runs-on: self-hosted
+    timeout-minutes: 15
 
     defaults:
       run:
@@ -19,6 +21,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Reset rokit auth (persistent self-hosted runner state)
+        run: rm -f "$HOME/.rokit/auth.toml"
 
       - name: Install Rokit tools
         uses: CompeyDev/setup-rokit@v0.2.1
