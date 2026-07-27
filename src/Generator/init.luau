@@ -425,6 +425,7 @@ local function PushRuntimeApi(Target: Builder.Builder, Indent: number, ReplayRaw
 	Target.Push(`Use = Use,`, 0, Indent)
 	Target.Push(`UseAuth = UseAuth,`, 0, Indent)
 	Target.Push(`CancelInvocations = CancelInvocations,`, 0, Indent)
+	Target.Push(`Connection = table.freeze(\{ new = RuntimeSupport.CreateConnection \}),`, 0, Indent)
 	Target.Push(`Protocol = table.freeze(\{`, 0, Indent)
 	Target.Push(`Info = RuntimeSupport.ProtocolInfo,`, 0, Indent + 1)
 	Target.Push(`QueueHandshake = RuntimeSupport.QueueCapabilityHandshake,`, 0, Indent + 1)

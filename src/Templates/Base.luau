@@ -1485,6 +1485,194 @@ function RuntimeSupport.Interpolator(Initial: any)
     return Interpolator
 end
 
+function RuntimeSupport.CreateConnection(Config: {[string]: any}?)
+    local Config = Config or {}
+    local Connection = {
+        Routes = table.clone(Config.Routes or {}),
+        State = table.clone(Config.State or Config.States or {}),
+        Target = Config.Target,
+        Connected = true,
+        _disconnectors = {}
+    }
+
+    local function AssertConnected()
+        if not Connection.Connected then
+            error("[Cheeto]: Connection is disconnected.", 3)
+        end
+    end
+
+    local function ResolveRoute(Name: string): any
+        local Route = Connection.Routes[Name]
+        if Route == nil then
+            error(`[Cheeto]: Connection route "{Name}" is not bound.`, 3)
+        end
+
+        return Route
+    end
+
+    local function ResolveState(Name: string): any
+        local Channel = Connection.State[Name]
+        if Channel == nil then
+            error(`[Cheeto]: Connection state "{Name}" is not bound.`, 3)
+        end
+
+        return Channel
+    end
+
+    local function TrackDisconnect(Disconnect: any): () -> ()
+        if type(Disconnect) ~= "function" then
+            return function() end
+        end
+
+        local Active = true
+        local function TrackedDisconnect()
+            if not Active then
+                return
+            end
+
+            Active = false
+            local Index = table.find(Connection._disconnectors, TrackedDisconnect)
+            if Index then
+                table.remove(Connection._disconnectors, Index)
+            end
+            Disconnect()
+        end
+
+        table.insert(Connection._disconnectors, TrackedDisconnect)
+        return TrackedDisconnect
+    end
+
+    function Connection:Bind(Name: string, Route: any)
+        AssertConnected()
+        if type(Name) ~= "string" or Name == "" then
+            error("[Cheeto]: Connection route names must be non-empty strings.", 2)
+        end
+        if type(Route) ~= "table" and type(Route) ~= "function" then
+            error(`[Cheeto]: Connection route "{Name}" must be a generated endpoint or function.`, 2)
+        end
+
+        self.Routes[Name] = Route
+        return self
+    end
+
+    function Connection:BindState(Name: string, Channel: any)
+        AssertConnected()
+        if type(Name) ~= "string" or Name == "" then
+            error("[Cheeto]: Connection state names must be non-empty strings.", 2)
+        end
+        if type(Channel) ~= "table" then
+            error(`[Cheeto]: Connection state "{Name}" must be a generated state channel.`, 2)
+        end
+
+        self.State[Name] = Channel
+        return self
+    end
+
+    function Connection:SetTarget(Target: any)
+        AssertConnected()
+        self.Target = Target
+        return self
+    end
+
+    function Connection:Send(Name: string, ...: any): ...any
+        AssertConnected()
+        local Route = ResolveRoute(Name)
+        local Sender = if type(Route) == "function" then Route else Route.Fire or Route.Invoke or Route.Send
+        if type(Sender) ~= "function" then
+            error(`[Cheeto]: Connection route "{Name}" cannot send on this side.`, 2)
+        end
+
+        if self.Target ~= nil then
+            return Sender(self.Target, ...)
+        end
+        return Sender(...)
+    end
+
+    function Connection:On(Name: string, Listener: (...any) -> ()): () -> ()
+        AssertConnected()
+        if type(Listener) ~= "function" then
+            error("[Cheeto]: Connection listeners must be functions.", 2)
+        end
+
+        local Route = ResolveRoute(Name)
+        if type(Route) ~= "table" then
+            error(`[Cheeto]: Connection route "{Name}" cannot receive on this side.`, 2)
+        end
+
+        local Subscribe = Route.On or Route.Connect or Route.Subscribe
+        if type(Subscribe) ~= "function" then
+            error(`[Cheeto]: Connection route "{Name}" cannot receive on this side.`, 2)
+        end
+
+        return TrackDisconnect(Subscribe(Listener))
+    end
+
+    function Connection:Once(Name: string, Listener: ((...any) -> ())?): () -> ()
+        AssertConnected()
+        local Disconnect: () -> ()
+        Disconnect = self:On(Name, function(...: any)
+            Disconnect()
+            if Listener then
+                Listener(...)
+            end
+        end)
+        return Disconnect
+    end
+
+    function Connection:GetState(Name: string): any
+        AssertConnected()
+        local Channel = ResolveState(Name)
+        if type(Channel.Get) ~= "function" then
+            error(`[Cheeto]: Connection state "{Name}" cannot be read on this side.`, 2)
+        end
+
+        if self.Target ~= nil then
+            return Channel.Get(self.Target)
+        end
+        return Channel.Get()
+    end
+
+    function Connection:OnState(Name: string, Listener: (...any) -> (), FireImmediately: boolean?): () -> ()
+        AssertConnected()
+        if type(Listener) ~= "function" then
+            error("[Cheeto]: Connection state listeners must be functions.", 2)
+        end
+
+        local Channel = ResolveState(Name)
+        if type(Channel.On) ~= "function" then
+            error(`[Cheeto]: Connection state "{Name}" cannot be observed on this side.`, 2)
+        end
+
+        local Disconnect = TrackDisconnect(Channel.On(Listener))
+        if FireImmediately then
+            local Value = self:GetState(Name)
+            local Version = if type(Channel.Version) == "function" then Channel.Version() else nil
+            Listener(Value, Version, nil)
+        end
+        return Disconnect
+    end
+
+    function Connection:IsConnected(): boolean
+        return self.Connected
+    end
+
+    function Connection:Disconnect()
+        if not self.Connected then
+            return
+        end
+
+        self.Connected = false
+        local Disconnectors = table.clone(self._disconnectors)
+        table.clear(self._disconnectors)
+        for _, Disconnect in Disconnectors do
+            Disconnect()
+        end
+    end
+
+    Connection.Destroy = Connection.Disconnect
+    return Connection
+end
+
 function RuntimeSupport.QuantizeNumber(Value: number, Scale: number, Min: number?, Max: number?): number
     local Clamped = math.clamp(Value, Min or -math.huge, Max or math.huge)
     return math.floor((Clamped * Scale) + 0.5)

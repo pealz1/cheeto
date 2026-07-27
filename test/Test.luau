@@ -844,6 +844,82 @@ RunClosure("State Channel Snapshot And Patch", function()
 	Disconnect()
 end)
 
+RunClosure("Controller Connection Routes And State", function()
+	local SentTarget
+	local SentValue
+	local RouteListener
+	local RouteDisconnected = false
+	local StateListener
+	local StateDisconnected = false
+	local Target = { Name = "Player" }
+	local Snapshot = { Visible = true, Title = "Ready" }
+
+	local Connection = Client.Connection.new({
+		Target = Target,
+		Routes = {
+			ControllerMessage = {
+				Fire = function(RouteTarget, Value)
+					SentTarget = RouteTarget
+					SentValue = Value
+				end,
+				On = function(Listener)
+					RouteListener = Listener
+					return function()
+						RouteDisconnected = true
+						RouteListener = nil
+					end
+				end,
+			},
+		},
+		State = {
+			UI = {
+				Get = function(RouteTarget)
+					assert(RouteTarget == Target, "Expected state read to use the connection target.")
+					return Snapshot
+				end,
+				Version = function()
+					return 7
+				end,
+				On = function(Listener)
+					StateListener = Listener
+					return function()
+						StateDisconnected = true
+						StateListener = nil
+					end
+				end,
+			},
+		},
+	})
+
+	Connection:Send("ControllerMessage", "refresh")
+	assert(SentTarget == Target, "Expected connection target to be prepended to sends.")
+	assert(SentValue == "refresh", "Expected connection payload to reach the Cheeto route.")
+
+	local Received
+	Connection:On("ControllerMessage", function(Value)
+		Received = Value
+	end)
+	RouteListener("update")
+	assert(Received == "update", "Expected route listener to receive messages.")
+
+	local StateValue
+	local StateVersion
+	Connection:OnState("UI", function(Value, Version)
+		StateValue = Value
+		StateVersion = Version
+	end, true)
+	assert(StateValue == Snapshot and StateVersion == 7, "Expected immediate state delivery.")
+	assert(Connection:GetState("UI") == Snapshot, "Expected state reads through the connection.")
+
+	Connection:Disconnect()
+	assert(not Connection:IsConnected(), "Expected the connection to report disconnected.")
+	assert(RouteDisconnected and StateDisconnected, "Expected connection cleanup to release every listener.")
+	assert(RouteListener == nil and StateListener == nil, "Expected listener references to be released.")
+	assert(not pcall(function()
+		Connection:Send("ControllerMessage", "ignored")
+	end), "Expected sends after disconnect to fail.")
+end)
+
 FireAndExpect("Reliable Client", Client.ReliableClient, Server.ReliableClient, 1)
 FireAndExpect("Unreliable Client", Client.UnreliableClient, Server.UnreliableClient, 1)
 FireAndExpect("Empty Reliable Client", Client.ClientEmptyEvent, Server.ClientEmptyEvent, nil)
