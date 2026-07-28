@@ -280,7 +280,9 @@ local function GetEventBody(Channel: string): { string }
 		table.insert(Body, "RecieveInstances = Instances or {}\n")
 	end
 
-	table.move({
+	--> count derived from the table: a hardcoded length silently drops the
+	--> tail when a line is added here
+	local Reset = {
 		"RecieveCursor = 0\n",
 		"RecieveBuffer = Buffer\n",
 		"State.RecieveBuffer = Buffer\n",
@@ -289,7 +291,8 @@ local function GetEventBody(Channel: string): { string }
 		"RecieveBitCount = 0\n",
 		"RecieveStrings = {}\n",
 		"NextRecieveStringId = 1\n",
-	}, 1, 7, #Body + 1, Body)
+	}
+	table.move(Reset, 1, #Reset, #Body + 1, Body)
 
 	return Body
 end
