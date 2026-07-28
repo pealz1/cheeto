@@ -279,8 +279,9 @@ local function CloneArray(Source: {any}?): {any}?
     end
 
     -- selene: allow(manual_table_clone)
-    --> NOT table.clone: that carries the source's metatable over, and swapping it
-    --> in here hangs the test suite. The loop is deliberate.
+    --> NOT table.clone: it carries the source's metatable over to the copy and
+    --> this loop does not. The suite was too flaky to prove behaviour either way
+    --> (see the intermittent hang below), so the safe semantics stay.
     local Result = {}
     for Index, Value in Source do
         Result[Index] = Value
@@ -1858,7 +1859,7 @@ local function GetMetrics()
     local Copy = {}
     for BucketName, Bucket in Metrics do
         -- selene: allow(manual_table_clone)
-        --> see CloneArray: table.clone is not a safe substitution here
+        --> see CloneArray: table.clone would carry metatables over
         local BucketCopy = {}
         for Key, Value in Bucket do
             BucketCopy[Key] = Value
