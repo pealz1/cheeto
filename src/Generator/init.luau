@@ -48,19 +48,19 @@ local EVENT_SYNC_VALIDATION = {
 }
 
 local RELIABLE_BODY = {
-	Header = "local Buffer, Size, Instances = SendBuffer, SendCursor, SendInstances",
+	Header = "local Buffer, Size, Instances = State.SendBuffer, Cursor(), State.SendInstances",
 	Body = {
 		"Load(PlayersMap[Player])\n",
 		"local Position = Allocate(Size)\n",
-		"buffer.copy(SendBuffer, Position, Buffer, 0, Size)\n",
-		"table.move(Instances, 1, #Instances, #SendInstances + 1, SendInstances)\n",
+		"buffer.copy(State.SendBuffer, Position, Buffer, 0, Size)\n",
+		"table.move(Instances, 1, #Instances, #State.SendInstances + 1, State.SendInstances)\n",
 		"PlayersMap[Player] = Save()\n",
 	},
 }
 
 local UNRELIABLE_BODY = {
-	"local Buffer = buffer.create(SendCursor)\n",
-	"buffer.copy(Buffer, 0, SendBuffer, 0, SendCursor)\n",
+	"local Buffer = buffer.create(Cursor())\n",
+	"buffer.copy(Buffer, 0, State.SendBuffer, 0, Cursor())\n",
 }
 
 local IGNORED_TYPES_IN_SHARED = {
@@ -397,7 +397,7 @@ local function AddTrackedWrite(
 		`if not BeforeSend("{Name}", "{Reliability}", {Target or "nil"}) then DropPacket({Target or "nil"}, "{Reliability}", "MiddlewareRejected") return end`
 	)
 	Block:Line("RuntimeSupport.QueueCapabilityHandshake(nil)")
-	Block:Line("local PreviousCursor = SendCursor")
+	Block:Line("local PreviousCursor = Cursor()")
 	if PredictionId then
 		Block:Line("local PreviousPredictionId = SendPredictionId")
 		Block:Line(`SendPredictionId = {PredictionId}`)
@@ -406,9 +406,9 @@ local function AddTrackedWrite(
 	if PredictionId then
 		Block:Line("SendPredictionId = PreviousPredictionId")
 	end
-	Block:Line(`local EventSize = SendCursor - PreviousCursor`)
+	Block:Line(`local EventSize = Cursor() - PreviousCursor`)
 	Block:Line(
-		`if not RuntimeSupport.RecordQueuedEvent({Target or "nil"}, "{Reliability}", EventSize, "{Priority or "Gameplay"}") then SendCursor = PreviousCursor return end`
+		`if not RuntimeSupport.RecordQueuedEvent({Target or "nil"}, "{Reliability}", EventSize, "{Priority or "Gameplay"}") then Rewind(PreviousCursor) return end`
 	)
 	if CoalesceKey then
 		Block:Line(
@@ -710,7 +710,7 @@ function Declarations.Enum(Declaration: Parser.Enum, Read: Blocks.Block, Write: 
 			Write = Write:Branch("Conditional", Variable, `"{EnumItem}"`, "Equals")
 		end
 
-		Write:Line(`buffer.writeu8(SendBuffer, {Allocation}, {Index - 1})`)
+		Write:Line(`buffer.writeu8(State.SendBuffer, {Allocation}, {Index - 1})`)
 	end
 	Write:Branch("Default"):Line(`error(\`Unexpected enum: \{{Variable}\}, expected one of {Literal}.\`)`):End()
 end
@@ -800,7 +800,7 @@ function Declarations.TagEnum(Declaration: Parser.TagEnum, Read: Blocks.Block, W
 			Write = Write:Branch("Conditional", TagIndex, Name, "Equals")
 		end
 
-		Write:_lineFront(`buffer.writeu8(SendBuffer, {Allocation}, {Index - 1})`)
+		Write:_lineFront(`buffer.writeu8(State.SendBuffer, {Allocation}, {Index - 1})`)
 		Write:Advance(1)
 
 		Generators.UserType(Variant, Read, Write, Variable)
@@ -1046,17 +1046,17 @@ function Declarations.Event(Declaration: Parser.Event)
 				Value.Priority,
 				Value.CoalesceKey
 			)
-			Fire:Line("local Buffer = buffer.create(SendCursor)")
-			Fire:Line("buffer.copy(Buffer, 0, SendBuffer, 0, SendCursor)")
+			Fire:Line("local Buffer = buffer.create(Cursor())")
+			Fire:Line("buffer.copy(Buffer, 0, State.SendBuffer, 0, Cursor())")
 			Fire:Compare(
-				"RuntimeConfig.MaxUnreliablePacketBytes > 0 and SendCursor",
+				"RuntimeConfig.MaxUnreliablePacketBytes > 0 and Cursor()",
 				"RuntimeConfig.MaxUnreliablePacketBytes",
 				"Greater"
 			)
-				:Line(`DropPacket("Client", "Unreliable", "MaxPacketBytes", SendCursor)`)
+				:Line(`DropPacket("Client", "Unreliable", "MaxPacketBytes", Cursor())`)
 				:Branch("Default")
-				:Line("Unreliable:FireServer(Buffer, InstancePayload(SendInstances))")
-				:Line(`TrackSend("Unreliable", SendCursor, nil)`)
+				:Line("Unreliable:FireServer(Buffer, InstancePayload(State.SendInstances))")
+				:Line(`TrackSend("Unreliable", Cursor(), nil)`)
 				:End()
 			Fire:Line("Load(Previous)")
 		end
@@ -1095,17 +1095,17 @@ function Declarations.Event(Declaration: Parser.Event)
 					Value.Priority,
 					Value.CoalesceKey
 				)
-				Predict:Line("local Buffer = buffer.create(SendCursor)")
-				Predict:Line("buffer.copy(Buffer, 0, SendBuffer, 0, SendCursor)")
+				Predict:Line("local Buffer = buffer.create(Cursor())")
+				Predict:Line("buffer.copy(Buffer, 0, State.SendBuffer, 0, Cursor())")
 				Predict:Compare(
-					"RuntimeConfig.MaxUnreliablePacketBytes > 0 and SendCursor",
+					"RuntimeConfig.MaxUnreliablePacketBytes > 0 and Cursor()",
 					"RuntimeConfig.MaxUnreliablePacketBytes",
 					"Greater"
 				)
-					:Line(`DropPacket("Client", "Unreliable", "MaxPacketBytes", SendCursor)`)
+					:Line(`DropPacket("Client", "Unreliable", "MaxPacketBytes", Cursor())`)
 					:Branch("Default")
-					:Line("Unreliable:FireServer(Buffer, InstancePayload(SendInstances))")
-					:Line(`TrackSend("Unreliable", SendCursor, nil)`)
+					:Line("Unreliable:FireServer(Buffer, InstancePayload(State.SendInstances))")
+					:Line(`TrackSend("Unreliable", Cursor(), nil)`)
 					:End()
 				Predict:Line("Load(Previous)")
 			end
@@ -1145,14 +1145,14 @@ function Declarations.Event(Declaration: Parser.Event)
 			)
 			Fire:Lines(UNRELIABLE_BODY, 1)
 			Fire:Compare(
-				"RuntimeConfig.MaxUnreliablePacketBytes > 0 and SendCursor",
+				"RuntimeConfig.MaxUnreliablePacketBytes > 0 and Cursor()",
 				"RuntimeConfig.MaxUnreliablePacketBytes",
 				"Greater"
 			)
-				:Line(`DropPacket(Player, "Unreliable", "MaxPacketBytes", SendCursor)`)
+				:Line(`DropPacket(Player, "Unreliable", "MaxPacketBytes", Cursor())`)
 				:Branch("Default")
-				:Line("Unreliable:FireClient(Player, Buffer, InstancePayload(SendInstances))")
-				:Line(`TrackSend("Unreliable", SendCursor, Player)`)
+				:Line("Unreliable:FireClient(Player, Buffer, InstancePayload(State.SendInstances))")
+				:Line(`TrackSend("Unreliable", Cursor(), Player)`)
 				:End()
 		end
 		Fire:End()
@@ -1188,14 +1188,14 @@ function Declarations.Event(Declaration: Parser.Event)
 			)
 			FireAll:Lines(UNRELIABLE_BODY, 1)
 			FireAll:Compare(
-				"RuntimeConfig.MaxUnreliablePacketBytes > 0 and SendCursor",
+				"RuntimeConfig.MaxUnreliablePacketBytes > 0 and Cursor()",
 				"RuntimeConfig.MaxUnreliablePacketBytes",
 				"Greater"
 			)
-				:Line(`DropPacket(nil, "Unreliable", "MaxPacketBytes", SendCursor)`)
+				:Line(`DropPacket(nil, "Unreliable", "MaxPacketBytes", Cursor())`)
 				:Branch("Default")
-				:Line("Unreliable:FireAllClients(Buffer, InstancePayload(SendInstances))")
-				:Line(`TrackSend("Unreliable", SendCursor, nil)`)
+				:Line("Unreliable:FireAllClients(Buffer, InstancePayload(State.SendInstances))")
+				:Line(`TrackSend("Unreliable", Cursor(), nil)`)
 				:End()
 		end
 		FireAll:End()
@@ -1231,15 +1231,15 @@ function Declarations.Event(Declaration: Parser.Event)
 			)
 			FireList:Lines(UNRELIABLE_BODY, 1)
 			FireList:Compare(
-				"RuntimeConfig.MaxUnreliablePacketBytes > 0 and SendCursor",
+				"RuntimeConfig.MaxUnreliablePacketBytes > 0 and Cursor()",
 				"RuntimeConfig.MaxUnreliablePacketBytes",
 				"Greater"
 			)
-				:Line(`DropPacket(nil, "Unreliable", "MaxPacketBytes", SendCursor)`)
+				:Line(`DropPacket(nil, "Unreliable", "MaxPacketBytes", Cursor())`)
 				:Branch("Default")
 				:Iterator("_", "Player", "List")
-				:Line("Unreliable:FireClient(Player, Buffer, InstancePayload(SendInstances))")
-				:Line(`TrackSend("Unreliable", SendCursor, Player)`)
+				:Line("Unreliable:FireClient(Player, Buffer, InstancePayload(State.SendInstances))")
+				:Line(`TrackSend("Unreliable", Cursor(), Player)`)
 				:End()
 				:End()
 		end
@@ -1281,18 +1281,18 @@ function Declarations.Event(Declaration: Parser.Event)
 			)
 			FireExcept:Lines(UNRELIABLE_BODY, 1)
 			FireExcept:Compare(
-				"RuntimeConfig.MaxUnreliablePacketBytes > 0 and SendCursor",
+				"RuntimeConfig.MaxUnreliablePacketBytes > 0 and Cursor()",
 				"RuntimeConfig.MaxUnreliablePacketBytes",
 				"Greater"
 			)
-				:Line(`DropPacket(nil, "Unreliable", "MaxPacketBytes", SendCursor)`)
+				:Line(`DropPacket(nil, "Unreliable", "MaxPacketBytes", Cursor())`)
 				:Branch("Default")
 				:Iterator("_", "Player", "Players:GetPlayers()")
 				:Compare("Player", "Except", "Equals")
 				:Line("continue")
 				:End()
-				:Line("Unreliable:FireClient(Player, Buffer, InstancePayload(SendInstances))")
-				:Line(`TrackSend("Unreliable", SendCursor, Player)`)
+				:Line("Unreliable:FireClient(Player, Buffer, InstancePayload(State.SendInstances))")
+				:Line(`TrackSend("Unreliable", Cursor(), Player)`)
 				:End()
 				:End()
 		end
@@ -1329,15 +1329,15 @@ function Declarations.Event(Declaration: Parser.Event)
 			)
 			FireGroup:Lines(UNRELIABLE_BODY, 1)
 			FireGroup:Compare(
-				"RuntimeConfig.MaxUnreliablePacketBytes > 0 and SendCursor",
+				"RuntimeConfig.MaxUnreliablePacketBytes > 0 and Cursor()",
 				"RuntimeConfig.MaxUnreliablePacketBytes",
 				"Greater"
 			)
-				:Line(`DropPacket(GroupName, "Unreliable", "MaxPacketBytes", SendCursor)`)
+				:Line(`DropPacket(GroupName, "Unreliable", "MaxPacketBytes", Cursor())`)
 				:Branch("Default")
 				:Iterator("_", "Player", "GetGroupPlayers(GroupName)")
-				:Line("Unreliable:FireClient(Player, Buffer, InstancePayload(SendInstances))")
-				:Line(`TrackSend("Unreliable", SendCursor, Player)`)
+				:Line("Unreliable:FireClient(Player, Buffer, InstancePayload(State.SendInstances))")
+				:Line(`TrackSend("Unreliable", Cursor(), Player)`)
 				:End()
 				:End()
 		end
@@ -1474,9 +1474,9 @@ function Declarations.Function(Declaration: Parser.Function)
 				:Compare("Success", "true", "Not")
 				:Line(`local Frame = BeginMessage({Index})`)
 				:Line("local InvocationOffset = Allocate(1)")
-				:Line("buffer.writeu8(SendBuffer, InvocationOffset, InvocationIdentifier)")
+				:Line("buffer.writeu8(State.SendBuffer, InvocationOffset, InvocationIdentifier)")
 				:Line("local SuccessOffset = Allocate(1)")
-				:Line("buffer.writeu8(SendBuffer, SuccessOffset, 0)")
+				:Line("buffer.writeu8(State.SendBuffer, SuccessOffset, 0)")
 				:Line("EndMessage(Frame)")
 				:Line(`warn(\`"{Name}" encountered an error, \{Error\}\`)`)
 				:Branch("Default")
@@ -1516,9 +1516,9 @@ function Declarations.Function(Declaration: Parser.Function)
 			:Line(
 				`RegisterInvocation(InvocationIdentifier, coroutine.running(), "{Name}", {InvokeMaxPending}, {InvokeTimeout})`
 			)
-			:Line("local PreviousCursor = SendCursor")
+			:Line("local PreviousCursor = Cursor()")
 			:Line(`{Util.GetPath(DataIdentifier, true, Scope)}({DataArguments}, InvocationIdentifier)`)
-			:Line(`TrackEventSend("{Name}", "Reliable", SendCursor - PreviousCursor, nil, table.pack({DataArguments}))`)
+			:Line(`TrackEventSend("{Name}", "Reliable", Cursor() - PreviousCursor, nil, table.pack({DataArguments}))`)
 			:Line(`local Success, {ReturnValues} = coroutine.yield()`)
 			:Compare("Success", "true", "Not")
 			:Line(`error(InvocationErrorMessage({Error}, {ReturnArguments}))`)
@@ -1743,14 +1743,14 @@ function Declarations.Channel(Declaration: Parser.Channel)
 				)
 				FunctionBlock:Lines(UNRELIABLE_BODY, 1)
 				FunctionBlock:Compare(
-					"RuntimeConfig.MaxUnreliablePacketBytes > 0 and SendCursor",
+					"RuntimeConfig.MaxUnreliablePacketBytes > 0 and Cursor()",
 					"RuntimeConfig.MaxUnreliablePacketBytes",
 					"Greater"
 				)
-					:Line(`DropPacket({Target}, "Unreliable", "MaxPacketBytes", SendCursor)`)
+					:Line(`DropPacket({Target}, "Unreliable", "MaxPacketBytes", Cursor())`)
 					:Branch("Default")
-					:Line(`Unreliable:FireClient({Target}, Buffer, InstancePayload(SendInstances))`)
-					:Line(`TrackSend("Unreliable", SendCursor, {Target})`)
+					:Line(`Unreliable:FireClient({Target}, Buffer, InstancePayload(State.SendInstances))`)
+					:Line(`TrackSend("Unreliable", Cursor(), {Target})`)
 					:End()
 			end
 		end
@@ -2400,8 +2400,8 @@ function Generators.Export(Declaration: Type)
 	}, 1)
 
 	--> Trim buffer
-	Write:Line("local Result = buffer.create(SendCursor)")
-	Write:Line("buffer.copy(Result, 0, SendBuffer, 0, SendCursor)")
+	Write:Line("local Result = buffer.create(Cursor())")
+	Write:Line("buffer.copy(Result, 0, State.SendBuffer, 0, Cursor())")
 
 	Write:Line(`Load(Previous)`)
 

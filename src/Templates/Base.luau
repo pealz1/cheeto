@@ -27,6 +27,7 @@ local RecieveFrameEnd = 0
 local State = {
     SendBuffer = SendBuffer,
     RecieveBuffer = RecieveBuffer,
+    SendInstances = SendInstances,
 }
 local RecieveFrameInstanceEnd = 0
 local RecievePredictionId: number? = nil
@@ -2144,6 +2145,18 @@ function Allocate(Bytes: number)
     return RawAllocate(Bytes)
 end
 
+--> Per-event accessors for the generated event wrappers: they read the cursor to
+--> size an event and rewind it when the queue rejects one. Deliberately not
+--> mirrored into State -- the cursor moves on every allocation, and a table
+--> write per field would cost more than these calls do per event.
+local function Cursor(): number
+    return SendCursor
+end
+
+local function Rewind(To: number)
+    SendCursor = To
+end
+
 local function WriteBit(Value: boolean)
     if not UseBitPacking() then
         local Offset = RawAllocate(1)
@@ -3194,6 +3207,7 @@ local function Load(Save: BufferSave?)
         SendBuffer = Save.Buffer
         State.SendBuffer = Save.Buffer
         SendInstances = Save.Instances
+        State.SendInstances = Save.Instances
         SendBitByte = Save.BitByte
         SendBitCount = Save.BitCount
         SendStringIds = Save.StringIds
@@ -3207,6 +3221,7 @@ local function Load(Save: BufferSave?)
     SendBuffer = AcquireBuffer(64)
     State.SendBuffer = SendBuffer
     SendInstances = {}
+    State.SendInstances = SendInstances
     SendBitByte = 0
     SendBitCount = 0
     SendStringIds = {}
