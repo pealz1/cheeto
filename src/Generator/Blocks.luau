@@ -216,7 +216,9 @@ function Block.Loop(self: Block, Counter: string, Length: string): Block
 end
 
 function Block.While(self: Block, Condition: string): Block
-	self:Line(`while ({Condition}) do`)
+	--> unparenthesised to match Compare/Iterator, and because the parentheses
+	--> tripped selene's parenthese_conditions lint in every generated module
+	self:Line(`while {Condition} do`)
 	return Block.new(self)
 end
 

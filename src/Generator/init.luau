@@ -429,7 +429,10 @@ local function PushRuntimeApi(Target: Builder.Builder, Indent: number, ReplayRaw
 	Target.Push(`Protocol = table.freeze(\{`, 0, Indent)
 	Target.Push(`Info = RuntimeSupport.ProtocolInfo,`, 0, Indent + 1)
 	Target.Push(`QueueHandshake = RuntimeSupport.QueueCapabilityHandshake,`, 0, Indent + 1)
-	Target.Push(`Peers = PeerCapabilities,`, 0, Indent + 1)
+	--> was a bare `PeerCapabilities`, which is not a global anywhere: the table
+	--> lives on RuntimeState, so Protocol.Peers resolved to nil in every
+	--> generated module.
+	Target.Push(`Peers = RuntimeState.PeerCapabilities,`, 0, Indent + 1)
 	Target.Push(`}),`, 0, Indent)
 	Target.Push(`Transport = table.freeze(\{`, 0, Indent)
 	Target.Push(`Errors = TransportError,`, 0, Indent + 1)
