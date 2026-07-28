@@ -283,6 +283,7 @@ local function GetEventBody(Channel: string): { string }
 	table.move({
 		"RecieveCursor = 0\n",
 		"RecieveBuffer = Buffer\n",
+		"State.RecieveBuffer = Buffer\n",
 		"RecieveInstanceCursor = 0\n",
 		"RecieveBitByte = 0\n",
 		"RecieveBitCount = 0\n",
@@ -2351,6 +2352,7 @@ function Generators.Export(Declaration: Type)
 		"local PreviousPredictionId = RecievePredictionId\n",
 		"RecieveCursor = 0\n",
 		"RecieveBuffer = Buffer\n",
+		"State.RecieveBuffer = Buffer\n",
 		"RecieveSize = buffer.len(Buffer)\n",
 		"RecieveFrameEnd = 0\n",
 		"RecieveFrameInstanceEnd = 0\n",
@@ -2384,6 +2386,7 @@ function Generators.Export(Declaration: Type)
 	Read:Lines({
 		"RecieveCursor = PreviousCursor\n",
 		"RecieveBuffer = PreviousBuffer\n",
+		"State.RecieveBuffer = PreviousBuffer\n",
 		"RecieveSize = PreviousSize\n",
 		"RecieveFrameEnd = PreviousFrameEnd\n",
 		"RecieveFrameInstanceEnd = PreviousFrameInstanceEnd\n",

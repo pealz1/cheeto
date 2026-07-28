@@ -28,8 +28,11 @@ type AssertPrefab = {
 
 type AssertGenerator = (Variable: string, ...any) -> AssertPrefab
 
-local SEND_BUFFER = "SendBuffer"
-local RECIEVE_BUFFER = "RecieveBuffer"
+--> Generated serdes goes through the runtime's State table, not the runtime's
+--> locals: a buffer swapped on growth would otherwise leave stale references
+--> once the runtime lives in its own module. One table index per access.
+local SEND_BUFFER = "State.SendBuffer"
+local RECIEVE_BUFFER = "State.RecieveBuffer"
 local SEND_POSITION = "SendOffset"
 
 local BYTE = 1

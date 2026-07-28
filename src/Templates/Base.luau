@@ -18,6 +18,16 @@ local RecieveBitByte = 0
 local RecieveBitCount = 0
 local RecieveMessageStart = 0
 local RecieveFrameEnd = 0
+
+--> The generated serdes reads its buffers through this table rather than closing
+--> over the locals above, so the runtime can live in a separate ModuleScript
+--> without handing out references that go stale. The runtime keeps using the
+--> locals on its own hot path and only mirrors here when a buffer is actually
+--> swapped -- growth and packet boundaries, not per field.
+local State = {
+    SendBuffer = SendBuffer,
+    RecieveBuffer = RecieveBuffer,
+}
 local RecieveFrameInstanceEnd = 0
 local RecievePredictionId: number? = nil
 
@@ -2095,6 +2105,7 @@ local function RawAllocate(Bytes: number)
         buffer.copy(Buffer, 0, SendBuffer, 0, SendCursor)
         ReleaseBuffer(SendBuffer)
         SendBuffer = Buffer
+        State.SendBuffer = Buffer
     end
     SendSize = buffer.len(SendBuffer)
 
@@ -2103,6 +2114,7 @@ local function RawAllocate(Bytes: number)
         buffer.copy(Buffer, 0, SendBuffer, 0, math.min(SendCursor, buffer.len(SendBuffer)))
         ReleaseBuffer(SendBuffer)
         SendBuffer = Buffer
+        State.SendBuffer = Buffer
         SendSize = buffer.len(SendBuffer)
     end
 
@@ -3180,6 +3192,7 @@ local function Load(Save: BufferSave?)
         SendCursor = Save.Cursor
         SendOffset = Save.Cursor
         SendBuffer = Save.Buffer
+        State.SendBuffer = Save.Buffer
         SendInstances = Save.Instances
         SendBitByte = Save.BitByte
         SendBitCount = Save.BitCount
@@ -3192,6 +3205,7 @@ local function Load(Save: BufferSave?)
     SendCursor = 0
     SendOffset = 0
     SendBuffer = AcquireBuffer(64)
+    State.SendBuffer = SendBuffer
     SendInstances = {}
     SendBitByte = 0
     SendBitCount = 0
