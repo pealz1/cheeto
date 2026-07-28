@@ -1652,6 +1652,41 @@ function RuntimeSupport.CreateConnection(Config: {[string]: any}?)
         return Disconnect
     end
 
+    --> State writers mirror `Send`: with a Target the player is prefixed for you,
+    --> without one you pass it yourself. `Flush` is the exception -- its plain name
+    --> is the broadcast form, so the targeted variant has to be named explicitly.
+    local StateWriters = {
+        SetState = { Targeted = { "Set" }, Broadcast = { "Set" }, Verb = "written" },
+        PatchState = { Targeted = { "Patch" }, Broadcast = { "Patch" }, Verb = "patched" },
+        ClearState = { Targeted = { "Clear" }, Broadcast = { "Clear" }, Verb = "cleared" },
+        FlushState = { Targeted = { "FlushPlayer", "Flush" }, Broadcast = { "FlushAll", "Flush" }, Verb = "flushed" },
+    }
+
+    for MethodName, Spec in StateWriters do
+        Connection[MethodName] = function(self, Name: string, ...: any): ...any
+            AssertConnected()
+            local Channel = ResolveState(Name)
+            local Candidates = if self.Target ~= nil then Spec.Targeted else Spec.Broadcast
+
+            local Writer
+            for _, Candidate in Candidates do
+                if type(Channel[Candidate]) == "function" then
+                    Writer = Channel[Candidate]
+                    break
+                end
+            end
+
+            if Writer == nil then
+                error(`[Cheeto]: Connection state "{Name}" cannot be {Spec.Verb} on this side.`, 2)
+            end
+
+            if self.Target ~= nil then
+                return Writer(self.Target, ...)
+            end
+            return Writer(...)
+        end
+    end
+
     function Connection:IsConnected(): boolean
         return self.Connected
     end

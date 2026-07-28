@@ -104,6 +104,27 @@ local currentUI = connection:GetState("UI")
 
 For server-side incoming events, generated listeners still receive the sending player. A target does not filter incoming listeners; keep authorization in Cheeto policies or check the player inside the handler.
 
+## Push State Through The Connection
+
+`SetState`, `PatchState`, `ClearState`, and `FlushState` write to a bound channel so a controller can push an update without reaching around the connection for the raw endpoint. They follow the same targeting rule as `Send`: with a `Target` the player is supplied for you.
+
+```lua copy
+connection:SetState("UI", { Visible = true, Title = "Welcome" })
+connection:PatchState("UI", { Title = "Ready" })
+connection:FlushState("UI")
+```
+
+Without a `Target`, pass the player yourself, exactly as you would to `Send`:
+
+```lua copy
+local connection = Network.Connection.new({ State = { UI = Network.UI } })
+
+connection:SetState("UI", player, { Visible = true, Title = "Welcome" })
+connection:FlushState("UI") -- no target, so this flushes every subscriber
+```
+
+Writes are server-only. Client channels are read-only, so `SetState` on a client connection errors rather than silently doing nothing.
+
 ## Lifecycle And Late Binding
 
 Connections track every subscription created by `On`, `Once`, and `OnState`. Tear down the connection when its controller group is no longer needed:

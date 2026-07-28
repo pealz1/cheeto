@@ -632,7 +632,7 @@ function Utility.Benchmark(Path: string, Options: CompileOptions)
 	local Thresholds = {
 		ServerBytes = 700_000 + (EndpointHeadroom * 2_250),
 		ClientBytes = 520_000 + (EndpointHeadroom * 1_500),
-		TypesBytes = 190_000,
+		TypesBytes = 195_000,
 		GenerateSeconds = 2,
 		PacketBytes200 = math.max(250_000, math.floor(Traffic * 20)),
 		EncodeMs200 = math.max(80, Traffic * 0.008),

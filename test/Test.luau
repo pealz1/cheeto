@@ -920,6 +920,61 @@ RunClosure("Controller Connection Routes And State", function()
 	end), "Expected sends after disconnect to fail.")
 end)
 
+RunClosure("Controller Connection State Writes", function()
+	local Calls = {}
+	local Target = { Name = "Player" }
+
+	local function Channel()
+		return {
+			Set = function(...)
+				table.insert(Calls, { "Set", ... })
+			end,
+			Patch = function(...)
+				table.insert(Calls, { "Patch", ... })
+			end,
+			Clear = function(...)
+				table.insert(Calls, { "Clear", ... })
+			end,
+			FlushPlayer = function(...)
+				table.insert(Calls, { "FlushPlayer", ... })
+			end,
+			FlushAll = function(...)
+				table.insert(Calls, { "FlushAll", ... })
+			end,
+		}
+	end
+
+	--> Targeted: the player is prefixed for you, exactly like Send.
+	local Targeted = Client.Connection.new({ Target = Target, State = { UI = Channel() } })
+	Targeted:SetState("UI", { Visible = true })
+	assert(Calls[1][1] == "Set" and Calls[1][2] == Target, "Expected SetState to prefix the connection target.")
+	Targeted:PatchState("UI", { Visible = false })
+	assert(Calls[2][1] == "Patch" and Calls[2][2] == Target, "Expected PatchState to prefix the connection target.")
+	Targeted:ClearState("UI")
+	assert(Calls[3][1] == "Clear" and Calls[3][2] == Target, "Expected ClearState to prefix the connection target.")
+	Targeted:FlushState("UI")
+	assert(Calls[4][1] == "FlushPlayer", "Expected a targeted flush to use the per-player flush.")
+
+	--> Untargeted: caller supplies the player, and flush falls back to broadcast.
+	table.clear(Calls)
+	local Broadcast = Client.Connection.new({ State = { UI = Channel() } })
+	Broadcast:SetState("UI", Target, { Visible = true })
+	assert(Calls[1][2] == Target, "Expected an untargeted write to pass the caller's arguments through.")
+	Broadcast:FlushState("UI")
+	assert(Calls[2][1] == "FlushAll", "Expected an untargeted flush to broadcast.")
+
+	--> A read-only channel must refuse writes rather than silently no-op.
+	local ReadOnly = Client.Connection.new({ State = { UI = { Get = function() end, On = function() end } } })
+	assert(not pcall(function()
+		ReadOnly:SetState("UI", {})
+	end), "Expected writes to a read-only channel to error.")
+
+	ReadOnly:Disconnect()
+	assert(not pcall(function()
+		ReadOnly:SetState("UI", {})
+	end), "Expected state writes after disconnect to fail.")
+end)
+
 FireAndExpect("Reliable Client", Client.ReliableClient, Server.ReliableClient, 1)
 FireAndExpect("Unreliable Client", Client.UnreliableClient, Server.UnreliableClient, 1)
 FireAndExpect("Empty Reliable Client", Client.ClientEmptyEvent, Server.ClientEmptyEvent, nil)
