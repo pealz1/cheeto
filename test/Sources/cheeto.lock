@@ -66,10 +66,12 @@
 		"Tuple": { "id": 53, "kind": "Event", "deprecated": false, "reserved": false },
 		"TupleUnreliable": { "id": 54, "kind": "Event", "deprecated": false, "reserved": false },
 		"TupleFunction": { "id": 55, "kind": "Function", "deprecated": false, "reserved": false },
-		"InScopeEvent": { "id": 56, "kind": "Event", "deprecated": false, "reserved": false },
-		"InAnotherScopeEvent": { "id": 57, "kind": "Event", "deprecated": false, "reserved": false },
+		"AuthedClient": { "id": 56, "kind": "Event", "deprecated": false, "reserved": false },
+		"UnknownAuthClient": { "id": 57, "kind": "Event", "deprecated": false, "reserved": false },
 		"InScopeEvent": { "id": 58, "kind": "Event", "deprecated": false, "reserved": false },
-		"Event": { "id": 59, "kind": "Event", "deprecated": false, "reserved": false }
+		"InAnotherScopeEvent": { "id": 59, "kind": "Event", "deprecated": false, "reserved": false },
+		"InScopeEvent": { "id": 60, "kind": "Event", "deprecated": false, "reserved": false },
+		"Event": { "id": 61, "kind": "Event", "deprecated": false, "reserved": false }
 	},
 	"typeHashes": {
 		"TestStruct": "Struct:TestStruct",

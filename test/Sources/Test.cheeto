@@ -574,6 +574,28 @@ function TupleFunction {
     Return: (Instance?, Instance, u16?, States, u8)
 }
 
+--> Auth coverage. Appended here on purpose: WireIds are assigned in declaration
+--> order, so inserting these earlier shifts every later id and breaks the golden
+--> wire snapshots.
+event AuthedClient {
+    From: Client,
+    Type: Reliable,
+    Call: SingleSync,
+    Auth: "unittest",
+    Data: u8
+}
+
+--> Deliberately names a rule nothing registers. An unregistered auth rule must
+--> drop this event and NOTHING else: it shares a packet with AuthedClient in the
+--> test, which has to still arrive.
+event UnknownAuthClient {
+    From: Client,
+    Type: Reliable,
+    Call: SingleSync,
+    Auth: "unittest-never-registered",
+    Data: u8
+}
+
 scope AnotherScope {
     event InScopeEvent {
         From: Server,

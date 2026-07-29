@@ -25,6 +25,7 @@ local RUNTIME_EXPORTS = {
 	"AckPrediction",
 	"AddToGroup",
 	"Allocate",
+	"AwaitInvocation",
 	"BeforeSend",
 	"BeginMessage",
 	"BeginPrediction",
@@ -77,6 +78,7 @@ local RUNTIME_EXPORTS = {
 	"Reliable",
 	"RemoveFromGroup",
 	"ReportMetrics",
+	"ResumeInvocation",
 	"RollbackPrediction",
 	"RunHooks",
 	"RunService",
@@ -130,12 +132,25 @@ local SYNC_VALIDATION_BODY = {
 	"local SerdesThread: thread?\n",
 }
 
+--> SerdesThread is set ONLY while a Sync listener is on the stack (see the
+--> CallListener block) and cleared the moment it returns, so finding it still
+--> suspended here is real proof that a Sync handler yielded.
+-->
+--> It used to be assigned `coroutine.running()` for every packet and never
+--> cleared, which made any thread that had ever processed a packet a standing
+--> target: the next packet closed it if it happened to be suspended, for ANY
+--> reason. A thread that fired a Cheeto event and later waited on something
+--> unrelated got killed mid-wait -- silently, and uncatchably, because
+--> coroutine.close is not an error.
+-->
+--> The close is gone with it. The diagnostic is the warning; aborting somebody
+--> else's coroutine half-way through is not a diagnostic, and a yielded handler
+--> is already owned by whatever it yielded on.
 local EVENT_SYNC_VALIDATION = {
 	`if SerdesThread and coroutine.status(SerdesThread) == "suspended" then\n`,
 	'\twarn(`[Cheeto]: Yielded in a Sync call. Event "{SerdesEvent}" uses a Sync call, consider using an Async call instead.`)\n',
-	"\tcoroutine.close(SerdesThread)\n",
+	"\tSerdesThread = nil\n",
 	"end\n",
-	"SerdesThread = coroutine.running()\n",
 }
 
 local RELIABLE_BODY = {
@@ -967,12 +982,20 @@ function Declarations.Event(Declaration: Parser.Event)
 		do
 			if IsSync and Options.SyncValidation then
 				CallListener = CallListener:Line(`SerdesEvent = "{Declaration.Name}"`)
+				CallListener = CallListener:Line("SerdesThread = coroutine.running()")
 			end
 
 			local PathExpr = IsSingle and Connection or "Listener"
 			local CallExpr = IsSync and `{PathExpr}({ListenerArguments})`
 				or `task.spawn({PathExpr}, {ListenerArguments})`
 			CallListener = CallListener:Line(CallExpr)
+
+			--> Reached only if the listener returned without yielding. If it did
+			--> yield, this line is skipped for now and SerdesThread stays set,
+			--> which is exactly the state the validation above looks for.
+			if IsSync and Options.SyncValidation then
+				CallListener = CallListener:Line("SerdesThread = nil")
+			end
 		end
 
 		AddReceiveGuards(Block, Declaration.Name, Reliability, Value)
@@ -1585,25 +1608,33 @@ function Declarations.Function(Declaration: Parser.Function)
 		Block:Line("local InvocationIdentifier = buffer.readu8(State.RecieveBuffer, Read(1))")
 		Block:Lines(Deserialize.Content, Block.Indent + 1)
 		AddAfterReceive(Block, Name, "Reliable", `table.pack({ReturnArguments})`)
+		--> Through ResumeInvocation, not task.spawn: InvocationIdentifier is a u8
+		--> read straight off the wire, so this is the one resume path an attacker
+		--> can aim. The guard refuses to resume a thread that is not parked on this
+		--> invocation.
 		Block:Line("local Invocation = ClearInvocation(InvocationIdentifier)")
-		Block:Compare("Invocation", "nil", "Not")
-			:Line(`task.spawn(Invocation.Thread, Success, {ReturnArguments})`)
-			:End()
+		Block:Compare("Invocation", "nil", "Not"):Line(`ResumeInvocation(Invocation, Success, {ReturnArguments})`):End()
 
 		local Error = `"There was an exception while processing \\"{Name}\\"."`
 		local InvokeMaxPending = NumberLiteral(Value.MaxPendingInvokes, Options.MaxPendingInvokes or 256)
 		local InvokeTimeout = NumberLiteral(Value.InvokeTimeoutSeconds, Options.InvokeTimeoutSeconds or 0)
+		--> Register AFTER the payload is written, never before. Serialization can
+		--> throw (a value out of range, a dead Instance, a malformed argument), and
+		--> registering first left an entry in Calls whose thread had already
+		--> unwound past the yield. The identifier is a u8 straight off the wire, so
+		--> a later packet naming that stale id resumed a thread that was by then
+		--> parked somewhere else entirely -- stealing that resume and hanging it.
 		local Contents = Blocks.Block()
 			:Line("local InvocationIdentifier = Invoke()")
-			:Line(
-				`RegisterInvocation(InvocationIdentifier, coroutine.running(), "{Name}", {InvokeMaxPending}, {InvokeTimeout})`
-			)
 			:Line("local PreviousCursor = Frame.Cursor()")
 			:Line(`{Util.GetPath(DataIdentifier, true, Scope)}({DataArguments}, InvocationIdentifier)`)
 			:Line(
 				`TrackEventSend("{Name}", "Reliable", Frame.Cursor() - PreviousCursor, nil, table.pack({DataArguments}))`
 			)
-			:Line(`local Success, {ReturnValues} = coroutine.yield()`)
+			:Line(
+				`RegisterInvocation(InvocationIdentifier, coroutine.running(), "{Name}", {InvokeMaxPending}, {InvokeTimeout})`
+			)
+			:Line(`local Success, {ReturnValues} = AwaitInvocation(InvocationIdentifier)`)
 			:Compare("Success", "true", "Not")
 			:Line(`error(InvocationErrorMessage({Error}, {ReturnArguments}))`)
 			:End()
@@ -1619,14 +1650,16 @@ function Declarations.Function(Declaration: Parser.Function)
 			local OnCancel =
 				Blocks.Function("", ""):Line("ClearInvocation(InvocationIdentifier)"):End():Wrap("OnCancel(", ")")
 
-			local Promise = Blocks.Function("", "Resolve, Reject, OnCancel")
+			local Promise = Blocks
+				.Function("", "Resolve, Reject, OnCancel")
 				:Line("local InvocationIdentifier = Invoke()")
+				:Line(`{Util.GetPath(DataIdentifier, true, Scope)}({DataArguments}, InvocationIdentifier)`)
+				--> After the payload, same reason as the coroutine path above.
 				:Line(
 					`RegisterInvocation(InvocationIdentifier, coroutine.running(), "{Name}", {InvokeMaxPending}, {InvokeTimeout})`
 				)
-				:Line(`{Util.GetPath(DataIdentifier, true, Scope)}({DataArguments}, InvocationIdentifier)`)
 				:Lines(OnCancel.Content, 1)
-				:Line(`local Success, {ReturnValues} = coroutine.yield()`)
+				:Line(`local Success, {ReturnValues} = AwaitInvocation(InvocationIdentifier)`)
 				:Compare("Success", "true", "Not")
 				:Line(`Reject(InvocationErrorMessage({Error}, {ReturnArguments}))`)
 				:Return("")

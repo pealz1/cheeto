@@ -76,7 +76,10 @@ type Invocation = {
     Thread: thread,
     Started: number,
     Name: string,
-    Timeout: number
+    Timeout: number,
+    --> Set by AwaitInvocation immediately before it yields, cleared on resume.
+    --> Proof that Thread is parked on THIS invocation and may be resumed once.
+    Parked: thread?
 }
 
 type MetricBucket = {[string]: number}
@@ -781,6 +784,8 @@ local function UseAuth(RuleName: string, Callback: (any) -> boolean)
     AuthRules[RuleName] = Callback
 end
 
+local UnknownAuthWarned: {[string]: true} = {}
+
 local function CheckAuth(RuleName: string?, Context: any): boolean
     if RuleName == nil or RuleName == "" then
         return true
@@ -788,7 +793,16 @@ local function CheckAuth(RuleName: string?, Context: any): boolean
 
     local Rule = AuthRules[RuleName]
     if Rule == nil then
-        error(`[Cheeto]: Unknown auth rule "{RuleName}".`)
+        --> Fail closed, do NOT raise. This runs per event inside the batched
+        --> receive loop, so raising here would abort the rest of the packet and
+        --> take unrelated events down with it. Matches CheckPolicy, which drops
+        --> on an unregistered policy rather than erroring.
+        if not UnknownAuthWarned[RuleName] then
+            UnknownAuthWarned[RuleName] = true
+            warn(`[Cheeto]: Unknown auth rule "{RuleName}", every packet on it is dropped. Register it with UseAuth.`)
+        end
+        MetricAdd("HookErrors", "Auth")
+        return false
     end
 
     local Success, Result = pcall(Rule, Context)
@@ -844,15 +858,47 @@ local function CheckReplay(Source: any, Name: string, Sequence: number?, Size: n
         Window = {
             Highest = -1,
             Seen = {},
-            Time = {}
+            Time = {},
+            Tracked = 0
         }
         ByName[Name] = Window
     end
 
-    for SeenSequence, SeenAt in Window.Time do
-        if Now - SeenAt >= RuntimeConfig.ReplayStaleSeconds then
-            Window.Seen[SeenSequence] = nil
-            Window.Time[SeenSequence] = nil
+    --> Sweep only once the window is actually full, not on every packet. The
+    --> sweep is O(tracked), and a sender controls how many distinct sequence
+    --> numbers are tracked, so sweeping unconditionally let one peer make every
+    --> later packet on the event more expensive -- quadratic work for a linear
+    --> send rate. Deferring never weakens the check: a duplicate is still
+    --> rejected by Seen while it is remembered, and the sweep only exists to let
+    --> a sequence number be reused once it has gone stale.
+    local Capacity = if RuntimeConfig.ReplayWindowSize > 0 then RuntimeConfig.ReplayWindowSize else 256
+    if Window.Tracked > Capacity then
+        local Kept = 0
+        for SeenSequence, SeenAt in Window.Time do
+            if Now - SeenAt >= RuntimeConfig.ReplayStaleSeconds then
+                Window.Seen[SeenSequence] = nil
+                Window.Time[SeenSequence] = nil
+            else
+                Kept += 1
+            end
+        end
+        Window.Tracked = Kept
+
+        --> Nothing was stale, so the peer is inside the stale window and still
+        --> over capacity. Anything at or below Highest - Capacity is already
+        --> rejected as stale by the check below, so remembering it buys nothing.
+        if Kept > Capacity then
+            local Floor = Window.Highest - Capacity
+            local Remaining = 0
+            for SeenSequence in Window.Time do
+                if SeenSequence <= Floor then
+                    Window.Seen[SeenSequence] = nil
+                    Window.Time[SeenSequence] = nil
+                else
+                    Remaining += 1
+                end
+            end
+            Window.Tracked = Remaining
         end
     end
 
@@ -869,6 +915,7 @@ local function CheckReplay(Source: any, Name: string, Sequence: number?, Size: n
     Window.Highest = math.max(Window.Highest, Sequence)
     Window.Seen[Sequence] = true
     Window.Time[Sequence] = Now
+    Window.Tracked += 1
     return true
 end
 
@@ -3351,6 +3398,46 @@ local function Invoke()
     return Invocation
 end
 
+--> Resuming an invocation is the ONE resume an attacker can aim: the identifier
+--> that selects which invocation to resolve is a u8 read straight off the wire.
+-->
+--> "The entry is in Calls" is not proof that its thread is waiting for it. If
+--> anything throws between taking an identifier and reaching the yield --
+--> serialization of an out-of-range value, a pending-invoke limit, a dead
+--> Instance -- the thread unwinds while the entry survives. Resuming that stale
+--> entry later delivers a resume to a thread that has since parked on something
+--> completely unrelated, consuming the resume its real awaiter needed. The thread
+--> is left dead or hung and the fault surfaces nowhere near the cause.
+-->
+--> So a resume requires positive proof of parking: AwaitInvocation records the
+--> thread on the entry immediately before yielding, and only that recorded thread
+--> is ever resumed, exactly once.
+local function AwaitInvocation(Identifier: number)
+    local Invocation = Calls[Identifier]
+    if Invocation ~= nil then
+        Invocation.Parked = coroutine.running()
+    end
+
+    return coroutine.yield()
+end
+
+local function ResumeInvocation(Invocation: Invocation, Success: boolean, ...)
+    local Parked = Invocation.Parked
+    if Parked == nil or Parked ~= Invocation.Thread then
+        --> Never parked (threw before the yield) or already resumed.
+        MetricAdd("HookErrors", "InvocationNotParked")
+        return
+    end
+
+    if coroutine.status(Parked) ~= "suspended" then
+        MetricAdd("HookErrors", "InvocationNotSuspended")
+        return
+    end
+
+    Invocation.Parked = nil
+    task.spawn(Parked, Success, ...)
+end
+
 local function ExpireInvocations()
     local Now = os.clock()
     for Identifier, Invocation in Calls do
@@ -3364,7 +3451,7 @@ local function ExpireInvocations()
             PendingInvokes = math.max(0, PendingInvokes - 1)
             PendingInvokesByName[Invocation.Name] = math.max(0, (PendingInvokesByName[Invocation.Name] or 1) - 1)
             MetricAdd("InvokeTimeouts", Invocation.Name)
-            task.spawn(Invocation.Thread, false, `[Cheeto]: Invoke timed out after {Timeout} seconds.`)
+            ResumeInvocation(Invocation, false, `[Cheeto]: Invoke timed out after {Timeout} seconds.`)
         end
     end
 end
@@ -3411,7 +3498,7 @@ end
 local function CancelInvocations(Reason: string?)
     for Identifier, Invocation in Calls do
         Calls[Identifier] = nil
-        task.spawn(Invocation.Thread, false, Reason or "[Cheeto]: Invoke was cancelled.")
+        ResumeInvocation(Invocation, false, Reason or "[Cheeto]: Invoke was cancelled.")
     end
 
     table.clear(PendingInvokesByName)

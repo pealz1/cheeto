@@ -5,6 +5,20 @@ local process = require("@lune/process")
 local stdio = require("@lune/stdio")
 local task = require("@lune/task")
 
+--> A silent stall used to be indistinguishable from slow work, because the
+--> Heartbeat driver in Shared.luau is a `while true` loop that keeps Lune alive
+--> forever once the main thread is gone. This turns that into a hard failure with
+--> the thread's state attached. Generous on purpose: a passing run is ~14s.
+local MainThread = coroutine.running()
+task.delay(120, function()
+	stdio.write(`\n[{stdio.color("red")}TIMEOUT{stdio.color("reset")}] suite stalled for 120s\n`)
+	stdio.write(`main thread status: {coroutine.status(MainThread)}\n`)
+	if coroutine.status(MainThread) == "dead" then
+		stdio.write("The main thread was killed or finished early -- see TESTING.md.\n")
+	end
+	process.exit(19)
+end)
+
 local Compiler = "init"
 local Sources = fs.readDir("./Sources")
 --> Compile in a deterministic order; fs.readDir ordering is platform dependent
@@ -1707,6 +1721,88 @@ RunClosure("Transport hardening runtime APIs", function()
 	Server.Configure({ RequirePolicies = false })
 	ReleaseViolation()
 	assert(Violations >= 2, "Expected kill-switch and required-policy violations.")
+
+	--> SyncValidation must not kill a bystander. The thread that processes a packet
+	--> containing a Sync event used to be recorded and never cleared, so the NEXT
+	--> packet closed it if it was suspended -- for any reason at all. A thread that
+	--> fired a Cheeto event and then waited on something unrelated was killed
+	--> mid-wait, silently, because coroutine.close is not a catchable error.
+	--> This drove the intermittent suite stall: the main thread waited on a
+	--> `require` and a later packet closed it.
+	Server.Security.RegisterPolicy("damage", function()
+		return true
+	end)
+	local SyncListenerRelease = Server.ReliableClient.On(function() end)
+
+	local Bystander = coroutine.create(function()
+		--> Runs the server's packet processor on THIS thread, which is what got
+		--> recorded, then parks on something that has nothing to do with Cheeto.
+		Client.ReliableClient.Fire(1)
+		Client.StepReplication()
+		coroutine.yield()
+		return "survived"
+	end)
+	assert(coroutine.resume(Bystander))
+	assert(coroutine.status(Bystander) == "suspended", "Expected the bystander to park.")
+
+	--> A second Sync packet: this is the dispatch that used to close the bystander.
+	Client.ReliableClient.Fire(2)
+	Client.StepReplication()
+	task.wait(1 / 30)
+
+	assert(
+		coroutine.status(Bystander) == "suspended",
+		`SyncValidation closed a bystander thread that merely happened to be suspended (status {coroutine.status(
+			Bystander
+		)}).`
+	)
+	local Resumed, Value = coroutine.resume(Bystander)
+	assert(Resumed and Value == "survived", `Bystander could not finish: {tostring(Value)}`)
+	SyncListenerRelease()
+	--> Leave the registry as it was found; later checks assume "damage" is absent.
+	Server.Security.RegisterPolicy("damage", nil :: any)
+
+	--> Auth: a registered rule gates the event, and an UNREGISTERED rule must fail
+	--> closed without raising. CheckAuth used to error() on an unknown rule, which
+	--> propagated out of the batched receive loop and dropped every sibling event
+	--> in the same packet -- so this asserts the sibling survives, not just that
+	--> the bad event is rejected.
+	local AuthAllow = false
+	local AuthedSeen, UnknownAuthSeen = 0, 0
+	Server.UseAuth("unittest", function(Context)
+		assert(Context.Name == "AuthedClient", `Auth context carried the wrong event name: {Context.Name}`)
+		return AuthAllow
+	end)
+	local ReleaseAuthed = Server.AuthedClient.On(function()
+		AuthedSeen += 1
+	end)
+	local ReleaseUnknownAuth = Server.UnknownAuthClient.On(function()
+		UnknownAuthSeen += 1
+	end)
+
+	Client.AuthedClient.Fire(1)
+	Client.StepReplication()
+	task.wait(1 / 30)
+	assert(AuthedSeen == 0, "Expected a denying auth rule to drop the event.")
+
+	AuthAllow = true
+	Client.AuthedClient.Fire(2)
+	Client.StepReplication()
+	task.wait(1 / 30)
+	assert(AuthedSeen == 1, "Expected an allowing auth rule to deliver the event.")
+
+	--> Both fired before a single flush, so they ride ONE packet.
+	Client.UnknownAuthClient.Fire(3)
+	Client.AuthedClient.Fire(4)
+	Client.StepReplication()
+	task.wait(1 / 30)
+	assert(UnknownAuthSeen == 0, "Expected an unregistered auth rule to drop its event.")
+	assert(
+		AuthedSeen == 2,
+		`Unregistered auth rule took its packet-mate down with it: AuthedClient arrived {AuthedSeen} times, expected 2.`
+	)
+	ReleaseAuthed()
+	ReleaseUnknownAuth()
 
 	local ShieldViolations = 0
 	local ReleaseShieldViolation = Server.Security.OnViolation(function(Context)
