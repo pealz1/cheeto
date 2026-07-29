@@ -1,0 +1,134 @@
+# Integrating a Game
+
+Hard-won notes from putting Cheeto into real places. Everything here cost a
+debugging session to learn once; none of it should cost one twice.
+
+## Keep one source of truth, and generate the rest
+
+The failure that gets reported as "the networking just stopped working" is almost
+never the transport. It is two lists that were supposed to agree and quietly
+stopped agreeing.
+
+A real integration ends up with a schema, a group/module manifest, per-event rate
+limits, cooldowns and policy names. If a human maintains more than one of those,
+they will drift. Write **one** spec file and generate every other artifact from
+it, including any manifest your game-side proxy reads. If a comment in your repo
+says a list "MUST stay in sync" with another list, that is a bug waiting to
+happen, not a convention.
+
+A small generator script is enough: a JS object of endpoints emits every
+`.cheeto` schema *and* the manifest block inside the game's `Network.luau`.
+Adding an endpoint is one line in one file.
+
+## Put per-event settings on the event
+
+Side tables keyed by event name (`RATE_OVERRIDES`, `COOLDOWNS`, `POLICIES`, ...)
+read fine with six endpoints and become unreviewable at thirty: you cannot tell
+what an event's actual contract is without grepping five places. Put the settings
+next to the data:
+
+```js
+Jail: { c2s: null, rate: [2, 4], cooldown: 1, policy: "HasCharacter" }
+```
+
+The value of this is not typing fewer characters. It is that the whole contract
+for an endpoint is visible in one line during review.
+
+## Fail-closed things that will silently kill an endpoint
+
+Cheeto deliberately fails closed in several places. That is the right default,
+and it means a typo removes a feature with no error at the call site. The ones
+to know:
+
+| Declaration | If the rule is not registered |
+|---|---|
+| `Policy: "X"` | **Every packet on that event is dropped.** |
+| `PolicyGroup: "X"` | Same. |
+| `Auth: "X"` | **Every packet on that event is dropped**, and one warning is logged per unknown rule name. |
+
+Register the rule in the same change that declares it. If your endpoints are
+split across several generated modules, register on **all of them** -- a policy,
+auth rule or kill switch applied to one module leaves the event live in whichever
+module actually carries it.
+
+Introduce `Auth` on a live game in report-only form first: have the rule record
+and return `true`, watch the logs, and only then enforce. An auth gate that
+depends on a handshake winning a race against the player's first input will drop
+real traffic, and it will do it silently.
+
+## Constraint fields are inputs to policies, not enforcement
+
+`MaxDistance`, `RequireOwnership`, `RequireTeam`, `RequireZone`, `RequireMatch`,
+`RequireInventoryOwnership`, `RequireCharacterState`, `RequireObjectHandle` and
+`RequireServerKnownId` are parsed, validated and handed to your policy in
+`Context.Constraints`. **The runtime enforces none of them.** Declaring one
+without a policy that reads it does nothing at all.
+
+There is a hard limit on what a policy *can* enforce: **policies run before the
+payload is deserialised.** So a policy can act on constraints about the sender
+(`RequireCharacterState` -- is this player's character alive?) and cannot act on
+constraints about the payload (`MaxDistance` -- how far away is the target the
+client named?). Payload-dependent checks belong in the event's handler, which is
+the first place with both the decoded value and the authority to refuse it.
+
+## Anti-replay and idempotency need a sequence number
+
+`ReplayWindowSize`, `ReplayStaleSeconds` and `Idempotency: true` all key on the
+packet's sequence number, and a sequence only reaches the wire when the sender
+attached a prediction id. On an event with no prediction there is nothing that
+identifies one logical call, so there is nothing to deduplicate, and these are
+inert no matter what you set them to.
+
+To bound a one-shot action that carries no sequence, use `CooldownSeconds`. That
+one the runtime enforces by itself, and it rejects *before* deserialising -- which
+is also why it is stricter than a throttle inside your handler.
+
+Always set a cooldown looser than the client's own retry cadence, or a legitimate
+retry gets eaten. If a client re-asks every 2s, a 1s cooldown is right and a 3s
+cooldown silently breaks it.
+
+## Honeypots work because names are not on the wire
+
+Cheeto multiplexes by `WireId`; event names never travel. So the only way to
+discover an endpoint is to read the generated client module -- which is exactly
+what writing an exploit involves. That makes `Honeypot: true` genuinely useful:
+give it an attractive name, never call it from game code, and any inbound traffic
+is proof of a fabricated packet rather than a mistake. The runtime drops it before
+reading the payload and raises a violation.
+
+## Land client-side detection in report-only first
+
+`EnableClientShield` with `ClientShieldKick = false` reports and scores without
+removing anybody. A false positive here ejects a paying player, so watch the
+violation stream from a live server before enabling kicks. The same applies to
+honeypots if you wire them to a kick.
+
+## Studio's 200,000-character script limit
+
+The runtime is the same size whether you declare one event or a hundred, so a
+large surface has to be split across modules, each under the limit. Two things
+follow:
+
+- Set `RuntimeOutput`/`RuntimeRequire` so the runtime is emitted **once** as a
+  shared module instead of inlined into every endpoint module.
+- Check generated sizes as a build step, not at install time. A size check
+  that fails the build is far cheaper than a module Studio rejects on install.
+
+## Do not resume a thread you do not own
+
+Two of the nastiest bugs found in this library were the same mistake in different
+clothes: acting on a thread reference without proof the thread was waiting for
+*you*.
+
+- `SyncValidation` recorded the thread that processed a packet and never cleared
+  it, then called `coroutine.close` on it if it was merely `suspended`. Any thread
+  that had fired an event and later waited on something unrelated could be killed.
+  `coroutine.close` is not an error, so `pcall` catches nothing and the thread
+  simply becomes `dead` far from the cause.
+- An invocation reply selects which pending call to resolve using an identifier
+  read straight off the wire. If anything threw between taking an identifier and
+  reaching the yield, the entry outlived its thread, and a later packet could
+  resume a thread that had since parked on something else.
+
+If you extend the runtime, hold the same line: resume or close a thread only with
+positive proof it is parked where you think it is.

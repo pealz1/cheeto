@@ -53,6 +53,67 @@ cheeto.UseAuth("AlivePlayer", function(context)
 end)
 ```
 
+<Callout type="warning">
+An event naming an auth rule that was never registered has **every packet
+dropped** (one warning is logged per unknown rule name). This is fail-closed by
+design, and it means a typo removes a feature with no error at the call site —
+register the rule in the same change that declares it. If your endpoints are
+split across several generated modules, register on all of them.
+
+Introducing `Auth` on a live game is worth doing report-only first: have the rule
+record and return `true`, watch the logs, then enforce. An auth gate that depends
+on a handshake winning a race against the player's first input will drop real
+traffic silently.
+</Callout>
+
+#### `Honeypot`
+Marks an endpoint nothing legitimate ever calls. Inbound traffic is dropped
+before the payload is read and raises a violation with reason `Honeypot`.
+
+This works because Cheeto multiplexes by `WireId` and event names never reach the
+wire, so the only way to discover the endpoint is to read the generated client
+module — which is what writing an exploit involves. Give it an attractive name and
+never call it from game code.
+
+```cheeto copy
+event AdminSetPower {
+    From: Client,
+    Type: Reliable,
+    Call: SingleAsync,
+    Honeypot: true,
+    Data: f64
+}
+```
+
+Honeypots can be switched off live with `Configure({ EnableHoneypots = false })`.
+
+#### `Idempotency`
+Rejects a duplicate call rather than delivering it twice.
+
+<Callout type="warning">
+The key is the packet's sequence number, and a sequence only reaches the wire
+when the sender attached a prediction id. On an event with no prediction there is
+nothing identifying one logical call, so this is inert. `ReplayWindowSize` and
+`ReplayStaleSeconds` have the same precondition. To bound a one-shot action that
+carries no sequence, use `CooldownSeconds` — the runtime enforces that by itself
+and rejects before deserialising.
+</Callout>
+
+#### `Risk` and the `Require*` fields
+`Risk`, `MaxDistance`, `RequireOwnership`, `RequireTeam`, `RequireZone`,
+`RequireMatch`, `RequireInventoryOwnership`, `RequireCharacterState`,
+`RequireObjectHandle` and `RequireServerKnownId` are parsed and handed to your
+policy in `Context.Constraints`. **The runtime enforces none of them** — they are
+inputs to a policy you write, and declaring one without a policy that reads it
+does nothing.
+
+A policy runs *before the payload is deserialised*, which bounds what it can
+check: constraints about the **sender** are available (`RequireCharacterState`),
+constraints about the **payload** are not (`MaxDistance` — the target the client
+named has not been decoded yet). Enforce payload-dependent constraints in the
+event's handler, the first place with both the decoded value and the authority to
+refuse it.
+
 #### Guard Overrides
 Events can override runtime guardrails:
 
