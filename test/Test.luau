@@ -1804,6 +1804,41 @@ RunClosure("Transport hardening runtime APIs", function()
 	ReleaseAuthed()
 	ReleaseUnknownAuth()
 
+	--> Honeypot: the attribute used to parse and then emit nothing at all, so a
+	--> honeypot endpoint was an ordinary event that happily delivered traffic.
+	local HoneypotSeen, HoneypotViolations = 0, 0
+	local ReleaseHoneypotViolation = Server.Security.OnViolation(function(Context)
+		if Context.Reason == "Honeypot" then
+			HoneypotViolations += 1
+		end
+	end)
+	local ReleaseHoneypot = Server.HoneypotClient.On(function()
+		HoneypotSeen += 1
+	end)
+	Client.HoneypotClient.Fire(9)
+	Client.StepReplication()
+	task.wait(1 / 30)
+	ReleaseHoneypot()
+	ReleaseHoneypotViolation()
+	assert(HoneypotSeen == 0, "Expected a honeypot event to never reach its listener.")
+	assert(HoneypotViolations == 1, "Expected a honeypot hit to raise exactly one violation.")
+
+	--> Idempotency: also enforced by nothing before -- the flag reached policies as
+	--> advice and the runtime ignored it. Same sequence twice must arrive once.
+	local IdempotentSeen = 0
+	local ReleaseIdempotent = Server.IdempotentClient.On(function()
+		IdempotentSeen += 1
+	end)
+	Client.IdempotentClient.Fire(1)
+	Client.StepReplication()
+	task.wait(1 / 30)
+	local AfterFirst = IdempotentSeen
+	Client.IdempotentClient.Fire(1)
+	Client.StepReplication()
+	task.wait(1 / 30)
+	ReleaseIdempotent()
+	assert(AfterFirst == 1, `Expected the first idempotent send to arrive, got {AfterFirst}.`)
+
 	local ShieldViolations = 0
 	local ReleaseShieldViolation = Server.Security.OnViolation(function(Context)
 		if Context.Event == "$clientShield" and Context.Reason == "UnitTestShield" then

@@ -21,9 +21,9 @@ local Players = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
 
 local Config = require(script.Parent.MovementConfig)
-local Suspicion = require(script.Parent.SuspicionScore)
-local SecureChannel = require(script.Parent.SecureChannel)
 local KnockbackForce = require(script.Parent.KnockbackForce)
+local SecureChannel = require(script.Parent.SecureChannel)
+local Suspicion = require(script.Parent.SuspicionScore)
 
 local player = Players.LocalPlayer
 
@@ -70,7 +70,15 @@ local function evaluate(
 	condition: boolean,
 	dt: number,
 	now: number,
-	cfg: { rollback: number, report: number, rate: number?, decay: number, rollbackCooldown: number, reportCooldown: number, add: number? },
+	cfg: {
+		rollback: number,
+		report: number,
+		rate: number?,
+		decay: number,
+		rollbackCooldown: number,
+		reportCooldown: number,
+		add: number?,
+	},
 	onRollback: () -> (),
 	reason: string
 )
@@ -79,7 +87,16 @@ local function evaluate(
 	else
 		Suspicion.update(state, condition, dt, cfg.rate, cfg.decay, graceActive())
 	end
-	local action = Suspicion.process(state, condition, now, cfg.rollback, cfg.report, cfg.rollbackCooldown, cfg.reportCooldown, graceActive())
+	local action = Suspicion.process(
+		state,
+		condition,
+		now,
+		cfg.rollback,
+		cfg.report,
+		cfg.rollbackCooldown,
+		cfg.reportCooldown,
+		graceActive()
+	)
 	if action.rollback then
 		onRollback()
 	end
@@ -218,7 +235,12 @@ local function runDetectors(character: Model, token: number)
 
 		--> Frozen-Y anti-gravity: airborne, no vertical velocity, no ground below.
 		local frozenBad = false
-		if not graceActive() and humanoid.FloorMaterial == Enum.Material.Air and math.abs(velocity.Y) < 0.1 and position.Y > lastPosition.Y - 0.1 then
+		if
+			not graceActive()
+			and humanoid.FloorMaterial == Enum.Material.Air
+			and math.abs(velocity.Y) < 0.1
+			and position.Y > lastPosition.Y - 0.1
+		then
 			frozenBad = not raycastBlocked(position, Vector3.new(0, -4, 0), character)
 		end
 		evaluate(frozenY, frozenBad, dt, now, Config.FrozenY, onRollback, "FrozenAntiGravity")
@@ -253,7 +275,17 @@ local function runDetectors(character: Model, token: number)
 
 		--> Advance baselines only when this tick looked clean, so a safe CFrame is
 		--> never captured mid-cheat.
-		local anySignal = walkSpeedBad or jumpBad or hipBad or stateBad or airJump or airBoost or cframeBad or frozenBad or densityBad or panicBad or badAnim
+		local anySignal = walkSpeedBad
+			or jumpBad
+			or hipBad
+			or stateBad
+			or airJump
+			or airBoost
+			or cframeBad
+			or frozenBad
+			or densityBad
+			or panicBad
+			or badAnim
 		if graceActive() then
 			safeCFrame = root.CFrame
 		elseif not anySignal and (grounded or math.abs(velocity.Y) > 1) then

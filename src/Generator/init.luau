@@ -409,6 +409,20 @@ local function AddReceiveGuards(Block: Blocks.Block, Name: string, Reliability: 
 		)
 	end
 
+	--> Honeypot: nothing legitimate ever sends this, because nothing legitimate
+	--> knows it exists. Arriving traffic is proof the sender fabricated a packet,
+	--> so it is reported at a weight that stands out from ordinary drops and then
+	--> dropped before the payload is read. First guard after the size cap: a
+	--> honeypot must not be rate-limited into silence, since the report is the
+	--> entire point of the endpoint.
+	--> DropPacket already raises the violation, so there is nothing to add here
+	--> beyond the reason -- same shape as the KillSwitch and PolicyRejected guards.
+	if Value.Honeypot then
+		Block:Line(
+			`if RuntimeConfig.EnableHoneypots then DropPacket({Source}, "{Reliability}", "Honeypot", Size) {AbortReadLine()} end`
+		)
+	end
+
 	Block:Line(
 		`if not CheckRateLimit({Source}, "{Name}", {NumberLiteral(
 			Value.RateLimitPerSecond,

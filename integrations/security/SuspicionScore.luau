@@ -38,7 +38,14 @@ end
 --> Ramp the score while `condition` holds, decay it otherwise. During a grace
 --> window the score always decays (twice as fast) so post-teleport / post-lag
 --> states can never accumulate suspicion.
-local function update(state: State, condition: boolean, dt: number, suspicionRate: number, decayRate: number, graceActive: boolean)
+local function update(
+	state: State,
+	condition: boolean,
+	dt: number,
+	suspicionRate: number,
+	decayRate: number,
+	graceActive: boolean
+)
 	if graceActive then
 		state.score = math.max(0, state.score - math.min(decayRate * dt * 120, MAX_SCORE_STEP * 2))
 		return
@@ -53,7 +60,14 @@ end
 
 --> Like `update` but adds a fixed lump on a discrete event (e.g. a single
 --> teleport) rather than ramping over time.
-local function addScore(state: State, condition: boolean, dt: number, scoreAdd: number, decayRate: number, graceActive: boolean)
+local function addScore(
+	state: State,
+	condition: boolean,
+	dt: number,
+	scoreAdd: number,
+	decayRate: number,
+	graceActive: boolean
+)
 	if graceActive then
 		state.score = math.max(0, state.score - math.min(decayRate * dt * 120, MAX_SCORE_STEP * 2))
 		return

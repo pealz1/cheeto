@@ -17,8 +17,8 @@
 local Players = game:GetService("Players")
 
 local Config = require(script.Parent.Config)
-local SecureChannel = require(script.Parent.SecureChannel)
 local IYSignatures = require(script.Parent.IYSignatures)
+local SecureChannel = require(script.Parent.SecureChannel)
 
 local player = Players.LocalPlayer
 

@@ -596,6 +596,23 @@ event UnknownAuthClient {
     Data: u8
 }
 
+--> Nothing legitimate calls this, so any inbound traffic is a fabricated packet.
+event HoneypotClient {
+    From: Client,
+    Type: Reliable,
+    Call: SingleSync,
+    Honeypot: true,
+    Data: u8
+}
+
+event IdempotentClient {
+    From: Client,
+    Type: Reliable,
+    Call: SingleSync,
+    Idempotency: true,
+    Data: u8
+}
+
 scope AnotherScope {
     event InScopeEvent {
         From: Server,

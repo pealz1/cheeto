@@ -1031,6 +1031,26 @@ local function CheckPolicy(Source: any, Name: string, Channel: string, PolicyNam
         return false
     end
 
+    --> Idempotency used to be handed to policies as an advisory flag and enforced
+    --> by nothing, so `Idempotency: true` on an event silently did nothing unless
+    --> the game happened to write a policy that called CheckIdempotency itself.
+    --> A security attribute that quietly does nothing is worse than no attribute,
+    --> so the runtime enforces it here.
+    -->
+    --> PRECONDITION, and it is a real limit: the key is the sequence number, and a
+    --> sequence only reaches the wire when the sender attached a prediction id. On
+    --> an event with no prediction there is nothing that identifies one logical
+    --> call, so there is nothing to deduplicate and the packet is allowed through.
+    --> CheckReplay above has exactly the same precondition -- ReplayWindowSize and
+    --> ReplayStaleSeconds are inert without prediction. Use CooldownSeconds to
+    --> bound a one-shot action that does not carry a sequence.
+    if Constraints.Idempotency == true and RecievePredictionId ~= nil then
+        if not RuntimeSupport.CheckIdempotency(Source, `{Name}:{RecievePredictionId}`) then
+            DropPacket(Source, Channel, TransportError.ReplayDuplicate, Size)
+            return false
+        end
+    end
+
     local Context = {
         Source = Source,
         Name = Name,
