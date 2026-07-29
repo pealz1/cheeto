@@ -2748,6 +2748,23 @@ local function EndReadMessage()
     end
 
     AlignReadBits()
+
+    --> Forward progress is not optional: the read loop is `while RecieveCursor <
+    --> Size`, so a frame whose declared end is at or behind its own start makes
+    --> it re-read the same bytes forever. A crafted packet can produce exactly
+    --> that, which is a free server hang, so abandon the rest of the packet
+    --> instead of trusting the frame length.
+    local Start = RecieveMessageStart
+    if RecieveFrameEnd <= Start then
+        DropPacket(RecieveSource, RecieveChannel, "MalformedPacket", RecieveSize)
+        RecieveCursor = RecieveSize
+        RecieveFrameEnd = 0
+        RecieveFrameInstanceEnd = RecieveInstanceCursor
+        RecievePredictionId = nil
+        RecieveMessageStart = 0
+        return
+    end
+
     RecieveCursor = RecieveFrameEnd
     RecieveInstanceCursor = RecieveFrameInstanceEnd
     RecieveFrameEnd = 0

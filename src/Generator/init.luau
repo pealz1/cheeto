@@ -2558,8 +2558,23 @@ function Generator.Generate(FileContext: Context, AbstractSyntaxTree: Parser.Bod
 		Unreliables:Lines(EVENT_SYNC_VALIDATION, 1)
 	end
 
+	--> Every message must consume at least one byte, so a well-formed packet can
+	--> never need more iterations than it has bytes. A crafted packet CAN reach
+	--> a `continue` without the cursor advancing, and that is an unauthenticated
+	--> server hang, so the loop is bounded structurally rather than by trusting
+	--> each recovery path to move the cursor.
+	Reliables:Line("local ReadGuard = Size + 8")
+	Unreliables:Line("local ReadGuard = Size + 8")
 	Reliables = Reliables:While("RecieveCursor < Size")
 	Unreliables = Unreliables:While("RecieveCursor < Size")
+	Reliables:Line("ReadGuard -= 1")
+	Reliables:Line(
+		`if ReadGuard <= 0 then DropPacket({SourceExpression()}, "Reliable", "MalformedPacket", Size) break end`
+	)
+	Unreliables:Line("ReadGuard -= 1")
+	Unreliables:Line(
+		`if ReadGuard <= 0 then DropPacket({SourceExpression()}, "Unreliable", "MalformedPacket", Size) break end`
+	)
 	Reliables:Line("local FrameSuccess, Index = pcall(BeginReadMessage, Size)")
 	Reliables:Line(
 		"if not FrameSuccess then DropPacket("

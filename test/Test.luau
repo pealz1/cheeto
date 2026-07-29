@@ -2029,6 +2029,15 @@ RunClosure("Fuzz malformed packets", function()
 	local ClientReliable = ClientEnvironment.Instances.CHEETO_RELIABLE_REMOTE.OnClientEvent
 	local ClientUnreliable = ClientEnvironment.Instances.CHEETO_UNRELIABLE_REMOTE.OnClientEvent
 
+	--> Seeded so a failure is reproducible. This closure drives 128 random
+	--> buffers through every endpoint; unseeded, a packet that fails to
+	--> terminate shows up as an intermittent hang that cannot be replayed and
+	--> looks exactly like a regression in whatever change is being tested.
+	--> Replay a specific run with CHEETO_FUZZ_SEED=<n>.
+	local FuzzSeed = tonumber(process.env.CHEETO_FUZZ_SEED) or 0x0C4EE70
+	math.randomseed(FuzzSeed)
+	PrettyPrint("cyan", `Fuzzing with seed {FuzzSeed} (set CHEETO_FUZZ_SEED to replay)`)
+
 	local Before = DroppedTotal(Server) + DroppedTotal(Client)
 	local Oversized = buffer.create(257)
 	FireSignalSync(ServerReliable, Shared.Player, Oversized, {})
@@ -2040,8 +2049,10 @@ RunClosure("Fuzz malformed packets", function()
 	FireSignalSync(ClientReliable, Empty, { "not an instance" })
 	FireSignalSync(ClientReliable, Empty, "not a table")
 
-	for _ = 1, 128 do
-		local Packet = RandomBuffer(math.random(1, 96))
+	--> CHEETO_FUZZ_N narrows the loop when bisecting a bad packet
+	for _ = 1, tonumber(process.env.CHEETO_FUZZ_N) or 128 do
+		local Size = math.random(1, 96)
+		local Packet = RandomBuffer(Size)
 		FireSignalSync(ServerReliable, Shared.Player, Packet, {})
 		FireSignalSync(ServerUnreliable, Shared.Player, Packet, {})
 		FireSignalSync(ClientReliable, Packet, {})
