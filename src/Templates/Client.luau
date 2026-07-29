@@ -69,6 +69,7 @@ local function StepReplication()
     SendCursor = 0
     SendOffset = 0
     SendBuffer = AcquireBuffer(64)
+    State.SendBuffer = SendBuffer
     table.clear(SendInstances)
     SendBitByte = 0
     SendBitCount = 0

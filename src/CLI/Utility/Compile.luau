@@ -193,6 +193,25 @@ function Utility.Compile(Path: string, Options: CompileOptions)
 	fs.writeFile(ServerOutput, ServerSource)
 	fs.writeFile(ClientOutput, ClientSource)
 
+	--> Opt-in: with RuntimeOutput set, the runtime is emitted once as its own
+	--> factory module and the generated modules require it instead of inlining
+	--> ~135KB each. Schemas without the option are unaffected.
+	if FileOptions.RuntimeOutput then
+		assert(FileOptions.RuntimeRequire, "RuntimeRequire must be set alongside RuntimeOutput.")
+
+		local RuntimeDirectory, RuntimeFilename = PathParser.Components(FileOptions.RuntimeOutput)
+		local RuntimePath = `{RuntimeDirectory}/{RuntimeFilename}.luau`
+		local RuntimeOutput = if PathParser.PathType(RuntimePath) == "absolute"
+			then RuntimePath
+			else `{FileDirectory}{RuntimePath}`
+
+		CreateDirectoryIfNotFound(RuntimeOutput, Options)
+		fs.writeFile(RuntimeOutput, Generator.GenerateRuntime("Server", AbstractSyntaxTree))
+
+		local ClientRuntimeOutput = string.gsub(RuntimeOutput, "%.luau$", "Client.luau")
+		fs.writeFile(ClientRuntimeOutput, Generator.GenerateRuntime("Client", AbstractSyntaxTree))
+	end
+
 	if TypesSource and TypesOutput then
 		CreateDirectoryIfNotFound(TypesOutput, Options)
 		fs.writeFile(TypesOutput, TypesSource)

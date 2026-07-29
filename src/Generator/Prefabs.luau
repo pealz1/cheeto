@@ -28,8 +28,11 @@ type AssertPrefab = {
 
 type AssertGenerator = (Variable: string, ...any) -> AssertPrefab
 
-local SEND_BUFFER = "SendBuffer"
-local RECIEVE_BUFFER = "RecieveBuffer"
+--> Generated serdes goes through the runtime's State table, not the runtime's
+--> locals: a buffer swapped on growth would otherwise leave stale references
+--> once the runtime lives in its own module. One table index per access.
+local SEND_BUFFER = "State.SendBuffer"
+local RECIEVE_BUFFER = "State.RecieveBuffer"
 local SEND_POSITION = "SendOffset"
 
 local BYTE = 1
@@ -562,11 +565,11 @@ end
 do
 	Types.Instance = {
 		Read = function(Variable: string, Block: Block)
-			--Block:Line("RecieveInstanceCursor += 1")
-			Block:Line(`{Block:Declare(Variable)} = RecieveInstances[RecieveInstanceCursor]`)
+			--Block:Line("State.RecieveInstanceCursor += 1")
+			Block:Line(`{Block:Declare(Variable)} = State.RecieveInstances[State.RecieveInstanceCursor]`)
 		end,
 		Write = function(Value: string, Block: Block)
-			Block:Line(`table.insert(SendInstances, {Value} or Null)`)
+			Block:Line(`table.insert(State.SendInstances, {Value} or Null)`)
 		end,
 	}
 
@@ -582,11 +585,11 @@ end
 do
 	Types.unknown = {
 		Read = function(Variable: string, Block: Block)
-			Block:Line("RecieveInstanceCursor += 1")
-			Block:Line(`{Block:Declare(Variable)} = RecieveInstances[RecieveInstanceCursor]`)
+			Block:Line("State.RecieveInstanceCursor += 1")
+			Block:Line(`{Block:Declare(Variable)} = State.RecieveInstances[State.RecieveInstanceCursor]`)
 		end,
 		Write = function(Value: string, Block: Block)
-			Block:Line(`table.insert(SendInstances, if {Value} == nil then Null else {Value})`)
+			Block:Line(`table.insert(State.SendInstances, if {Value} == nil then Null else {Value})`)
 		end,
 	}
 
