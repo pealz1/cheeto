@@ -2433,6 +2433,15 @@ local function ReadBit(): boolean
 end
 
 local function WriteVarint(Value: number)
+    --> NaN and +inf never satisfy `Remaining <= 0`, so the loop below spins
+    --> forever on them. A crafted packet can steer a decoded f64 into a varint
+    --> write, which makes that an unauthenticated server hang. Reject instead of
+    --> clamping: a non-finite or negative length is corruption, not something
+    --> that can be meaningfully encoded.
+    if Value ~= Value or Value == math.huge or Value == -math.huge or Value < 0 then
+        error(`[Cheeto]: varint value must be a finite non-negative number, got {Value}.`)
+    end
+
     local Remaining = Value
     repeat
         local Byte = Remaining % 128
@@ -2502,6 +2511,15 @@ local function ReadLength(Bytes: number): number
 end
 
 local function EncodeVarint(Value: number): {number}
+    --> NaN and +inf never satisfy `Remaining <= 0`, so the loop below spins
+    --> forever on them. A crafted packet can steer a decoded f64 into a varint
+    --> write, which makes that an unauthenticated server hang. Reject instead of
+    --> clamping: a non-finite or negative length is corruption, not something
+    --> that can be meaningfully encoded.
+    if Value ~= Value or Value == math.huge or Value == -math.huge or Value < 0 then
+        error(`[Cheeto]: varint value must be a finite non-negative number, got {Value}.`)
+    end
+
     local Bytes = {}
     local Remaining = Value
     repeat

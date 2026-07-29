@@ -42,17 +42,48 @@ hang; 1, 42, 99999 and the default do not. Reproducer:
 
     CHEETO_FUZZ_SEED=2 CHEETO_FUZZ_N=9 lune run Test --ci
 
-Bisected to fuzz iteration 9 (N=8 passes, N=9 hangs). What is known:
+### What is established
 
-- the fuzz loop itself completes; the stall is later
-- stage markers show `require("./Datatypes")` never returns, while its final
-  line still reaches stdout -- stdout is block-buffered, so the visible tail is
-  not a reliable indicator of where execution actually stopped
-- bounding the read loop (`ReadGuard`) and forcing forward progress in
-  `EndReadMessage` did NOT fix it, so it is not the top-level message loop
+- **It is a deadlock, not an infinite loop.** A `task.delay` watchdog fires
+  during the stall, so the scheduler is alive and the main thread is *waiting*
+  on a resume that never comes. This is why loop guards never helped, and why
+  inserting any yield point (an `fs.writeFile`) makes the stall disappear --
+  it is a heisenbug, so instrument with care.
+- **Only ServerReliable triggers it.** Fuzzing each direction alone: server
+  reliable 3/3 hang, server unreliable / client reliable / client unreliable
+  0/3 each.
+- **It needs accumulated state.** With only ServerReliable, N=8 passes and N=9
+  hangs, reproducibly.
+- **Not a pending invocation.** Calling `CancelInvocations()` on both sides
+  from a watchdog does not release it.
+- A fixed seed is necessary but not sufficient: it still varies run to run
+  (2/3), so something clock-driven participates -- rate limits, cooldowns and
+  invocation bookkeeping all key off `os.clock()`.
+- The runtime itself contains no `coroutine.yield`; the waits that exist are
+  `task.wait` inside spawned probe threads.
 
-Both guards were kept anyway: bounding a loop that runs over attacker-controlled
-bytes is worth having regardless of this particular bug.
+### Ruled out (guards kept anyway)
 
-Next step would be a standalone harness that replays the offending packet
-outside the suite, so the stall can be caught without the buffering confusion.
+Bounding the read loop (`ReadGuard`) and forcing forward progress in
+`EndReadMessage` did not fix it. Both were kept: bounding a loop that runs over
+attacker-controlled bytes is worth having on its own merits.
+
+### Two real bugs found while chasing it
+
+Neither is this hang, both are genuine and are fixed:
+
+- `WriteVarint` / `EncodeVarint` loop `until Remaining <= 0`, and **neither NaN
+  nor +inf ever satisfies that**, so a non-finite value reaching a varint write
+  spins forever. That is an unauthenticated server hang if attacker-influenced
+  data can reach it. Both now reject non-finite and negative input.
+- `ExpireInvocations()` existed but **was never called from anywhere**, so
+  configured invoke timeouts never fired: an Invoke whose reply never arrives
+  left its thread suspended for the life of the server, leaking a coroutine per
+  lost reply. It is now swept every frame from `StepReplication`.
+
+### Next step
+
+The stall is a suspended thread. Enumerate what can suspend and never be
+resumed on the *server reliable receive* path specifically, given invocations
+are excluded. A per-thread registry that records creation sites, dumped from
+the watchdog, would name it directly.

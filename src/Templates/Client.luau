@@ -43,6 +43,11 @@ RuntimeSupport.StartClientShield()
 
 local function StepReplication()
     ProfileBegin("Cheeto.Flush.Client")
+    --> Invocation timeouts are only meaningful if something sweeps them. Without
+    --> this an Invoke whose reply never arrives leaves its thread suspended for
+    --> the life of the server -- a lost reply, or a peer that simply never
+    --> answers, silently leaks a coroutine and hangs that caller forever.
+    ExpireInvocations()
     FlushBits()
     if SendCursor <= 0 then
         ProfileEnd()
