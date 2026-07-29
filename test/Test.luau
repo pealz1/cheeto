@@ -94,6 +94,28 @@ local function MockTypeof(a: any)
 	return TypeofA
 end
 
+local CapturedWarnings: { string } = {}
+
+local function CaptureWarn(...)
+	local Parts = {}
+	for Index = 1, select("#", ...) do
+		Parts[Index] = tostring((select(Index, ...)))
+	end
+
+	local Message = table.concat(Parts, " ")
+	table.insert(CapturedWarnings, Message)
+	warn(Message)
+end
+
+local function FindWarning(Fragment: string): string?
+	for _, Message in CapturedWarnings do
+		if string.find(Message, Fragment, 1, true) then
+			return Message
+		end
+	end
+	return nil
+end
+
 local function MockRequire(Path: string, Environment)
 	local Source = fs.readFile(Path)
 	local Bytecode = luau.compile(Source, {
@@ -107,6 +129,10 @@ local function MockRequire(Path: string, Environment)
 	Environment.require = function()
 		error("require is not supported")
 	end
+	--> Some runtime diagnostics have no observable effect other than the warning
+	--> they print (SyncValidation's "Yielded in a Sync call" is one), so capturing
+	--> warn is the only way to assert they still fire.
+	Environment.warn = CaptureWarn
 
 	local Execute = luau.load(Bytecode, {
 		debugName = Path,
@@ -1759,6 +1785,30 @@ RunClosure("Transport hardening runtime APIs", function()
 	local Resumed, Value = coroutine.resume(Bystander)
 	assert(Resumed and Value == "survived", `Bystander could not finish: {tostring(Value)}`)
 	SyncListenerRelease()
+
+	--> The other half: SyncValidation must still CATCH a Sync handler that really
+	--> does yield. Without this, "stop closing bystanders" could have been
+	--> implemented by disabling the check altogether and every test would pass.
+	--> The warning is the only observable effect, hence the warn capture.
+	assert(FindWarning("Yielded in a Sync call") == nil, "Expected no sync-yield warning before this check.")
+
+	local YieldingRelease = Server.ReliableClient.On(function()
+		task.wait(0.05) --> exactly what a Sync call must not do
+	end)
+	Client.ReliableClient.Fire(3)
+	Client.StepReplication()
+	task.wait(1 / 30)
+	--> The NEXT dispatch is what inspects the thread left parked by the handler.
+	Client.ReliableClient.Fire(4)
+	Client.StepReplication()
+	task.wait(1 / 30)
+	YieldingRelease()
+
+	assert(
+		FindWarning("Yielded in a Sync call") ~= nil,
+		"SyncValidation stopped reporting a Sync handler that genuinely yielded."
+	)
+
 	--> Leave the registry as it was found; later checks assume "damage" is absent.
 	Server.Security.RegisterPolicy("damage", nil :: any)
 
@@ -1824,7 +1874,13 @@ RunClosure("Transport hardening runtime APIs", function()
 	assert(HoneypotViolations == 1, "Expected a honeypot hit to raise exactly one violation.")
 
 	--> Idempotency: also enforced by nothing before -- the flag reached policies as
-	--> advice and the runtime ignored it. Same sequence twice must arrive once.
+	--> advice and the runtime ignored it.
+	-->
+	--> READ THIS BEFORE TRUSTING IT: this asserts only that declaring Idempotency
+	--> does not BREAK the event. It cannot assert deduplication, because the key is
+	--> the packet sequence number and this event carries no prediction id, so
+	--> enforcement is inert here by design (see CheckPolicy). Covering the dedup
+	--> itself needs a prediction-carrying event; until then that path is untested.
 	local IdempotentSeen = 0
 	local ReleaseIdempotent = Server.IdempotentClient.On(function()
 		IdempotentSeen += 1

@@ -1,0 +1,32 @@
+--> Compile coverage for all three function yield modes.
+-->
+--> Every other test schema declares `Yield: Coroutine`, so the Future and Promise
+--> emission paths were never compiled by the suite at all. That mattered: the
+--> Coroutine and Future paths share one emitted body, but Promise has its own,
+--> and a scope or arity slip inside it was invisible to every test. Compiling
+--> this file is the gate -- the suite fails if any of the three stops emitting
+--> valid Luau.
+option Casing = Pascal
+option ClientOutput = "../../Network/YieldsClient.luau"
+option ServerOutput = "../../Network/YieldsServer.luau"
+option TypesOutput = "../../Network/YieldsTypes.luau"
+option FutureLibrary = "game.ReplicatedStorage.Future"
+option PromiseLibrary = "game.ReplicatedStorage.Promise"
+
+function CoroutineFn {
+    Yield: Coroutine,
+    Data: u8,
+    Return: u8
+}
+
+function FutureFn {
+    Yield: Future,
+    Data: u8,
+    Return: u8
+}
+
+function PromiseFn {
+    Yield: Promise,
+    Data: u8,
+    Return: u8
+}
