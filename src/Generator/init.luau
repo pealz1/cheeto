@@ -21,6 +21,97 @@ local Sources = {
 }
 
 local EVENTS_TYPE = "CHEETO_EVENTS_SYMBOL"
+local RUNTIME_EXPORTS = {
+	"AckPrediction",
+	"AddToGroup",
+	"Allocate",
+	"BeforeSend",
+	"BeginMessage",
+	"BeginPrediction",
+	"BeginReadMessage",
+	"CAPABILITY_HANDSHAKE_INDEX",
+	"CLIENT_SHIELD_INDEX",
+	"CancelInvocations",
+	"CheckAuth",
+	"CheckPolicy",
+	"CheckRateLimit",
+	"ClearInvocation",
+	"Configure",
+	"CreateQueue",
+	"DefineStateChannel",
+	"DropPacket",
+	"EndMessage",
+	"EndReadMessage",
+	"Events",
+	"Frame",
+	"GetGroupPlayers",
+	"GetInterestDistancePlayers",
+	"GetInterestZonePlayers",
+	"GetMetrics",
+	"InstancePayload",
+	"InvocationErrorMessage",
+	"Invoke",
+	"IsPlayerActive",
+	"Load",
+	"Null",
+	"PREDICTION_ACK_INDEX",
+	"Players",
+	"PlayersMap",
+	"Pop",
+	"ProfileBegin",
+	"ProfileEnd",
+	"Push",
+	"Queue",
+	"Read",
+	"ReadBit",
+	"ReadClientShieldPayload",
+	"ReadLength",
+	"ReadPredictionAckPayload",
+	"ReadSignedVarint",
+	"ReadStringValue",
+	"ReadVarint",
+	"RecieveBuffer",
+	"RecoverMessage",
+	"RegisterInvocation",
+	"RegisterStateFlusher",
+	"Reliable",
+	"RemoveFromGroup",
+	"ReportMetrics",
+	"RollbackPrediction",
+	"RunHooks",
+	"RunService",
+	"RuntimeState",
+	"RuntimeSupport",
+	"SERVER_PEER_KEY",
+	"Save",
+	"SendBuffer",
+	"SendInstances",
+	"SendOffset",
+	"SetGroup",
+	"SetInterestPosition",
+	"SetInterestZone",
+	"StartMetricsReporter",
+	"State",
+	"StepReplication",
+	"Tombstone",
+	"TrackEventReceive",
+	"TrackEventSend",
+	"TrackSend",
+	"TransportError",
+	"Unreliable",
+	"Use",
+	"UseAuth",
+	"UseBitPacking",
+	"UseVarints",
+	"ValidateIncoming",
+	"WriteBit",
+	"WriteLength",
+	"WritePredictionAckPayload",
+	"WriteSignedVarint",
+	"WriteStringValue",
+	"WriteVarint",
+}
+
 local DIRECTIVES = {
 	"--!strict\n",
 	"--!native\n",
@@ -276,7 +367,7 @@ local function GetEventBody(Channel: string): { string }
 		table.insert(Body, "Buffer = ReassembledBuffer :: buffer\n")
 		table.insert(Body, "Instances = ReassembledInstances\n")
 		table.insert(Body, "Size = buffer.len(Buffer)\n")
-		table.insert(Body, "RecieveSize = Size\n")
+		table.insert(Body, "State.RecieveSize = Size\n")
 		table.insert(Body, "State.RecieveInstances = Instances or {}\n")
 	end
 
@@ -390,12 +481,12 @@ local function AddTrackedWrite(
 	Block:Line("RuntimeSupport.QueueCapabilityHandshake(nil)")
 	Block:Line("local PreviousCursor = Frame.Cursor()")
 	if PredictionId then
-		Block:Line("local PreviousPredictionId = SendPredictionId")
-		Block:Line(`SendPredictionId = {PredictionId}`)
+		Block:Line("local PreviousPredictionId = State.SendPredictionId")
+		Block:Line(`State.SendPredictionId = {PredictionId}`)
 	end
 	Block:Line(WriteEvent)
 	if PredictionId then
-		Block:Line("SendPredictionId = PreviousPredictionId")
+		Block:Line("State.SendPredictionId = PreviousPredictionId")
 	end
 	Block:Line(`local EventSize = Frame.Cursor() - PreviousCursor`)
 	Block:Line(
@@ -2482,6 +2573,67 @@ function Generator.Reset()
 	Channels.Unreliable.Listening = false
 end
 
+--> When RuntimeOutput is set the runtime lives in its own ModuleScript and the
+--> generated module pulls what it needs out of the factory. Every group calls
+--> the factory separately, so the SOURCE is shared but the state is not: each
+--> keeps its own buffers, its own Events table and its own remotes.
+--> RUNTIME_EXPORTS is the union of what the client and server runtimes provide,
+--> so it is filtered per context: PlayersMap and Players exist only on the
+--> server. Matching is anchored to column 0 -- an inner-scope `local Players`
+--> inside some helper is not a top-level declaration, and treating it as one
+--> exports a nil and trips the missing-export guard at load.
+local function DeclaredAtTopLevel(Text: string, Name: string): boolean
+	return string.find(Text, `\nlocal function {Name}(`, 1, true) ~= nil
+		or string.find(Text, `\nlocal {Name} =`, 1, true) ~= nil
+		or string.find(Text, `\nlocal {Name}:`, 1, true) ~= nil
+		or string.find(Text, `\nlocal {Name},`, 1, true) ~= nil
+		or string.find(Text, `\nfunction {Name}(`, 1, true) ~= nil
+end
+
+local function RuntimeExportsFor(FileContext: Context): { string }
+	local Source = if FileContext == "Client" then Sources.Client else Sources.Server
+	local Text = "\n" .. Sources.Base .. "\n" .. Source[1] .. "\n" .. Source[2]
+	local Present = {}
+
+	for _, Name in RUNTIME_EXPORTS do
+		if DeclaredAtTopLevel(Text, Name) then
+			table.insert(Present, Name)
+		end
+	end
+
+	return Present
+end
+
+local function RuntimeBindingLines(): { string }
+	local Quoted = {}
+	local Exports = RuntimeExportsFor(Context)
+	for _, Name in Exports do
+		table.insert(Quoted, `"{Name}"`)
+	end
+
+	--> Client and server runtimes differ (different template halves), so the
+	--> client module requires the Client-suffixed one.
+	local RuntimeRequire = if Context == "Client" then `{Options.RuntimeRequire}Client` else Options.RuntimeRequire
+
+	local Lines = {
+		`local CHEETO_RUNTIME = require({RuntimeRequire})(RuntimeConfig, BASE_EVENT_NAME)\n`,
+		--> Fail loudly at load if this export list drifts from the template,
+		--> rather than nil-calling deep inside a serdes function later.
+		`local CHEETO_REQUIRED = \{ {table.concat(
+			Quoted,
+			", "
+		)} \}\n`,
+		"for _, Name in CHEETO_REQUIRED do\n",
+		'\tif CHEETO_RUNTIME[Name] == nil then error("[Cheeto]: runtime module is missing " .. Name .. "; regenerate it.") end\n',
+		"end\n",
+	}
+
+	for _, Name in Exports do
+		table.insert(Lines, `local {Name} = CHEETO_RUNTIME.{Name}\n`)
+	end
+	return Lines
+end
+
 function Generator.Generate(FileContext: Context, AbstractSyntaxTree: Parser.Body): string
 	local Imports = Builder.new()
 
@@ -2682,22 +2834,23 @@ function Generator.Generate(FileContext: Context, AbstractSyntaxTree: Parser.Bod
 		}
 	end
 
+	local Split = Options.RuntimeOutput ~= nil
 	local MergedOutput = Table.Merge(
 		DIRECTIVES,
 		VERSION_HEADER,
 		ScopeValidationBody,
-		string.split(Source[1], "\r"),
+		(if Split then {} else string.split(Source[1], "\r")),
 		Imports.DumpLines(),
 		{ "local SerdesFunctions = {}\n" },
 		{ `local BASE_EVENT_NAME = "{Options.RemoteScope and Options.RemoteScope .. "_" or ""}CHEETO"\n` },
 		RuntimeConfigLines(),
-		string.split(Sources.Base, "\r"),
+		(if Split then RuntimeBindingLines() else string.split(Sources.Base, "\r")),
 		(if Options.SyncValidation then SYNC_VALIDATION_BODY else {}),
 		Events.DumpLines(),
 		LuauTypes.DumpLines(),
 		UserTypes.DumpLines(),
 		Noop.DumpLines(),
-		string.split(Source[2], "\r"),
+		(if Split then {} else string.split(Source[2], "\r")),
 		Replication.DumpLines(),
 		Reliables.Content,
 		Unreliables.Content,
@@ -2708,6 +2861,36 @@ function Generator.Generate(FileContext: Context, AbstractSyntaxTree: Parser.Bod
 	)
 
 	return table.concat(MergedOutput)
+end
+
+--> The runtime as a standalone factory. Called once per generated module, so
+--> four groups share one copy of this source while each keeps its own state.
+function Generator.GenerateRuntime(FileContext: Context, AbstractSyntaxTree: Parser.Body): string
+	Generator.Reset()
+	Context = FileContext
+	Options = AbstractSyntaxTree.Value.Options
+	Casing = Settings.GetCasing((Options.Casing :: Settings.Case) or "Pascal")
+
+	local Source = if Context == "Client" then Sources.Client else Sources.Server
+	local Exports = Builder.new()
+	Exports.Push("return {")
+	for _, Name in RuntimeExportsFor(FileContext) do
+		Exports.Push(`{Name} = {Name},`, 0, 1)
+	end
+	Exports.Push("}")
+
+	return table.concat(
+		Table.Merge(
+			DIRECTIVES,
+			VERSION_HEADER,
+			{ "return function(RuntimeConfig, BASE_EVENT_NAME)\n" },
+			string.split(Source[1], "\r"),
+			string.split(Sources.Base, "\r"),
+			string.split(Source[2], "\r"),
+			Exports.DumpLines(),
+			{ "\nend\n" }
+		)
+	)
 end
 
 function Generator.GenerateShared(AbstractSyntaxTree: Parser.Body): string

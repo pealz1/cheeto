@@ -7,11 +7,9 @@ local SendBuffer = buffer.create(64)
 local SendInstances = {}
 local SendBitByte = 0
 local SendBitCount = 0
-local SendPredictionId: number? = nil
 
 local RecieveCursor = 0
 local RecieveBuffer = buffer.create(64)
-local RecieveSize = 64
 local RecieveSource: any = nil
 local RecieveChannel = "Reliable"
 local RecieveBitByte = 0
@@ -25,6 +23,8 @@ local RecieveFrameEnd = 0
 --> locals on its own hot path and only mirrors here when a buffer is actually
 --> swapped -- growth and packet boundaries, not per field.
 local State = {
+    SendPredictionId = nil :: number?,
+    RecieveSize = 64,
     SendBuffer = SendBuffer,
     RecieveBuffer = RecieveBuffer,
     SendInstances = SendInstances,
@@ -2197,7 +2197,7 @@ function Frame.SaveFrame(): any
     return {
         Cursor = RecieveCursor,
         Buffer = RecieveBuffer,
-        Size = RecieveSize,
+        Size = State.RecieveSize,
         FrameEnd = RecieveFrameEnd,
         FrameInstanceEnd = RecieveFrameInstanceEnd,
         BitByte = RecieveBitByte,
@@ -2212,7 +2212,7 @@ end
 
 function Frame.EnterFrame(Buffer: buffer)
     Frame.BeginMessages(Buffer)
-    RecieveSize = buffer.len(Buffer)
+    State.RecieveSize = buffer.len(Buffer)
     RecieveFrameEnd = 0
     RecieveFrameInstanceEnd = 0
     State.RecieveInstances = {}
@@ -2223,7 +2223,7 @@ function Frame.RestoreFrame(Frame: any)
     RecieveCursor = Frame.Cursor
     RecieveBuffer = Frame.Buffer
     State.RecieveBuffer = Frame.Buffer
-    RecieveSize = Frame.Size
+    State.RecieveSize = Frame.Size
     RecieveFrameEnd = Frame.FrameEnd
     RecieveFrameInstanceEnd = Frame.FrameInstanceEnd
     RecieveBitByte = Frame.BitByte
@@ -2253,13 +2253,13 @@ local function WriteBit(Value: boolean)
 end
 
 local function RawRead(Bytes: number)
-    if RecieveCursor + Bytes > RecieveSize then
-        DropPacket(RecieveSource, RecieveChannel, "MalformedPacket", RecieveSize)
+    if RecieveCursor + Bytes > State.RecieveSize then
+        DropPacket(RecieveSource, RecieveChannel, "MalformedPacket", State.RecieveSize)
         error(`[Cheeto]: Malformed {RecieveChannel} packet tried to read past the packet boundary.`)
     end
 
     if RecieveFrameEnd > 0 and RecieveCursor + Bytes > RecieveFrameEnd then
-        DropPacket(RecieveSource, RecieveChannel, "MalformedPacket", RecieveSize)
+        DropPacket(RecieveSource, RecieveChannel, "MalformedPacket", State.RecieveSize)
         error(`[Cheeto]: Malformed {RecieveChannel} frame tried to read past the frame boundary.`)
     end
 
@@ -2395,7 +2395,7 @@ local function ValidateIncoming(Source: any, Channel: string, IncomingBuffer: an
 
     RecieveSource = Source
     RecieveChannel = Channel
-    RecieveSize = Size
+    State.RecieveSize = Size
     State.RecieveInstances = Instances or {}
 
     MetricAdd("BytesReceived", Channel, Size)
@@ -2743,7 +2743,7 @@ end
 
 function BeginMessage(Index: number)
     FlushBits()
-    local Flags = if SendPredictionId ~= nil then 1 else 0
+    local Flags = if State.SendPredictionId ~= nil then 1 else 0
     local IndexOffset = RawAllocate(1)
     buffer.writeu8(SendBuffer, IndexOffset, Index)
     local FlagsOffset = RawAllocate(1)
@@ -2752,8 +2752,8 @@ function BeginMessage(Index: number)
     local LengthOffset = RawAllocate(5)
     local InstanceOffset = RawAllocate(5)
     local HeaderDataStart = SendCursor
-    if SendPredictionId ~= nil then
-        WriteVarint(SendPredictionId)
+    if State.SendPredictionId ~= nil then
+        WriteVarint(State.SendPredictionId)
     end
 
     return {
@@ -2833,8 +2833,8 @@ local function EndReadMessage()
     --> instead of trusting the frame length.
     local Start = RecieveMessageStart
     if RecieveFrameEnd <= Start then
-        DropPacket(RecieveSource, RecieveChannel, "MalformedPacket", RecieveSize)
-        RecieveCursor = RecieveSize
+        DropPacket(RecieveSource, RecieveChannel, "MalformedPacket", State.RecieveSize)
+        RecieveCursor = State.RecieveSize
         RecieveFrameEnd = 0
         RecieveFrameInstanceEnd = State.RecieveInstanceCursor
         RecievePredictionId = nil
@@ -2857,7 +2857,7 @@ local function RecoverMessage()
     end
 
     AlignReadBits()
-    RecieveCursor = RecieveSize
+    RecieveCursor = State.RecieveSize
     RecieveFrameEnd = 0
     RecieveFrameInstanceEnd = State.RecieveInstanceCursor
     RecievePredictionId = nil
@@ -3635,14 +3635,14 @@ local function WritePredictionAckPayload(Name: string, Accepted: boolean, Reason
         return
     end
 
-    local PreviousPredictionId = SendPredictionId
-    SendPredictionId = nil
+    local PreviousPredictionId = State.SendPredictionId
+    State.SendPredictionId = nil
     local Frame = BeginMessage(PREDICTION_ACK_INDEX)
     WriteVarint(RecievePredictionId)
     WriteBit(Accepted)
     WriteStringValue(Reason or "", 1)
     EndMessage(Frame)
-    SendPredictionId = PreviousPredictionId
+    State.SendPredictionId = PreviousPredictionId
 end
 
 local function ReadPredictionAckPayload()
