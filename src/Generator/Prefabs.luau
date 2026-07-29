@@ -565,11 +565,11 @@ end
 do
 	Types.Instance = {
 		Read = function(Variable: string, Block: Block)
-			--Block:Line("RecieveInstanceCursor += 1")
-			Block:Line(`{Block:Declare(Variable)} = RecieveInstances[RecieveInstanceCursor]`)
+			--Block:Line("State.RecieveInstanceCursor += 1")
+			Block:Line(`{Block:Declare(Variable)} = State.RecieveInstances[State.RecieveInstanceCursor]`)
 		end,
 		Write = function(Value: string, Block: Block)
-			Block:Line(`table.insert(SendInstances, {Value} or Null)`)
+			Block:Line(`table.insert(State.SendInstances, {Value} or Null)`)
 		end,
 	}
 
@@ -585,11 +585,11 @@ end
 do
 	Types.unknown = {
 		Read = function(Variable: string, Block: Block)
-			Block:Line("RecieveInstanceCursor += 1")
-			Block:Line(`{Block:Declare(Variable)} = RecieveInstances[RecieveInstanceCursor]`)
+			Block:Line("State.RecieveInstanceCursor += 1")
+			Block:Line(`{Block:Declare(Variable)} = State.RecieveInstances[State.RecieveInstanceCursor]`)
 		end,
 		Write = function(Value: string, Block: Block)
-			Block:Line(`table.insert(SendInstances, if {Value} == nil then Null else {Value})`)
+			Block:Line(`table.insert(State.SendInstances, if {Value} == nil then Null else {Value})`)
 		end,
 	}
 

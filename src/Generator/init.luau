@@ -48,7 +48,7 @@ local EVENT_SYNC_VALIDATION = {
 }
 
 local RELIABLE_BODY = {
-	Header = "local Buffer, Size, Instances = State.SendBuffer, Cursor(), State.SendInstances",
+	Header = "local Buffer, Size, Instances = State.SendBuffer, Frame.Cursor(), State.SendInstances",
 	Body = {
 		"Load(PlayersMap[Player])\n",
 		"local Position = Allocate(Size)\n",
@@ -59,8 +59,8 @@ local RELIABLE_BODY = {
 }
 
 local UNRELIABLE_BODY = {
-	"local Buffer = buffer.create(Cursor())\n",
-	"buffer.copy(Buffer, 0, State.SendBuffer, 0, Cursor())\n",
+	"local Buffer = buffer.create(Frame.Cursor())\n",
+	"buffer.copy(Buffer, 0, State.SendBuffer, 0, Frame.Cursor())\n",
 }
 
 local IGNORED_TYPES_IN_SHARED = {
@@ -277,22 +277,10 @@ local function GetEventBody(Channel: string): { string }
 		table.insert(Body, "Instances = ReassembledInstances\n")
 		table.insert(Body, "Size = buffer.len(Buffer)\n")
 		table.insert(Body, "RecieveSize = Size\n")
-		table.insert(Body, "RecieveInstances = Instances or {}\n")
+		table.insert(Body, "State.RecieveInstances = Instances or {}\n")
 	end
 
-	--> count derived from the table: a hardcoded length silently drops the
-	--> tail when a line is added here
-	local Reset = {
-		"RecieveCursor = 0\n",
-		"RecieveBuffer = Buffer\n",
-		"State.RecieveBuffer = Buffer\n",
-		"RecieveInstanceCursor = 0\n",
-		"RecieveBitByte = 0\n",
-		"RecieveBitCount = 0\n",
-		"RecieveStrings = {}\n",
-		"NextRecieveStringId = 1\n",
-	}
-	table.move(Reset, 1, #Reset, #Body + 1, Body)
+	table.insert(Body, "Frame.BeginMessages(Buffer)\n")
 
 	return Body
 end
@@ -308,7 +296,7 @@ end
 local function AddReceiveGuards(Block: Blocks.Block, Name: string, Reliability: string, Value: { [string]: any })
 	local Source = SourceExpression()
 	local EventMaxPacketBytes = Value.MaxPacketBytes or Options.MaxPacketBytes
-	Block:Line("local EventStart = RecieveCursor")
+	Block:Line("local EventStart = Frame.At()")
 	if EventMaxPacketBytes then
 		Block:Line(
 			`if Size > {EventMaxPacketBytes} then DropPacket({Source}, "{Reliability}", "MaxPacketBytes", Size) {AbortReadLine()} end`
@@ -356,10 +344,10 @@ local function AddAfterReceive(Block: Blocks.Block, Name: string, Reliability: s
 		`if not RuntimeSupport.ValidateDecodedPayload("{Name}", {Source}, "{Reliability}", {PayloadExpression or "nil"}, Size) then {AbortReadLine()} end`
 	)
 	Block:Line(
-		`TrackEventReceive("{Name}", "{Reliability}", RecieveCursor - EventStart, {Source}, {PayloadExpression or "nil"})`
+		`TrackEventReceive("{Name}", "{Reliability}", Frame.At() - EventStart, {Source}, {PayloadExpression or "nil"})`
 	)
 	if Context == "Server" then
-		Block:Line("if RecievePredictionId ~= nil then")
+		Block:Line("if Frame.HasPredictionId() then")
 		Block:Line("Load(PlayersMap[Player])", Block.Indent + 1)
 		Block:Line(`WritePredictionAckPayload("{Name}", true, nil)`, Block.Indent + 1)
 		Block:Line("PlayersMap[Player] = Save()", Block.Indent + 1)
@@ -375,7 +363,7 @@ local function AddDecodeFailureGuard(Block: Blocks.Block, Name: string, Reliabil
 		`RunHooks("Error", \{ Name = "{Name}", Source = {Source}, Channel = "{Reliability}", Error = {ErrorExpression} \})`
 	)
 	if Context == "Server" then
-		Failure:Line("if RecievePredictionId ~= nil then")
+		Failure:Line("if Frame.HasPredictionId() then")
 		Failure:Line("Load(PlayersMap[Player])", Failure.Indent + 1)
 		Failure:Line(`WritePredictionAckPayload("{Name}", false, "MalformedPacket")`, Failure.Indent + 1)
 		Failure:Line("PlayersMap[Player] = Save()", Failure.Indent + 1)
@@ -400,7 +388,7 @@ local function AddTrackedWrite(
 		`if not BeforeSend("{Name}", "{Reliability}", {Target or "nil"}) then DropPacket({Target or "nil"}, "{Reliability}", "MiddlewareRejected") return end`
 	)
 	Block:Line("RuntimeSupport.QueueCapabilityHandshake(nil)")
-	Block:Line("local PreviousCursor = Cursor()")
+	Block:Line("local PreviousCursor = Frame.Cursor()")
 	if PredictionId then
 		Block:Line("local PreviousPredictionId = SendPredictionId")
 		Block:Line(`SendPredictionId = {PredictionId}`)
@@ -409,9 +397,9 @@ local function AddTrackedWrite(
 	if PredictionId then
 		Block:Line("SendPredictionId = PreviousPredictionId")
 	end
-	Block:Line(`local EventSize = Cursor() - PreviousCursor`)
+	Block:Line(`local EventSize = Frame.Cursor() - PreviousCursor`)
 	Block:Line(
-		`if not RuntimeSupport.RecordQueuedEvent({Target or "nil"}, "{Reliability}", EventSize, "{Priority or "Gameplay"}") then Rewind(PreviousCursor) return end`
+		`if not RuntimeSupport.RecordQueuedEvent({Target or "nil"}, "{Reliability}", EventSize, "{Priority or "Gameplay"}") then Frame.Rewind(PreviousCursor) return end`
 	)
 	if CoalesceKey then
 		Block:Line(
@@ -1049,17 +1037,17 @@ function Declarations.Event(Declaration: Parser.Event)
 				Value.Priority,
 				Value.CoalesceKey
 			)
-			Fire:Line("local Buffer = buffer.create(Cursor())")
-			Fire:Line("buffer.copy(Buffer, 0, State.SendBuffer, 0, Cursor())")
+			Fire:Line("local Buffer = buffer.create(Frame.Cursor())")
+			Fire:Line("buffer.copy(Buffer, 0, State.SendBuffer, 0, Frame.Cursor())")
 			Fire:Compare(
-				"RuntimeConfig.MaxUnreliablePacketBytes > 0 and Cursor()",
+				"RuntimeConfig.MaxUnreliablePacketBytes > 0 and Frame.Cursor()",
 				"RuntimeConfig.MaxUnreliablePacketBytes",
 				"Greater"
 			)
-				:Line(`DropPacket("Client", "Unreliable", "MaxPacketBytes", Cursor())`)
+				:Line(`DropPacket("Client", "Unreliable", "MaxPacketBytes", Frame.Cursor())`)
 				:Branch("Default")
 				:Line("Unreliable:FireServer(Buffer, InstancePayload(State.SendInstances))")
-				:Line(`TrackSend("Unreliable", Cursor(), nil)`)
+				:Line(`TrackSend("Unreliable", Frame.Cursor(), nil)`)
 				:End()
 			Fire:Line("Load(Previous)")
 		end
@@ -1098,17 +1086,17 @@ function Declarations.Event(Declaration: Parser.Event)
 					Value.Priority,
 					Value.CoalesceKey
 				)
-				Predict:Line("local Buffer = buffer.create(Cursor())")
-				Predict:Line("buffer.copy(Buffer, 0, State.SendBuffer, 0, Cursor())")
+				Predict:Line("local Buffer = buffer.create(Frame.Cursor())")
+				Predict:Line("buffer.copy(Buffer, 0, State.SendBuffer, 0, Frame.Cursor())")
 				Predict:Compare(
-					"RuntimeConfig.MaxUnreliablePacketBytes > 0 and Cursor()",
+					"RuntimeConfig.MaxUnreliablePacketBytes > 0 and Frame.Cursor()",
 					"RuntimeConfig.MaxUnreliablePacketBytes",
 					"Greater"
 				)
-					:Line(`DropPacket("Client", "Unreliable", "MaxPacketBytes", Cursor())`)
+					:Line(`DropPacket("Client", "Unreliable", "MaxPacketBytes", Frame.Cursor())`)
 					:Branch("Default")
 					:Line("Unreliable:FireServer(Buffer, InstancePayload(State.SendInstances))")
-					:Line(`TrackSend("Unreliable", Cursor(), nil)`)
+					:Line(`TrackSend("Unreliable", Frame.Cursor(), nil)`)
 					:End()
 				Predict:Line("Load(Previous)")
 			end
@@ -1148,14 +1136,14 @@ function Declarations.Event(Declaration: Parser.Event)
 			)
 			Fire:Lines(UNRELIABLE_BODY, 1)
 			Fire:Compare(
-				"RuntimeConfig.MaxUnreliablePacketBytes > 0 and Cursor()",
+				"RuntimeConfig.MaxUnreliablePacketBytes > 0 and Frame.Cursor()",
 				"RuntimeConfig.MaxUnreliablePacketBytes",
 				"Greater"
 			)
-				:Line(`DropPacket(Player, "Unreliable", "MaxPacketBytes", Cursor())`)
+				:Line(`DropPacket(Player, "Unreliable", "MaxPacketBytes", Frame.Cursor())`)
 				:Branch("Default")
 				:Line("Unreliable:FireClient(Player, Buffer, InstancePayload(State.SendInstances))")
-				:Line(`TrackSend("Unreliable", Cursor(), Player)`)
+				:Line(`TrackSend("Unreliable", Frame.Cursor(), Player)`)
 				:End()
 		end
 		Fire:End()
@@ -1191,14 +1179,14 @@ function Declarations.Event(Declaration: Parser.Event)
 			)
 			FireAll:Lines(UNRELIABLE_BODY, 1)
 			FireAll:Compare(
-				"RuntimeConfig.MaxUnreliablePacketBytes > 0 and Cursor()",
+				"RuntimeConfig.MaxUnreliablePacketBytes > 0 and Frame.Cursor()",
 				"RuntimeConfig.MaxUnreliablePacketBytes",
 				"Greater"
 			)
-				:Line(`DropPacket(nil, "Unreliable", "MaxPacketBytes", Cursor())`)
+				:Line(`DropPacket(nil, "Unreliable", "MaxPacketBytes", Frame.Cursor())`)
 				:Branch("Default")
 				:Line("Unreliable:FireAllClients(Buffer, InstancePayload(State.SendInstances))")
-				:Line(`TrackSend("Unreliable", Cursor(), nil)`)
+				:Line(`TrackSend("Unreliable", Frame.Cursor(), nil)`)
 				:End()
 		end
 		FireAll:End()
@@ -1234,15 +1222,15 @@ function Declarations.Event(Declaration: Parser.Event)
 			)
 			FireList:Lines(UNRELIABLE_BODY, 1)
 			FireList:Compare(
-				"RuntimeConfig.MaxUnreliablePacketBytes > 0 and Cursor()",
+				"RuntimeConfig.MaxUnreliablePacketBytes > 0 and Frame.Cursor()",
 				"RuntimeConfig.MaxUnreliablePacketBytes",
 				"Greater"
 			)
-				:Line(`DropPacket(nil, "Unreliable", "MaxPacketBytes", Cursor())`)
+				:Line(`DropPacket(nil, "Unreliable", "MaxPacketBytes", Frame.Cursor())`)
 				:Branch("Default")
 				:Iterator("_", "Player", "List")
 				:Line("Unreliable:FireClient(Player, Buffer, InstancePayload(State.SendInstances))")
-				:Line(`TrackSend("Unreliable", Cursor(), Player)`)
+				:Line(`TrackSend("Unreliable", Frame.Cursor(), Player)`)
 				:End()
 				:End()
 		end
@@ -1284,18 +1272,18 @@ function Declarations.Event(Declaration: Parser.Event)
 			)
 			FireExcept:Lines(UNRELIABLE_BODY, 1)
 			FireExcept:Compare(
-				"RuntimeConfig.MaxUnreliablePacketBytes > 0 and Cursor()",
+				"RuntimeConfig.MaxUnreliablePacketBytes > 0 and Frame.Cursor()",
 				"RuntimeConfig.MaxUnreliablePacketBytes",
 				"Greater"
 			)
-				:Line(`DropPacket(nil, "Unreliable", "MaxPacketBytes", Cursor())`)
+				:Line(`DropPacket(nil, "Unreliable", "MaxPacketBytes", Frame.Cursor())`)
 				:Branch("Default")
 				:Iterator("_", "Player", "Players:GetPlayers()")
 				:Compare("Player", "Except", "Equals")
 				:Line("continue")
 				:End()
 				:Line("Unreliable:FireClient(Player, Buffer, InstancePayload(State.SendInstances))")
-				:Line(`TrackSend("Unreliable", Cursor(), Player)`)
+				:Line(`TrackSend("Unreliable", Frame.Cursor(), Player)`)
 				:End()
 				:End()
 		end
@@ -1332,15 +1320,15 @@ function Declarations.Event(Declaration: Parser.Event)
 			)
 			FireGroup:Lines(UNRELIABLE_BODY, 1)
 			FireGroup:Compare(
-				"RuntimeConfig.MaxUnreliablePacketBytes > 0 and Cursor()",
+				"RuntimeConfig.MaxUnreliablePacketBytes > 0 and Frame.Cursor()",
 				"RuntimeConfig.MaxUnreliablePacketBytes",
 				"Greater"
 			)
-				:Line(`DropPacket(GroupName, "Unreliable", "MaxPacketBytes", Cursor())`)
+				:Line(`DropPacket(GroupName, "Unreliable", "MaxPacketBytes", Frame.Cursor())`)
 				:Branch("Default")
 				:Iterator("_", "Player", "GetGroupPlayers(GroupName)")
 				:Line("Unreliable:FireClient(Player, Buffer, InstancePayload(State.SendInstances))")
-				:Line(`TrackSend("Unreliable", Cursor(), Player)`)
+				:Line(`TrackSend("Unreliable", Frame.Cursor(), Player)`)
 				:End()
 				:End()
 		end
@@ -1437,7 +1425,7 @@ function Declarations.Function(Declaration: Parser.Function)
 	if Context == "Server" then
 		--> Data recieve body
 		AddReceiveGuards(Block, Name, "Reliable", Value)
-		Block:Line("local InvocationIdentifier = buffer.readu8(RecieveBuffer, Read(1))")
+		Block:Line("local InvocationIdentifier = buffer.readu8(State.RecieveBuffer, Read(1))")
 		local DecodeError = string.split(DataArguments, ",")[1] or "Value"
 		Block:Line(`local Success, {DataArguments} = pcall({Util.GetPath(DataIdentifier, false, Scope)})`)
 		AddDecodeFailureGuard(Block, Name, "Reliable", DecodeError)
@@ -1503,7 +1491,7 @@ function Declarations.Function(Declaration: Parser.Function)
 			:Wrap(`local Success, {ReturnArguments} = pcall(`, ")")
 
 		AddReceiveGuards(Block, Name, "Reliable", Value)
-		Block:Line("local InvocationIdentifier = buffer.readu8(RecieveBuffer, Read(1))")
+		Block:Line("local InvocationIdentifier = buffer.readu8(State.RecieveBuffer, Read(1))")
 		Block:Lines(Deserialize.Content, Block.Indent + 1)
 		AddAfterReceive(Block, Name, "Reliable", `table.pack({ReturnArguments})`)
 		Block:Line("local Invocation = ClearInvocation(InvocationIdentifier)")
@@ -1519,9 +1507,11 @@ function Declarations.Function(Declaration: Parser.Function)
 			:Line(
 				`RegisterInvocation(InvocationIdentifier, coroutine.running(), "{Name}", {InvokeMaxPending}, {InvokeTimeout})`
 			)
-			:Line("local PreviousCursor = Cursor()")
+			:Line("local PreviousCursor = Frame.Cursor()")
 			:Line(`{Util.GetPath(DataIdentifier, true, Scope)}({DataArguments}, InvocationIdentifier)`)
-			:Line(`TrackEventSend("{Name}", "Reliable", Cursor() - PreviousCursor, nil, table.pack({DataArguments}))`)
+			:Line(
+				`TrackEventSend("{Name}", "Reliable", Frame.Cursor() - PreviousCursor, nil, table.pack({DataArguments}))`
+			)
 			:Line(`local Success, {ReturnValues} = coroutine.yield()`)
 			:Compare("Success", "true", "Not")
 			:Line(`error(InvocationErrorMessage({Error}, {ReturnArguments}))`)
@@ -1624,7 +1614,7 @@ function Declarations.Channel(Declaration: Parser.Channel)
 		end
 
 		AddReceiveGuards(Block, Declaration.Name, Reliability, Value)
-		Block:Line("local CHANNEL_MODE = buffer.readu8(RecieveBuffer, Read(1))")
+		Block:Line("local CHANNEL_MODE = buffer.readu8(State.RecieveBuffer, Read(1))")
 		local ModeBranch = Block:Compare("CHANNEL_MODE", "0", "Equals")
 		ModeBranch:Line(`local Success, Value = pcall({ReadFullPath})`)
 		AddDecodeFailureGuard(ModeBranch, Declaration.Name, Reliability, "Value")
@@ -1746,14 +1736,14 @@ function Declarations.Channel(Declaration: Parser.Channel)
 				)
 				FunctionBlock:Lines(UNRELIABLE_BODY, 1)
 				FunctionBlock:Compare(
-					"RuntimeConfig.MaxUnreliablePacketBytes > 0 and Cursor()",
+					"RuntimeConfig.MaxUnreliablePacketBytes > 0 and Frame.Cursor()",
 					"RuntimeConfig.MaxUnreliablePacketBytes",
 					"Greater"
 				)
-					:Line(`DropPacket({Target}, "Unreliable", "MaxPacketBytes", Cursor())`)
+					:Line(`DropPacket({Target}, "Unreliable", "MaxPacketBytes", Frame.Cursor())`)
 					:Branch("Default")
 					:Line(`Unreliable:FireClient({Target}, Buffer, InstancePayload(State.SendInstances))`)
-					:Line(`TrackSend("Unreliable", Cursor(), {Target})`)
+					:Line(`TrackSend("Unreliable", Frame.Cursor(), {Target})`)
 					:End()
 			end
 		end
@@ -2141,9 +2131,9 @@ function Declarations.Optional(Declaration: Parser.Optional, Read: Blocks.Block,
 	local IsInstance = if Of.Type == "Primitive" then Of.Tokens.Primitive.Value == "Instance" else false
 
 	if IsInstance then
-		Read:Line("RecieveInstanceCursor += 1")
-		Read = Read:Compare("typeof(RecieveInstances[RecieveInstanceCursor])", '"Instance"', "Equals")
-		Read:Line("RecieveInstanceCursor -= 1")
+		Read:Line("State.RecieveInstanceCursor += 1")
+		Read = Read:Compare("typeof(State.RecieveInstances[State.RecieveInstanceCursor])", '"Instance"', "Equals")
+		Read:Line("State.RecieveInstanceCursor -= 1")
 	else
 		Write:Line(`WriteBit({Variable} ~= nil and {Variable} ~= Tombstone)`)
 		Read = Read:Compare("ReadBit()", "true", "Equals")
@@ -2171,7 +2161,7 @@ function Generators.UserType(Declaration: Type, Read: Blocks.Block, Write: Block
 	if Declaration.Type == "Primitive" then
 		local Kind = (Declaration :: Parser.Primitive).Tokens.Primitive.Value
 		if Kind == "Instance" then
-			Read:Line("RecieveInstanceCursor += 1")
+			Read:Line("State.RecieveInstanceCursor += 1")
 		end
 
 		Declarations.Primitive(Declaration, Read, Write, Variable)
@@ -2341,31 +2331,8 @@ function Generators.Export(Declaration: Type)
 	Write:Comment("Buffer overwrite")
 
 	Read:Lines({
-		"local PreviousCursor = RecieveCursor\n",
-		"local PreviousBuffer = RecieveBuffer\n",
-		"local PreviousSize = RecieveSize\n",
-		"local PreviousFrameEnd = RecieveFrameEnd\n",
-		"local PreviousFrameInstanceEnd = RecieveFrameInstanceEnd\n",
-		"local PreviousBitByte = RecieveBitByte\n",
-		"local PreviousBitCount = RecieveBitCount\n",
-		"local PreviousStrings = RecieveStrings\n",
-		"local PreviousNextStringId = NextRecieveStringId\n",
-		"local PreviousInstances = RecieveInstances\n",
-		"local PreviousInstanceCursor = RecieveInstanceCursor\n",
-		"local PreviousPredictionId = RecievePredictionId\n",
-		"RecieveCursor = 0\n",
-		"RecieveBuffer = Buffer\n",
-		"State.RecieveBuffer = Buffer\n",
-		"RecieveSize = buffer.len(Buffer)\n",
-		"RecieveFrameEnd = 0\n",
-		"RecieveFrameInstanceEnd = 0\n",
-		"RecieveBitByte = 0\n",
-		"RecieveBitCount = 0\n",
-		"RecieveStrings = {}\n",
-		"NextRecieveStringId = 1\n",
-		"RecieveInstances = {}\n",
-		"RecieveInstanceCursor = 0\n",
-		"RecievePredictionId = nil\n",
+		"local PreviousFrame = Frame.SaveFrame()\n",
+		"Frame.EnterFrame(Buffer)\n",
 	}, 1)
 
 	Write:Lines({
@@ -2387,24 +2354,12 @@ function Generators.Export(Declaration: Type)
 	Write:Comment("Buffer restore")
 
 	Read:Lines({
-		"RecieveCursor = PreviousCursor\n",
-		"RecieveBuffer = PreviousBuffer\n",
-		"State.RecieveBuffer = PreviousBuffer\n",
-		"RecieveSize = PreviousSize\n",
-		"RecieveFrameEnd = PreviousFrameEnd\n",
-		"RecieveFrameInstanceEnd = PreviousFrameInstanceEnd\n",
-		"RecieveBitByte = PreviousBitByte\n",
-		"RecieveBitCount = PreviousBitCount\n",
-		"RecieveStrings = PreviousStrings\n",
-		"NextRecieveStringId = PreviousNextStringId\n",
-		"RecieveInstances = PreviousInstances\n",
-		"RecieveInstanceCursor = PreviousInstanceCursor\n",
-		"RecievePredictionId = PreviousPredictionId\n",
+		"Frame.RestoreFrame(PreviousFrame)\n",
 	}, 1)
 
 	--> Trim buffer
-	Write:Line("local Result = buffer.create(Cursor())")
-	Write:Line("buffer.copy(Result, 0, State.SendBuffer, 0, Cursor())")
+	Write:Line("local Result = buffer.create(Frame.Cursor())")
+	Write:Line("buffer.copy(Result, 0, State.SendBuffer, 0, Frame.Cursor())")
 
 	Write:Line(`Load(Previous)`)
 
@@ -2565,8 +2520,8 @@ function Generator.Generate(FileContext: Context, AbstractSyntaxTree: Parser.Bod
 	--> each recovery path to move the cursor.
 	Reliables:Line("local ReadGuard = Size + 8")
 	Unreliables:Line("local ReadGuard = Size + 8")
-	Reliables = Reliables:While("RecieveCursor < Size")
-	Unreliables = Unreliables:While("RecieveCursor < Size")
+	Reliables = Reliables:While("Frame.At() < Size")
+	Unreliables = Unreliables:While("Frame.At() < Size")
 	Reliables:Line("ReadGuard -= 1")
 	Reliables:Line(
 		`if ReadGuard <= 0 then DropPacket({SourceExpression()}, "Reliable", "MalformedPacket", Size) break end`

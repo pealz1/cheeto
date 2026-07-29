@@ -28,12 +28,12 @@ local State = {
     SendBuffer = SendBuffer,
     RecieveBuffer = RecieveBuffer,
     SendInstances = SendInstances,
+    RecieveInstances = {},
+    RecieveInstanceCursor = 0,
 }
 local RecieveFrameInstanceEnd = 0
 local RecievePredictionId: number? = nil
 
-local RecieveInstances = {}
-local RecieveInstanceCursor = 0
 local Allocate: (number) -> number
 local Read: (number) -> number
 local BeginMessage: (number) -> any
@@ -593,7 +593,7 @@ local function DropPacket(Source: any, Channel: string, Reason: string, Size: nu
         Reason = Reason,
         Size = Size or 0,
         RawBuffer = if typeof(RecieveBuffer) == "buffer" then RecieveBuffer else nil,
-        RawInstances = RecieveInstances
+        RawInstances = State.RecieveInstances
     })
 
     RunHooks("Drop", {
@@ -2150,12 +2150,89 @@ end
 --> size an event and rewind it when the queue rejects one. Deliberately not
 --> mirrored into State -- the cursor moves on every allocation, and a table
 --> write per field would cost more than these calls do per event.
-local function Cursor(): number
+--> One local instead of eight: Luau caps a scope at 200 locals and the
+--> generated module sits just under it.
+local Frame = {}
+
+function Frame.Cursor(): number
     return SendCursor
 end
 
-local function Rewind(To: number)
+function Frame.Rewind(To: number)
     SendCursor = To
+end
+
+--> Receive-side boundary. Generated code drives the receive cursor at packet
+--> and frame boundaries while the runtime's Read() advances it per field, so
+--> the two sides have to agree on one owner. The runtime keeps the locals;
+--> these are the only entry points generated code needs, and every one is per
+--> packet, per frame or per event -- never per field.
+--> Line comments, not a block comment: this whole template is emitted from
+--> inside a Luau long string, so a nested closing long-bracket ends it early.
+function Frame.At(): number
+    return RecieveCursor
+end
+
+function Frame.HasPredictionId(): boolean
+    return RecievePredictionId ~= nil
+end
+
+--> Exactly the per-packet reset the generator used to emit inline. Size and
+--> instances are deliberately NOT touched here: the caller sets those only on
+--> the reassembly path, and folding them in would clobber the normal path.
+function Frame.BeginMessages(Buffer: buffer)
+    RecieveCursor = 0
+    RecieveBuffer = Buffer
+    State.RecieveBuffer = Buffer
+    State.RecieveInstanceCursor = 0
+    RecieveBitByte = 0
+    RecieveBitCount = 0
+    RecieveStrings = {}
+    NextRecieveStringId = 1
+end
+
+--> Nested frames (an invocation read inside another read) save the whole
+--> receive context, run, then put it back.
+function Frame.SaveFrame(): any
+    return {
+        Cursor = RecieveCursor,
+        Buffer = RecieveBuffer,
+        Size = RecieveSize,
+        FrameEnd = RecieveFrameEnd,
+        FrameInstanceEnd = RecieveFrameInstanceEnd,
+        BitByte = RecieveBitByte,
+        BitCount = RecieveBitCount,
+        Strings = RecieveStrings,
+        NextStringId = NextRecieveStringId,
+        Instances = State.RecieveInstances,
+        InstanceCursor = State.RecieveInstanceCursor,
+        PredictionId = RecievePredictionId,
+    }
+end
+
+function Frame.EnterFrame(Buffer: buffer)
+    Frame.BeginMessages(Buffer)
+    RecieveSize = buffer.len(Buffer)
+    RecieveFrameEnd = 0
+    RecieveFrameInstanceEnd = 0
+    State.RecieveInstances = {}
+    RecievePredictionId = nil
+end
+
+function Frame.RestoreFrame(Frame: any)
+    RecieveCursor = Frame.Cursor
+    RecieveBuffer = Frame.Buffer
+    State.RecieveBuffer = Frame.Buffer
+    RecieveSize = Frame.Size
+    RecieveFrameEnd = Frame.FrameEnd
+    RecieveFrameInstanceEnd = Frame.FrameInstanceEnd
+    RecieveBitByte = Frame.BitByte
+    RecieveBitCount = Frame.BitCount
+    RecieveStrings = Frame.Strings
+    NextRecieveStringId = Frame.NextStringId
+    State.RecieveInstances = Frame.Instances
+    State.RecieveInstanceCursor = Frame.InstanceCursor
+    RecievePredictionId = Frame.PredictionId
 end
 
 local function WriteBit(Value: boolean)
@@ -2243,7 +2320,7 @@ local function TrackEventReceive(Name: string, Channel: string, Size: number, So
         RawBuffer = RecieveBuffer,
         RawBufferStart = RecieveMessageStart,
         RawBufferSize = RecieveCursor - RecieveMessageStart,
-        RawInstances = RecieveInstances
+        RawInstances = State.RecieveInstances
     })
     RunHooks("AfterReceive", {
         Name = Name,
@@ -2319,7 +2396,7 @@ local function ValidateIncoming(Source: any, Channel: string, IncomingBuffer: an
     RecieveSource = Source
     RecieveChannel = Channel
     RecieveSize = Size
-    RecieveInstances = Instances or {}
+    State.RecieveInstances = Instances or {}
 
     MetricAdd("BytesReceived", Channel, Size)
     MetricAdd("PacketsReceived", Channel)
@@ -2718,7 +2795,7 @@ local function BeginReadMessage(PacketSize: number): number?
     AlignReadBits()
     RecieveMessageStart = RecieveCursor
     RecieveFrameEnd = 0
-    RecieveFrameInstanceEnd = RecieveInstanceCursor
+    RecieveFrameInstanceEnd = State.RecieveInstanceCursor
     RecievePredictionId = nil
 
     local Index = buffer.readu8(RecieveBuffer, Read(1))
@@ -2737,7 +2814,7 @@ local function BeginReadMessage(PacketSize: number): number?
     end
 
     RecieveFrameEnd = FrameEnd
-    RecieveFrameInstanceEnd = RecieveInstanceCursor + InstanceCount
+    RecieveFrameInstanceEnd = State.RecieveInstanceCursor + InstanceCount
     return Index
 end
 
@@ -2759,16 +2836,16 @@ local function EndReadMessage()
         DropPacket(RecieveSource, RecieveChannel, "MalformedPacket", RecieveSize)
         RecieveCursor = RecieveSize
         RecieveFrameEnd = 0
-        RecieveFrameInstanceEnd = RecieveInstanceCursor
+        RecieveFrameInstanceEnd = State.RecieveInstanceCursor
         RecievePredictionId = nil
         RecieveMessageStart = 0
         return
     end
 
     RecieveCursor = RecieveFrameEnd
-    RecieveInstanceCursor = RecieveFrameInstanceEnd
+    State.RecieveInstanceCursor = RecieveFrameInstanceEnd
     RecieveFrameEnd = 0
-    RecieveFrameInstanceEnd = RecieveInstanceCursor
+    RecieveFrameInstanceEnd = State.RecieveInstanceCursor
     RecievePredictionId = nil
     RecieveMessageStart = 0
 end
@@ -2782,7 +2859,7 @@ local function RecoverMessage()
     AlignReadBits()
     RecieveCursor = RecieveSize
     RecieveFrameEnd = 0
-    RecieveFrameInstanceEnd = RecieveInstanceCursor
+    RecieveFrameInstanceEnd = State.RecieveInstanceCursor
     RecievePredictionId = nil
     RecieveMessageStart = 0
 end
