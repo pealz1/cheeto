@@ -399,7 +399,31 @@ local function AbortReadLine(): string
 	return "RecoverMessage() continue"
 end
 
-local function AddReceiveGuards(Block: Blocks.Block, Name: string, Reliability: string, Value: { [string]: any })
+--> TrustedSource is for the leg of a function that carries the SERVER'S REPLY back
+--> to the client. Auth rules and policies are registered on the server, so emitting
+--> them on that leg asks the client to evaluate a rule it has never heard of --
+--> CheckAuth then fails closed and silently drops every response, which looks like
+--> the invoke simply never returning. It is also meaningless on its own terms:
+--> authenticating and rate-limiting the server's own reply protects nothing. The
+--> size and decode caps DO still apply; those bound work, not permission.
+local function AddReceiveGuards(
+	Block: Blocks.Block,
+	Name: string,
+	Reliability: string,
+	Value: { [string]: any },
+	TrustedSource: boolean?
+)
+	if TrustedSource then
+		local Filtered = table.clone(Value)
+		Filtered.Auth = nil
+		Filtered.Policy = nil
+		Filtered.PolicyGroup = nil
+		Filtered.RateLimitPerSecond = 0
+		Filtered.RateLimitBurst = 0
+		Filtered.CooldownSeconds = nil
+		Value = Filtered
+	end
+
 	local Source = SourceExpression()
 	local EventMaxPacketBytes = Value.MaxPacketBytes or Options.MaxPacketBytes
 	Block:Line("local EventStart = Frame.At()")
@@ -1618,7 +1642,8 @@ function Declarations.Function(Declaration: Parser.Function)
 			:End()
 			:Wrap(`local Success, {ReturnArguments} = pcall(`, ")")
 
-		AddReceiveGuards(Block, Name, "Reliable", Value)
+		--> The reply leg: source is the server, so no auth/policy/rate limit.
+		AddReceiveGuards(Block, Name, "Reliable", Value, true)
 		Block:Line("local InvocationIdentifier = buffer.readu8(State.RecieveBuffer, Read(1))")
 		Block:Lines(Deserialize.Content, Block.Indent + 1)
 		AddAfterReceive(Block, Name, "Reliable", `table.pack({ReturnArguments})`)
