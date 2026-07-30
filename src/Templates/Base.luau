@@ -113,7 +113,15 @@ local Hooks: {[string]: {(...any) -> any}} = {
     Rollback = {},
     Violation = {},
     Telemetry = {},
-    Listener = {}
+    Listener = {},
+    --> Runs AFTER deserialization and can reject, which is what BeforeReceive and
+    --> policies cannot do: both run before the payload exists. This is the only
+    --> place a constraint about the CONTENT of a packet can be enforced --
+    --> MaxDistance, RequireOwnership, RequireTeam and the rest describe the decoded
+    --> value, not the sender. Receives
+    --> { Name, Source, Channel, Size, Constraints, Payload } and returning false
+    --> drops the packet before the listener runs.
+    Validate = {}
 }
 
 local TransportError = table.freeze({
@@ -131,6 +139,9 @@ local TransportError = table.freeze({
     Backpressure = "Backpressure",
     RateLimit = "RateLimit",
     PolicyRejected = "PolicyRejected",
+    --> A payload-dependent constraint (MaxDistance, RequireOwnership, ...) was
+    --> rejected by a Validate hook, after the payload was decoded.
+    ConstraintRejected = "ConstraintRejected",
     AuthRejected = "AuthRejected",
     KillSwitch = "KillSwitch",
     Honeypot = "Honeypot",

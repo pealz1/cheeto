@@ -56,20 +56,36 @@ and return `true`, watch the logs, and only then enforce. An auth gate that
 depends on a handshake winning a race against the player's first input will drop
 real traffic, and it will do it silently.
 
-## Constraint fields are inputs to policies, not enforcement
+## Constraint fields are inputs to a rule you write, not enforcement
 
 `MaxDistance`, `RequireOwnership`, `RequireTeam`, `RequireZone`, `RequireMatch`,
 `RequireInventoryOwnership`, `RequireCharacterState`, `RequireObjectHandle` and
-`RequireServerKnownId` are parsed, validated and handed to your policy in
-`Context.Constraints`. **The runtime enforces none of them.** Declaring one
-without a policy that reads it does nothing at all.
+`RequireServerKnownId` are parsed, validated and handed to your own code in
+`Context.Constraints`. **The runtime enforces none of them by itself.** Declaring
+one without a rule that reads it does nothing at all.
 
-There is a hard limit on what a policy *can* enforce: **policies run before the
-payload is deserialised.** So a policy can act on constraints about the sender
+There is a hard limit on what a *policy* can enforce: **policies run before the
+payload is deserialised.** A policy can act on constraints about the sender
 (`RequireCharacterState` -- is this player's character alive?) and cannot act on
 constraints about the payload (`MaxDistance` -- how far away is the target the
-client named?). Payload-dependent checks belong in the event's handler, which is
-the first place with both the decoded value and the authority to refuse it.
+client named?), because the value it would measure does not exist yet.
+
+Payload-dependent constraints go in the **`Validate`** middleware, which runs after
+decoding and before your listener; returning false drops the packet as
+`ConstraintRejected`:
+
+```lua
+cheeto.Use("Validate", function(Context)
+    -- { Name, Source, Channel, Size, Constraints, Payload }
+    local Max = Context.Constraints.MaxDistance
+    return not (Max and Max > 0) or WithinRange(Context.Source, Context.Payload[1], Max)
+end)
+```
+
+The hook is emitted only for events that declare a payload-dependent constraint,
+so events that declare none keep an unchanged receive path. Register the check in
+the same change that declares the field -- a declared constraint with no rule
+reading it is a silent no-op, which is exactly the trap these fields used to be.
 
 ## Anti-replay and idempotency need a sequence number
 

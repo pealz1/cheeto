@@ -67,13 +67,15 @@
 		"TupleUnreliable": { "id": 54, "kind": "Event", "deprecated": false, "reserved": false },
 		"TupleFunction": { "id": 55, "kind": "Function", "deprecated": false, "reserved": false },
 		"AuthedClient": { "id": 56, "kind": "Event", "deprecated": false, "reserved": false },
-		"UnknownAuthClient": { "id": 57, "kind": "Event", "deprecated": false, "reserved": false },
-		"HoneypotClient": { "id": 58, "kind": "Event", "deprecated": false, "reserved": false },
-		"IdempotentClient": { "id": 59, "kind": "Event", "deprecated": false, "reserved": false },
-		"InScopeEvent": { "id": 60, "kind": "Event", "deprecated": false, "reserved": false },
-		"InAnotherScopeEvent": { "id": 61, "kind": "Event", "deprecated": false, "reserved": false },
+		"ConstrainedClient": { "id": 57, "kind": "Event", "deprecated": false, "reserved": false },
+		"UnconstrainedClient": { "id": 58, "kind": "Event", "deprecated": false, "reserved": false },
+		"UnknownAuthClient": { "id": 59, "kind": "Event", "deprecated": false, "reserved": false },
+		"HoneypotClient": { "id": 60, "kind": "Event", "deprecated": false, "reserved": false },
+		"IdempotentClient": { "id": 61, "kind": "Event", "deprecated": false, "reserved": false },
 		"InScopeEvent": { "id": 62, "kind": "Event", "deprecated": false, "reserved": false },
-		"Event": { "id": 63, "kind": "Event", "deprecated": false, "reserved": false }
+		"InAnotherScopeEvent": { "id": 63, "kind": "Event", "deprecated": false, "reserved": false },
+		"InScopeEvent": { "id": 64, "kind": "Event", "deprecated": false, "reserved": false },
+		"Event": { "id": 65, "kind": "Event", "deprecated": false, "reserved": false }
 	},
 	"typeHashes": {
 		"TestStruct": "Struct:TestStruct",

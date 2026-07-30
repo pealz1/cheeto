@@ -102,17 +102,44 @@ and rejects before deserialising.
 #### `Risk` and the `Require*` fields
 `Risk`, `MaxDistance`, `RequireOwnership`, `RequireTeam`, `RequireZone`,
 `RequireMatch`, `RequireInventoryOwnership`, `RequireCharacterState`,
-`RequireObjectHandle` and `RequireServerKnownId` are parsed and handed to your
-policy in `Context.Constraints`. **The runtime enforces none of them** — they are
-inputs to a policy you write, and declaring one without a policy that reads it
-does nothing.
+`RequireObjectHandle` and `RequireServerKnownId` are parsed and handed to your own
+code in `Context.Constraints`. **The runtime enforces none of them by itself** —
+they are inputs to a rule you write, and declaring one without a rule that reads
+it does nothing.
 
-A policy runs *before the payload is deserialised*, which bounds what it can
-check: constraints about the **sender** are available (`RequireCharacterState`),
-constraints about the **payload** are not (`MaxDistance` — the target the client
-named has not been decoded yet). Enforce payload-dependent constraints in the
-event's handler, the first place with both the decoded value and the authority to
-refuse it.
+Which rule depends on *what the constraint describes*:
+
+| Constraint is about | Where to enforce it | Why |
+|---|---|---|
+| The **sender** (`RequireCharacterState`) | a `Policy` | Policies run before deserialisation, and the sender is already known |
+| The **payload** (`MaxDistance`, `RequireOwnership`, `RequireTeam`, `RequireZone`, `RequireMatch`, `RequireInventoryOwnership`, `RequireObjectHandle`, `RequireServerKnownId`) | the `Validate` middleware | The value being constrained does not exist until after deserialisation |
+
+`Validate` runs **after** the payload is decoded and **before** your listener, and
+returning `false` drops the packet with reason `ConstraintRejected`:
+
+```lua filename="server.luau" copy
+cheeto.Use("Validate", function(Context)
+    -- Context = { Name, Source, Channel, Size, Constraints, Payload }
+    local MaxDistance = Context.Constraints.MaxDistance
+    if MaxDistance and MaxDistance > 0 then
+        local Target = Context.Payload[1]
+        if TooFarFrom(Context.Source, Target, MaxDistance) then
+            return false
+        end
+    end
+    return true
+end)
+```
+
+<Callout type="info">
+The hook is emitted **only** for events that declare at least one
+payload-dependent constraint. An event that declares none has a byte-for-byte
+unchanged receive path — this runs on every packet, and the context table is a
+per-packet allocation, so it is not paid for unless it is used.
+
+`Risk` and `RequireCharacterState` deliberately do not trigger it: `Risk` is a
+tag, and character state is knowable before decoding.
+</Callout>
 
 #### Guard Overrides
 Events can override runtime guardrails:

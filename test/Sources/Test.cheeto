@@ -585,6 +585,27 @@ event AuthedClient {
     Data: u8
 }
 
+--> Declares a PAYLOAD-dependent constraint, which is what makes the generator emit
+--> the post-decode Validate hook. Nothing enforced these before: policies run before
+--> deserialization, so the value MaxDistance describes did not exist yet.
+event ConstrainedClient {
+    From: Client,
+    Type: Reliable,
+    Call: SingleSync,
+    MaxDistance: 50,
+    RequireOwnership: true,
+    Data: u8
+}
+
+--> No payload constraint, so it must NOT get a Validate hook -- the receive path for
+--> an ordinary event has to stay exactly as it was.
+event UnconstrainedClient {
+    From: Client,
+    Type: Reliable,
+    Call: SingleSync,
+    Data: u8
+}
+
 --> Deliberately names a rule nothing registers. An unregistered auth rule must
 --> drop this event and NOTHING else: it shares a packet with AuthedClient in the
 --> test, which has to still arrive.

@@ -1854,6 +1854,65 @@ RunClosure("Transport hardening runtime APIs", function()
 	ReleaseAuthed()
 	ReleaseUnknownAuth()
 
+	--> The Validate hook: the post-decode gate that makes the payload-dependent
+	--> constraint fields (MaxDistance, RequireOwnership, ...) enforceable at all.
+	--> Policies run BEFORE deserialization, so before this existed those fields were
+	--> parsed, handed to policies and acted on by nothing.
+	local Seen, Contexts = 0, {}
+	local ReleaseConstrained = Server.ConstrainedClient.On(function()
+		Seen += 1
+	end)
+
+	--> Rejects odd payloads, so the hook is proven to see the DECODED value -- the
+	--> thing a policy cannot do.
+	local ReleaseValidate = Server.Use("Validate", function(Context)
+		table.insert(Contexts, Context)
+		local Value = Context.Payload and Context.Payload[1]
+		return type(Value) ~= "number" or Value % 2 == 0
+	end)
+
+	Client.ConstrainedClient.Fire(4) --> even, allowed
+	Client.StepReplication()
+	task.wait(1 / 30)
+	assert(Seen == 1, `Expected the allowed payload to arrive, got {Seen}.`)
+
+	Client.ConstrainedClient.Fire(7) --> odd, rejected on payload
+	Client.StepReplication()
+	task.wait(1 / 30)
+	assert(Seen == 1, "Expected the Validate hook to drop a packet on its decoded payload.")
+
+	assert(#Contexts >= 2, `Expected the hook to run for both sends, ran {#Contexts}.`)
+	local First = Contexts[1]
+	assert(First.Name == "ConstrainedClient", `Wrong event name in context: {tostring(First.Name)}`)
+	assert(First.Constraints ~= nil, "Expected the declared constraints in the context.")
+	assert(
+		First.Constraints.MaxDistance == 50,
+		`Expected MaxDistance 50 in the context, got {tostring(First.Constraints.MaxDistance)}.`
+	)
+	assert(First.Constraints.RequireOwnership == true, "Expected RequireOwnership true in the context.")
+	assert(First.Payload ~= nil, "Expected the decoded payload in the context.")
+	ReleaseValidate()
+	ReleaseConstrained()
+
+	--> An event declaring NO payload constraint must not get the hook at all: this is
+	--> the receive path for every packet, and the context table is a per-packet
+	--> allocation. Proven by the hook never firing for it.
+	local UnconstrainedSeen, HookRuns = 0, 0
+	local ReleaseUnconstrained = Server.UnconstrainedClient.On(function()
+		UnconstrainedSeen += 1
+	end)
+	local ReleaseCounter = Server.Use("Validate", function()
+		HookRuns += 1
+		return true
+	end)
+	Client.UnconstrainedClient.Fire(9)
+	Client.StepReplication()
+	task.wait(1 / 30)
+	ReleaseCounter()
+	ReleaseUnconstrained()
+	assert(UnconstrainedSeen == 1, "Expected the unconstrained event to arrive.")
+	assert(HookRuns == 0, `Validate hook emitted for an event that declares no payload constraint ({HookRuns} runs).`)
+
 	--> Honeypot: the attribute used to parse and then emit nothing at all, so a
 	--> honeypot endpoint was an ordinary event that happily delivered traffic.
 	local HoneypotSeen, HoneypotViolations = 0, 0

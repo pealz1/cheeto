@@ -399,6 +399,53 @@ local function AbortReadLine(): string
 	return "RecoverMessage() continue"
 end
 
+--> One definition of the constraints table, shared by the pre-decode policy check
+--> and the post-decode Validate hook, so the two can never disagree about what a
+--> constraint is called.
+local function ConstraintsTable(Value: { [string]: any }): string
+	return `\{ Risk = {OptionalString(Value.Risk)}, CooldownSeconds = {NumberLiteral(Value.CooldownSeconds, 0)}, MaxDistance = {NumberLiteral(
+		Value.MaxDistance,
+		0
+	)}, RequireOwnership = {BooleanLiteral(Value.RequireOwnership, false)}, RequireTeam = {OptionalString(
+		Value.RequireTeam
+	)}, RequireZone = {OptionalString(Value.RequireZone)}, RequireMatch = {OptionalString(Value.RequireMatch)}, RequireInventoryOwnership = {BooleanLiteral(
+		Value.RequireInventoryOwnership,
+		false
+	)}, RequireCharacterState = {OptionalString(Value.RequireCharacterState)}, RequireObjectHandle = {BooleanLiteral(
+		Value.RequireObjectHandle,
+		false
+	)}, RequireServerKnownId = {BooleanLiteral(Value.RequireServerKnownId, false)}, Idempotency = {BooleanLiteral(
+		Value.Idempotency,
+		false
+	)} \}`
+end
+
+--> Constraints that describe the PAYLOAD rather than the sender. Only these justify
+--> emitting the post-decode Validate hook: the hook allocates a context table per
+--> packet, and this runs on every event, so events that declare none of them must
+--> not pay for it. Risk and RequireCharacterState are deliberately absent -- Risk is
+--> a tag, and character state is known before decoding.
+local PAYLOAD_CONSTRAINTS = {
+	"MaxDistance",
+	"RequireOwnership",
+	"RequireTeam",
+	"RequireZone",
+	"RequireMatch",
+	"RequireInventoryOwnership",
+	"RequireObjectHandle",
+	"RequireServerKnownId",
+}
+
+local function HasPayloadConstraint(Value: { [string]: any }): boolean
+	for _, Key in PAYLOAD_CONSTRAINTS do
+		local Declared = Value[Key]
+		if Declared ~= nil and Declared ~= false and Declared ~= 0 then
+			return true
+		end
+	end
+	return false
+end
+
 --> TrustedSource is for the leg of a function that carries the SERVER'S REPLY back
 --> to the client. Auth rules and policies are registered on the server, so emitting
 --> them on that leg asks the client to evaluate a rule it has never heard of --
@@ -464,29 +511,38 @@ local function AddReceiveGuards(
 	Block:Line(
 		`if not CheckPolicy({Source}, "{Name}", "{Reliability}", {OptionalString(Value.Policy)}, {OptionalString(
 			Value.PolicyGroup
-		)}, \{ Risk = {OptionalString(Value.Risk)}, CooldownSeconds = {NumberLiteral(Value.CooldownSeconds, 0)}, MaxDistance = {NumberLiteral(
-			Value.MaxDistance,
-			0
-		)}, RequireOwnership = {BooleanLiteral(Value.RequireOwnership, false)}, RequireTeam = {OptionalString(
-			Value.RequireTeam
-		)}, RequireZone = {OptionalString(Value.RequireZone)}, RequireMatch = {OptionalString(Value.RequireMatch)}, RequireInventoryOwnership = {BooleanLiteral(
-			Value.RequireInventoryOwnership,
-			false
-		)}, RequireCharacterState = {OptionalString(Value.RequireCharacterState)}, RequireObjectHandle = {BooleanLiteral(
-			Value.RequireObjectHandle,
-			false
-		)}, RequireServerKnownId = {BooleanLiteral(Value.RequireServerKnownId, false)}, Idempotency = {BooleanLiteral(
-			Value.Idempotency,
-			false
-		)} \}, Size) then {AbortReadLine()} end`
+		)}, {ConstraintsTable(Value)}, Size) then {AbortReadLine()} end`
 	)
 end
 
-local function AddAfterReceive(Block: Blocks.Block, Name: string, Reliability: string, PayloadExpression: string?)
+local function AddAfterReceive(
+	Block: Blocks.Block,
+	Name: string,
+	Reliability: string,
+	PayloadExpression: string?,
+	Value: { [string]: any }?
+)
 	local Source = SourceExpression()
 	Block:Line(
 		`if not RuntimeSupport.ValidateDecodedPayload("{Name}", {Source}, "{Reliability}", {PayloadExpression or "nil"}, Size) then {AbortReadLine()} end`
 	)
+
+	--> The Validate hook: the ONE place a constraint about the decoded payload can be
+	--> enforced. Policies and BeforeReceive both run before the payload exists, which
+	--> is why MaxDistance, RequireOwnership, RequireTeam, RequireZone, RequireMatch,
+	--> RequireInventoryOwnership, RequireObjectHandle and RequireServerKnownId were
+	--> parsed, handed to policies and enforced by nothing.
+	-->
+	--> Emitted only for events that actually declare one of those, so an event that
+	--> does not is byte-for-byte what it was before -- this is the receive path for
+	--> every packet in the game and the context table is a per-packet allocation.
+	if Value ~= nil and HasPayloadConstraint(Value) then
+		Block:Line(
+			`if not RunHooks("Validate", \{ Name = "{Name}", Source = {Source}, Channel = "{Reliability}", Size = Size, Constraints = {ConstraintsTable(
+				Value
+			)}, Payload = {PayloadExpression or "nil"} \}) then DropPacket({Source}, "{Reliability}", "ConstraintRejected", Size) {AbortReadLine()} end`
+		)
+	end
 	Block:Line(
 		`TrackEventReceive("{Name}", "{Reliability}", Frame.At() - EventStart, {Source}, {PayloadExpression or "nil"})`
 	)
@@ -1039,7 +1095,7 @@ function Declarations.Event(Declaration: Parser.Event)
 		AddReceiveGuards(Block, Declaration.Name, Reliability, Value)
 		Block:Line(`local Success, {Arguments} = pcall({Util.GetPath(Identifier, false, Scope)})`)
 		AddDecodeFailureGuard(Block, Declaration.Name, Reliability, DecodeError)
-		AddAfterReceive(Block, Declaration.Name, Reliability, `table.pack({Arguments})`)
+		AddAfterReceive(Block, Declaration.Name, Reliability, `table.pack({Arguments})`, Value)
 
 		local Disconnect = Blocks.Function("", "", "()")
 		if IsSingle then
@@ -1128,7 +1184,7 @@ function Declarations.Event(Declaration: Parser.Event)
 			)
 			:Line(`Push({Queue}, table.pack({Context == "Server" and "Player, " or ""}{Arguments}))`)
 			:End()
-		AddAfterReceive(Block, Declaration.Name, Reliability, `table.pack({Arguments})`)
+		AddAfterReceive(Block, Declaration.Name, Reliability, `table.pack({Arguments})`, Value)
 
 		local IterTypes = `number, {Context == "Server" and "Player, " or ""}{Types}`
 
@@ -1581,7 +1637,7 @@ function Declarations.Function(Declaration: Parser.Function)
 		local DecodeError = string.split(DataArguments, ",")[1] or "Value"
 		Block:Line(`local Success, {DataArguments} = pcall({Util.GetPath(DataIdentifier, false, Scope)})`)
 		AddDecodeFailureGuard(Block, Name, "Reliable", DecodeError)
-		AddAfterReceive(Block, Name, "Reliable", `table.pack({DataArguments})`)
+		AddAfterReceive(Block, Name, "Reliable", `table.pack({DataArguments})`, Value)
 		Block:Compare(Connection, "nil", "Not")
 			:Line(`task.spawn({Connection}, Player, {DataArguments}, InvocationIdentifier)`)
 			:Branch("Default")
