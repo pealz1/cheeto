@@ -1029,6 +1029,20 @@ FireAndExpect("Unknown", Server.Unknown, Client.Unknown, newproxy())
 FireAndExpect("Unknown (false)", Server.Unknown, Client.Unknown, false)
 FireAndExpectAll("Unknown (nil mixed)", Server.Unknown, Client.Unknown, { "a", nil, "b", nil, nil, nil, "c" })
 
+RunClosure("Color3 canonical validation", function()
+	local Received = false
+	local Disconnect = Client.Unknown.On(function()
+		Received = true
+	end)
+	local DroppedBefore = DroppedTotal(Client)
+	Server.Unknown.FireAll(BaseEnvironment.Color3.new(0 / 0, 0, 0))
+	Server.StepReplication()
+	task.wait(1 / 30)
+	Disconnect()
+	assert(not Received, "Expected a non-finite Color3 to be dropped before its listener.")
+	assert(DroppedTotal(Client) > DroppedBefore, "Expected non-finite Color3 canonicalization to record a drop.")
+end)
+
 FireAndExpect(
 	"Generic",
 	Server.Generic,
@@ -1977,6 +1991,31 @@ RunClosure("Transport hardening runtime APIs", function()
 		Server.Handles.ValidateCapability(Capability, Shared.Player, "Use") == Shared.ServerOnlyInstance,
 		"Expected capability to validate."
 	)
+	local RefreshObject = {}
+	local RefreshHandle = Server.Handles.Register(RefreshObject, Shared.Player, os.clock() + 0.01)
+	local RefreshedHandle = Server.Handles.Register(RefreshObject, Shared.Player, os.clock() + 10)
+	task.wait(0.02)
+	assert(RefreshedHandle == RefreshHandle, "Expected repeated handle registration to retain its stable id.")
+	assert(
+		Server.Handles.Resolve(RefreshedHandle, Shared.Player) == RefreshObject,
+		"Expected repeated handle registration to refresh its owner and expiry."
+	)
+
+	local BeforePeerState = Client.Transport.Snapshot().__server
+	local QueuedBefore = if BeforePeerState then BeforePeerState.QueuedEvents else 0
+	local SentBefore = if BeforePeerState then BeforePeerState.SentPackets else 0
+	assert(Client.Transport.RecordQueuedEvent(nil, "Reliable", 7, "Critical"), "Expected client event to queue.")
+	local QueuedPeerState = Client.Transport.Snapshot()
+	assert(QueuedPeerState.Server == nil, "Expected the descriptive Server peer key to be canonicalized.")
+	assert(
+		QueuedPeerState.__server.QueuedEvents == QueuedBefore + 1,
+		"Expected nil client target to queue under the canonical server peer."
+	)
+	Client.Transport.RecordFlush("Server", "Reliable", 7)
+	local FlushedPeerState = Client.Transport.Snapshot()
+	assert(FlushedPeerState.Server == nil, "Expected client flush to reuse the canonical server peer.")
+	assert(FlushedPeerState.__server.QueuedEvents == QueuedBefore, "Expected the queued client event to flush.")
+	assert(FlushedPeerState.__server.SentPackets == SentBefore + 1, "Expected the client flush to be recorded.")
 
 	Client.Transport.Coalesce("Server", "aim", "Cosmetic", 1)
 	Client.Transport.Coalesce("Server", "aim", "Cosmetic", 2)

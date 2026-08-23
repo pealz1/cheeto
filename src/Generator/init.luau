@@ -27,6 +27,7 @@ local RUNTIME_EXPORTS = {
 	"Allocate",
 	"AwaitInvocation",
 	"BeforeSend",
+	"BindClientRemotes",
 	"BeginMessage",
 	"BeginPrediction",
 	"BeginReadMessage",
@@ -2939,8 +2940,12 @@ function Generator.Generate(FileContext: Context, AbstractSyntaxTree: Parser.Bod
 	ReplayRaw:Line("end)")
 	ReplayRaw:End()
 
-	Connections.Push(`Reliable.{Signal}:Connect({ReliableProcessor})`)
-	Connections.Push(`Unreliable.{Signal}:Connect({UnreliableProcessor})`)
+	if Context == "Client" then
+		Connections.Push(`BindClientRemotes({ReliableProcessor}, {UnreliableProcessor})`)
+	else
+		Connections.Push(`Reliable.{Signal}:Connect({ReliableProcessor})`)
+		Connections.Push(`Unreliable.{Signal}:Connect({UnreliableProcessor})`)
+	end
 	PushRuntimeApi(Return, 1, "ReplayRawCapture")
 
 	Noop.Push(`\})`, 0, 1)

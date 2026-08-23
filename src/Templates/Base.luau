@@ -260,6 +260,10 @@ local RuntimeState = {
     RemoteSecurity = {
         Decoys = {}
     },
+    Profile = {
+        MainThread = {},
+        Depth = setmetatable({}, { __mode = "k" })
+    },
     SchemaMigrations = {} :: {[number]: (any) -> any},
     SchemaDefaults = {} :: {[string]: any},
     SchemaRenames = {} :: {[string]: string},
@@ -334,7 +338,14 @@ local function MetricAdd(BucketName: string, Key: string, Amount: number?)
 end
 
 function RuntimeSupport.PeerKey(Source: any): any
-    return Source or SERVER_PEER_KEY
+    --> Client code historically used both nil and the descriptive "Server"
+    --> sentinel for its one remote peer. Normalize them here so queueing,
+    --> flushing, fragmentation, handshakes, and diagnostics all share state.
+    if Source == nil or Source == "Server" then
+        return SERVER_PEER_KEY
+    end
+
+    return Source
 end
 
 function RuntimeSupport.SummarizeValue(Value: any, Depth: number?): string
@@ -527,7 +538,11 @@ local function ProfileBegin(Name: string)
 
     local Debug = debug
     if Debug and Debug.profilebegin then
-        pcall(Debug.profilebegin, Name)
+        local Success = pcall(Debug.profilebegin, Name)
+        if Success then
+            local Thread = coroutine.running() or RuntimeState.Profile.MainThread
+            RuntimeState.Profile.Depth[Thread] = (RuntimeState.Profile.Depth[Thread] or 0) + 1
+        end
     end
 end
 
@@ -536,9 +551,19 @@ local function ProfileEnd()
         return
     end
 
+    local Thread = coroutine.running() or RuntimeState.Profile.MainThread
+    local Depth = RuntimeState.Profile.Depth[Thread] or 0
+    if Depth <= 0 then
+        return
+    end
+
     local Debug = debug
-    if Debug and Debug.profileend then
-        pcall(Debug.profileend)
+    if Debug and Debug.profileend and pcall(Debug.profileend) then
+        if Depth == 1 then
+            RuntimeState.Profile.Depth[Thread] = nil
+        else
+            RuntimeState.Profile.Depth[Thread] = Depth - 1
+        end
     end
 end
 
@@ -585,7 +610,7 @@ local function ReportViolation(Source: any, Name: string, Channel: string, Reaso
     return Score
 end
 
-local function DropPacket(Source: any, Channel: string, Reason: string, Size: number?)
+local function DropPacket(Source: any, Channel: string, Reason: string, Size: number?, Name: string?)
     MetricAdd("DroppedPackets", Reason)
     if Reason == "RateLimit" then
         MetricAdd("RateLimitHits", Channel)
@@ -600,6 +625,7 @@ local function DropPacket(Source: any, Channel: string, Reason: string, Size: nu
     end
 
     RuntimeSupport.RecordCapture({
+        Name = Name,
         Direction = "receive",
         Source = tostring(Source),
         Channel = Channel,
@@ -611,12 +637,13 @@ local function DropPacket(Source: any, Channel: string, Reason: string, Size: nu
     })
 
     RunHooks("Drop", {
+        Name = Name,
         Source = Source,
         Channel = Channel,
         Reason = Reason,
         Size = Size or 0
     })
-    ReportViolation(Source, Channel, Channel, Reason, Size, "drop")
+    ReportViolation(Source, Name or Channel, Channel, Reason, Size, "drop")
 end
 
 function RuntimeSupport.CreateRemoteName(Prefix: string?): string
@@ -930,43 +957,64 @@ local function CheckReplay(Source: any, Name: string, Sequence: number?, Size: n
     return true
 end
 
+function RuntimeSupport.IsFiniteNumber(Value: any): boolean
+    return type(Value) == "number" and Value == Value and Value ~= math.huge and Value ~= -math.huge
+end
+
 local function ValidateCanonicalValue(Source: any, Name: string, Channel: string, Value: any, Depth: number, Budget: any): boolean
     Budget.Operations += 1
     if Budget.Operations > RuntimeConfig.MaxDecodeOperations then
-        DropPacket(Source, Channel, TransportError.DecodeBudget, Budget.Bytes)
+        DropPacket(Source, Channel, TransportError.DecodeBudget, Budget.Bytes, Name)
         return false
     end
 
     local Kind = typeof(Value)
     if Kind == "number" then
-        if Value ~= Value or Value == math.huge or Value == -math.huge then
-            DropPacket(Source, Channel, TransportError.Canonicalization, Budget.Bytes)
+        if not RuntimeSupport.IsFiniteNumber(Value) then
+            DropPacket(Source, Channel, TransportError.Canonicalization, Budget.Bytes, Name)
             return false
         end
     elseif Kind == "string" then
         Budget.Bytes += #Value
         if #Value > RuntimeConfig.MaxPayloadStringBytes then
-            DropPacket(Source, Channel, TransportError.Canonicalization, Budget.Bytes)
+            DropPacket(Source, Channel, TransportError.Canonicalization, Budget.Bytes, Name)
             return false
         end
     elseif Kind == "Vector3" then
-        if Value.X ~= Value.X or Value.Y ~= Value.Y or Value.Z ~= Value.Z then
-            DropPacket(Source, Channel, TransportError.Canonicalization, Budget.Bytes)
+        if not RuntimeSupport.IsFiniteNumber(Value.X) or not RuntimeSupport.IsFiniteNumber(Value.Y) or not RuntimeSupport.IsFiniteNumber(Value.Z) then
+            DropPacket(Source, Channel, TransportError.Canonicalization, Budget.Bytes, Name)
             return false
         end
         if math.abs(Value.X) > 1e9 or math.abs(Value.Y) > 1e9 or math.abs(Value.Z) > 1e9 then
-            DropPacket(Source, Channel, TransportError.Canonicalization, Budget.Bytes)
+            DropPacket(Source, Channel, TransportError.Canonicalization, Budget.Bytes, Name)
             return false
         end
     elseif Kind == "CFrame" then
         local Position = Value.Position
-        if math.abs(Position.X) > 1e9 or math.abs(Position.Y) > 1e9 or math.abs(Position.Z) > 1e9 then
-            DropPacket(Source, Channel, TransportError.Canonicalization, Budget.Bytes)
+        if not RuntimeSupport.IsFiniteNumber(Position.X)
+            or not RuntimeSupport.IsFiniteNumber(Position.Y)
+            or not RuntimeSupport.IsFiniteNumber(Position.Z)
+            or math.abs(Position.X) > 1e9
+            or math.abs(Position.Y) > 1e9
+            or math.abs(Position.Z) > 1e9
+        then
+            DropPacket(Source, Channel, TransportError.Canonicalization, Budget.Bytes, Name)
+            return false
+        end
+    elseif Kind == "Color3" then
+        if not RuntimeSupport.IsFiniteNumber(Value.R)
+            or not RuntimeSupport.IsFiniteNumber(Value.G)
+            or not RuntimeSupport.IsFiniteNumber(Value.B)
+            or math.abs(Value.R) > 1e6
+            or math.abs(Value.G) > 1e6
+            or math.abs(Value.B) > 1e6
+        then
+            DropPacket(Source, Channel, TransportError.Canonicalization, Budget.Bytes, Name)
             return false
         end
     elseif Kind == "table" then
         if Depth >= RuntimeConfig.MaxPayloadDepth then
-            DropPacket(Source, Channel, TransportError.Canonicalization, Budget.Bytes)
+            DropPacket(Source, Channel, TransportError.Canonicalization, Budget.Bytes, Name)
             return false
         end
 
@@ -975,18 +1023,18 @@ local function ValidateCanonicalValue(Source: any, Name: string, Channel: string
         for Key, Child in Value do
             Count += 1
             if Count > RuntimeConfig.MaxTableKeys then
-                DropPacket(Source, Channel, TransportError.Canonicalization, Budget.Bytes)
+                DropPacket(Source, Channel, TransportError.Canonicalization, Budget.Bytes, Name)
                 return false
             end
 
             if type(Key) == "number" then
                 MaxIndex = math.max(MaxIndex, Key)
                 if Key < 1 or Key % 1 ~= 0 then
-                    DropPacket(Source, Channel, TransportError.Canonicalization, Budget.Bytes)
+                    DropPacket(Source, Channel, TransportError.Canonicalization, Budget.Bytes, Name)
                     return false
                 end
             elseif type(Key) ~= "string" and type(Key) ~= "boolean" then
-                DropPacket(Source, Channel, TransportError.Canonicalization, Budget.Bytes)
+                DropPacket(Source, Channel, TransportError.Canonicalization, Budget.Bytes, Name)
                 return false
             end
 
@@ -996,7 +1044,7 @@ local function ValidateCanonicalValue(Source: any, Name: string, Channel: string
         end
 
         if MaxIndex > Count * 2 and Count > 0 then
-            DropPacket(Source, Channel, TransportError.Canonicalization, Budget.Bytes)
+            DropPacket(Source, Channel, TransportError.Canonicalization, Budget.Bytes, Name)
             return false
         end
     elseif Kind == "EnumItem" then
@@ -1008,7 +1056,7 @@ local function ValidateCanonicalValue(Source: any, Name: string, Channel: string
     elseif Kind == "userdata" then
         return true
     elseif Kind ~= "nil" and Kind ~= "boolean" then
-        DropPacket(Source, Channel, TransportError.Canonicalization, Budget.Bytes)
+        DropPacket(Source, Channel, TransportError.Canonicalization, Budget.Bytes, Name)
         return false
     end
 
@@ -1136,7 +1184,13 @@ end
 function RuntimeSupport.RegisterHandle(Object: any, Owner: Player?, ExpiresAt: number?): number
     local Existing = RuntimeState.ObjectToHandle[Object]
     if Existing then
-        return Existing
+        local Entry = RuntimeState.Handles[Existing]
+        if Entry then
+            Entry.Owner = Owner
+            Entry.ExpiresAt = ExpiresAt
+            return Existing
+        end
+        RuntimeState.ObjectToHandle[Object] = nil
     end
 
     RuntimeState.NextHandleId = (RuntimeState.NextHandleId + 1) % 2147483647
@@ -3081,6 +3135,10 @@ function RuntimeSupport.StartClientShield()
             return game:GetService("RunService")
         end)
         if not RunServiceSuccess or not RunService:IsClient() then
+            RuntimeState.ClientShield.Local.Started = false
+            return
+        end
+        if RunService:IsStudio() and game:GetAttribute("CheetoClientShieldInStudio") ~= true then
             RuntimeState.ClientShield.Local.Started = false
             return
         end

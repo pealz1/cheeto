@@ -52,8 +52,21 @@ do
 		return type(Object) == "table" and Object.FireClient ~= nil
 	end
 
+	function RuntimeSupport.FindPublishedRemote(Attribute: string, ClassName: string): Instance?
+		if RemoteRoot == nil then
+			return nil
+		end
+
+		local PublishedName = RemoteRoot:GetAttribute(Attribute)
+		local Published = if type(PublishedName) == "string" then RemoteRoot:FindFirstChild(PublishedName) else nil
+		if HasRemoteShape(Published, ClassName) then
+			return Published
+		end
+		return nil
+	end
+
 	local ReliableName = GetInitialRemoteName("R", BASE_EVENT_NAME .. "_RELIABLE_REMOTE")
-	Reliable = GetRemoteParent():FindFirstChild(ReliableName) :: RemoteEvent
+	Reliable = (RuntimeSupport.FindPublishedRemote("ReliableName", "RemoteEvent") or GetRemoteParent():FindFirstChild(ReliableName)) :: RemoteEvent
 	if not HasRemoteShape(Reliable, "RemoteEvent") then
 		Reliable = Instance.new("RemoteEvent")
 		Reliable.Name = ReliableName
@@ -61,11 +74,19 @@ do
 	end
 
 	local UnreliableName = GetInitialRemoteName("U", BASE_EVENT_NAME .. "_UNRELIABLE_REMOTE")
-	Unreliable = GetRemoteParent():FindFirstChild(UnreliableName) :: UnreliableRemoteEvent
+	Unreliable = (RuntimeSupport.FindPublishedRemote("UnreliableName", "UnreliableRemoteEvent") or GetRemoteParent():FindFirstChild(UnreliableName)) :: UnreliableRemoteEvent
 	if not HasRemoteShape(Unreliable, "UnreliableRemoteEvent") then
 		Unreliable = Instance.new("UnreliableRemoteEvent")
 		Unreliable.Name = UnreliableName
         Unreliable.Parent = GetRemoteParent()
+    end
+
+    if RemoteRoot then
+        for _, Child in RemoteRoot:GetChildren() do
+            if Child ~= Reliable and Child ~= Unreliable and (Child:IsA("RemoteEvent") or Child:IsA("UnreliableRemoteEvent")) then
+                Child:Destroy()
+            end
+        end
     end
 
     local function PublishRemoteNames()
@@ -80,7 +101,13 @@ do
 
     PublishRemoteNames()
 
-    if RuntimeConfig.EnableRemoteNameRotation and RuntimeConfig.RemoteNameRotationSeconds > 0 then
+    if
+        RuntimeConfig.EnableRemoteNameRotation
+        and RuntimeConfig.RemoteNameRotationSeconds > 0
+        and RemoteRoot
+        and RemoteRoot:GetAttribute("RotationLoopActive") ~= true
+    then
+        RemoteRoot:SetAttribute("RotationLoopActive", true)
         task.spawn(function()
             while Reliable.Parent ~= nil and Unreliable.Parent ~= nil do
                 task.wait(RuntimeConfig.RemoteNameRotationSeconds)

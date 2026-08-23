@@ -8,35 +8,75 @@ end
 
 local Reliable: RemoteEvent
 local Unreliable: UnreliableRemoteEvent
+local RemoteRoot: Folder? = nil
+
+local function WaitForNamedRemote(Attribute: string): Instance
+    local Root = RemoteRoot
+    if Root == nil then
+        error("Rotating Cheeto remote root is unavailable.")
+    end
+
+    while true do
+        local Name = Root:GetAttribute(Attribute)
+        while type(Name) ~= "string" or Name == "" do
+            Root:GetAttributeChangedSignal(Attribute):Wait()
+            Name = Root:GetAttribute(Attribute)
+        end
+
+        local Remote = Root:WaitForChild(Name, 5)
+        if Remote then
+            return Remote
+        end
+    end
+end
 
 if RuntimeConfig.EnableRemoteNameRotation then
-    local RemoteRoot = ReplicatedStorage:WaitForChild(BASE_EVENT_NAME .. "_REMOTE_ROOT")
-
-    local function WaitForRemoteName(Attribute: string): string
-        local Name = RemoteRoot:GetAttribute(Attribute)
-        while type(Name) ~= "string" or Name == "" do
-            RemoteRoot:GetAttributeChangedSignal(Attribute):Wait()
-            Name = RemoteRoot:GetAttribute(Attribute)
-        end
-
-        return Name
-    end
-
-    local function WaitForNamedRemote(Attribute: string): Instance
-        while true do
-            local Name = WaitForRemoteName(Attribute)
-            local Remote = RemoteRoot:WaitForChild(Name, 5)
-            if Remote then
-                return Remote
-            end
-        end
-    end
+    RemoteRoot = ReplicatedStorage:WaitForChild(BASE_EVENT_NAME .. "_REMOTE_ROOT") :: Folder
 
     Reliable = WaitForNamedRemote("ReliableName") :: RemoteEvent
     Unreliable = WaitForNamedRemote("UnreliableName") :: UnreliableRemoteEvent
 else
     Reliable = ReplicatedStorage:WaitForChild(BASE_EVENT_NAME .. "_RELIABLE_REMOTE") :: RemoteEvent
     Unreliable = ReplicatedStorage:WaitForChild(BASE_EVENT_NAME .. "_UNRELIABLE_REMOTE") :: UnreliableRemoteEvent
+end
+
+local function BindClientRemotes(
+    ReliableProcessor: (buffer, {Instance}?) -> (),
+    UnreliableProcessor: (buffer, {Instance}?) -> ()
+)
+    local ReliableConnection: RBXScriptConnection? = nil
+    local UnreliableConnection: RBXScriptConnection? = nil
+
+    local function BindReliable()
+        local NextReliable = if RemoteRoot then WaitForNamedRemote("ReliableName") :: RemoteEvent else Reliable
+        if ReliableConnection and Reliable == NextReliable then
+            return
+        end
+        if ReliableConnection then
+            ReliableConnection:Disconnect()
+        end
+        Reliable = NextReliable
+        ReliableConnection = Reliable.OnClientEvent:Connect(ReliableProcessor)
+    end
+
+    local function BindUnreliable()
+        local NextUnreliable = if RemoteRoot then WaitForNamedRemote("UnreliableName") :: UnreliableRemoteEvent else Unreliable
+        if UnreliableConnection and Unreliable == NextUnreliable then
+            return
+        end
+        if UnreliableConnection then
+            UnreliableConnection:Disconnect()
+        end
+        Unreliable = NextUnreliable
+        UnreliableConnection = Unreliable.OnClientEvent:Connect(UnreliableProcessor)
+    end
+
+    BindReliable()
+    BindUnreliable()
+    if RemoteRoot then
+        RemoteRoot:GetAttributeChangedSignal("ReliableName"):Connect(BindReliable)
+        RemoteRoot:GetAttributeChangedSignal("UnreliableName"):Connect(BindUnreliable)
+    end
 end
 
 RuntimeSupport.StartClientShield()
