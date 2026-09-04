@@ -1,17 +1,22 @@
-name: Cheeto V2 CI
+name: Cheeto CI
 
 on:
   push:
     branches:
       - main
   pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: cheeto-ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   validate:
     name: Lint (stylua + selene)
     # GitHub-hosted runners are blocked on this account (billing), so this
     # job must stay on the self-hosted PEALZ runner. See CONTRIBUTING notes.
-    runs-on: self-hosted
+    runs-on: [self-hosted, Windows, X64]
     timeout-minutes: 15
 
     defaults:
