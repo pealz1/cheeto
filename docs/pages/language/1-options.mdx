@@ -145,6 +145,35 @@ option ClientShieldKickMessage = "Security check failed."
 option ClientShieldProbeIntervalSeconds = 1.25
 option ClientShieldReportCooldownSeconds = 2
 option ClientShieldScoreThreshold = 10
+option EnableClientIntegrity = true
+option ClientIntegrityChallengeIntervalSeconds = 4
+option ClientIntegrityReceiptTimeoutSeconds = 8
+option ClientIntegrityJoinGraceSeconds = 20
+option ClientIntegrityScoreDecayPerSecond = 0.5
+option ClientIntegrityCleanReceiptDecay = 2
+option ClientIntegrityMissWeight = 4
+option ClientIntegrityInvalidWeight = 6
+option ClientIntegrityScoreThreshold = 16
+option ClientIntegrityMaxConsecutiveFailures = 4
+option EnableCharacterIntegrity = true
+option CharacterIntegrityMode = Correct
+option CharacterIntegrityKick = false
+option CharacterIntegritySampleIntervalSeconds = 0.25
+option CharacterIntegrityJoinGraceSeconds = 5
+option CharacterIntegrityTeleportGraceSeconds = 2
+option CharacterIntegrityMaxStepSeconds = 1.5
+option CharacterIntegrityMaxHorizontalSpeed = 64
+option CharacterIntegrityMaxVerticalSpeed = 120
+option CharacterIntegritySpeedMultiplier = 1.75
+option CharacterIntegrityDistanceSlack = 12
+option CharacterIntegrityPingAllowance = 1.5
+option CharacterIntegrityScoreDecayPerSecond = 2
+option CharacterIntegrityCorrectionScore = 12
+option CharacterIntegrityKickScore = 40
+option CharacterIntegrityMaxConsecutiveBreaches = 8
+option CharacterIntegrityCorrectionCooldownSeconds = 1
+option CharacterIntegrityReportCooldownSeconds = 1
+option CharacterIntegrityHistoryLimit = 32
 option EnableRemoteNameRotation = true
 option RemoteNameRotationSeconds = 45
 option EnableRemoteDecoys = true
@@ -166,6 +195,9 @@ Generated client and server modules expose:
 - `State.DefineChannel` for local dirty-state channels.
 - `Capture.Start`, `Capture.Entries`, `Capture.Replay`, `Capture.ReplayRaw`, and `Capture.Redact`.
 - `Transport`, `Security`, `Diagnostics`, `Handles`, `Replication`, `State`, and `Codecs` runtime APIs for hardened v2 operation.
+- `Security.ClientIntegrity` and `Security.CharacterIntegrity` for copied evidence snapshots.
+- Server `Security.ChallengeIntegrity`, `Security.GrantIntegrityGrace`, `Security.GrantMovementGrace`, `Security.ReconcileCharacter`, and `Security.TeleportCharacter` controls.
+- Client `Security.OnIntegritySample` for adding game-specific liveness checks.
 
 Server-origin events also expose `FireGroup(groupName, ...)`. Client-origin events expose `Predict(...)`, which sends the event and returns a local prediction id.
 
@@ -173,7 +205,7 @@ This fork only emits and accepts protocol v2. `ProtocolVersion` must be `2`; `Pr
 
 `CaptureRedactions` is a comma-separated default list of payload field names to hide in capture summaries. `NoRawCaptureInProduction` removes raw packet buffers from production captures so exports can be shared for diagnostics without enabling raw replay.
 
-Client-origin events and functions should declare `Policy`, `PolicyGroup`, or `Auth`. Production hardening with `RequirePolicies = true` fails risky client-origin remotes without a policy surface. `SecurityPreset = Maximum` also enables the client shield, strict client kicks, randomized remote names, decoy remotes, and the stricter Competitive transport defaults unless you override them. Built-in policy presets cover damage, currency, trade, inventory, teleport, admin, crafting, marketplace, and moderation; games can replace or extend them at runtime with `Network.Security.RegisterPolicy`.
+Client-origin events and functions should declare `Policy`, `PolicyGroup`, or `Auth`. Production hardening with `RequirePolicies = true` fails risky client-origin remotes without a policy surface. `SecurityPreset = Maximum` also enables the client shield, client integrity receipts, server character integrity in `Correct` mode, strict client-shield kicks, randomized remote names, decoy remotes, and the stricter Competitive transport defaults unless you override them. Character-integrity kicks stay disabled until both `CharacterIntegrityMode = Kick` and `CharacterIntegrityKick = true` are set. Built-in policy presets cover damage, currency, trade, inventory, teleport, admin, crafting, marketplace, and moderation; games can replace or extend them at runtime with `Network.Security.RegisterPolicy`.
 
 State channels can also be declared in schema:
 ```cheeto copy

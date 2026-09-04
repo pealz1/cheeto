@@ -1,0 +1,11 @@
+option Casing = Pascal
+option ClientOutput = "../../Network/CharacterIntegrityBadClient.luau"
+option ServerOutput = "../../Network/CharacterIntegrityBadServer.luau"
+option CharacterIntegrityMode = ImmediateBan
+
+event Test {
+    From: Server,
+    Type: Reliable,
+    Call: SingleAsync,
+    Data: u8
+}

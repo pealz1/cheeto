@@ -98,7 +98,10 @@ local Metrics: {[string]: MetricBucket} = {
     InvokeTimeouts = {},
     HookErrors = {},
     MiddlewareRejections = {},
-    ClientShieldReports = {}
+    ClientShieldReports = {},
+    ClientIntegrityReceipts = {},
+    ClientIntegrityFailures = {},
+    CharacterIntegrityActions = {}
 }
 
 local Hooks: {[string]: {(...any) -> any}} = {
@@ -156,6 +159,11 @@ local TransportError = table.freeze({
     DexExplorer = "DexExplorer",
     RemoteSpy = "RemoteSpy",
     RemoteDecoy = "RemoteDecoy",
+    ClientIntegrity = "ClientIntegrity",
+    IntegrityReceiptMissing = "IntegrityReceiptMissing",
+    IntegrityReceiptInvalid = "IntegrityReceiptInvalid",
+    IntegrityEvaluatorFailed = "IntegrityEvaluatorFailed",
+    CharacterIntegrity = "CharacterIntegrity",
 })
 
 local PriorityOrder = table.freeze({
@@ -251,11 +259,27 @@ local RuntimeState = {
     ClientShield = {
         Reports = {},
         LastReport = {} :: {[any]: {[string]: number}},
+        Integrity = {
+            Peers = {} :: {[any]: any},
+            Evidence = {},
+            LastEvidence = {} :: {[any]: {[string]: number}},
+        },
         Local = {
             Started = false,
             Reported = {} :: {[string]: number},
-            Sweep = 0
+            Sweep = 0,
+            MonitorRunning = false,
+            MonitorPending = nil :: any,
+            Completion = 0,
+            LastChallenge = 0,
+            LastReceipt = 0,
+            Samplers = {} :: {(...any) -> ...any},
         }
+    },
+    CharacterIntegrity = {
+        Players = {} :: {[any]: any},
+        Evidence = {},
+        LastEvidence = {} :: {[any]: {[string]: number}},
     },
     RemoteSecurity = {
         Decoys = {}
@@ -755,6 +779,799 @@ function RuntimeSupport.ClientShieldSnapshot()
         Strict = RuntimeConfig.ClientShieldStrict,
         Kick = RuntimeConfig.ClientShieldKick,
         ScoreThreshold = RuntimeConfig.ClientShieldScoreThreshold
+    }
+end
+
+function RuntimeSupport.IntegrityInteger(Value: any): number
+    if type(Value) ~= "number" or Value ~= Value or math.abs(Value) == math.huge then
+        return 0
+    end
+
+    return math.floor(math.abs(Value)) % 2147483647
+end
+
+--> This is a completion receipt, not a secret. It makes truncated, stale and
+--> accidentally malformed replies distinguishable while the one-time pending
+--> challenge supplies replay protection on the server.
+function RuntimeSupport.ClientIntegrityChecksum(
+    ChallengeId: number,
+    Nonce: number,
+    Completion: number,
+    Sweep: number,
+    SamplerCount: number,
+    Healthy: boolean
+): number
+    local Value = 104729
+    for _, Part in {
+        ChallengeId,
+        Nonce,
+        Completion,
+        Sweep,
+        SamplerCount,
+        if Healthy then 1 else 0,
+        PROTOCOL_VERSION,
+        RuntimeConfig.SchemaVersion,
+    } do
+        Value = (Value * 48271 + RuntimeSupport.IntegrityInteger(Part) * 69621 + 31) % 2147483647
+    end
+    return math.floor(Value)
+end
+
+function RuntimeSupport.GetClientIntegrityPeer(Source: any): any
+    local Key = RuntimeSupport.PeerKey(Source)
+    local Peer = RuntimeState.ClientShield.Integrity.Peers[Key]
+    if Peer ~= nil then
+        Peer.Source = Source
+        return Peer
+    end
+
+    local Now = os.clock()
+    Peer = {
+        Source = Source,
+        NextChallengeId = 0,
+        Pending = nil,
+        NextChallengeAt = Now + math.max(0, RuntimeConfig.ClientIntegrityJoinGraceSeconds),
+        GraceUntil = Now + math.max(0, RuntimeConfig.ClientIntegrityJoinGraceSeconds),
+        LastDecayAt = Now,
+        LastReceiptAt = 0,
+        LastCompletion = 0,
+        LastSweep = 0,
+        Score = 0,
+        ChallengesIssued = 0,
+        ValidReceipts = 0,
+        ConsecutiveFailures = 0,
+        ConsecutiveMisses = 0,
+        LastReason = "",
+        LastAction = "none",
+    }
+    RuntimeState.ClientShield.Integrity.Peers[Key] = Peer
+    return Peer
+end
+
+function RuntimeSupport.DecayClientIntegrityPeer(Peer: any, Now: number)
+    local Delta = math.max(0, Now - (Peer.LastDecayAt or Now))
+    Peer.LastDecayAt = Now
+    Peer.Score = math.max(0, (Peer.Score or 0) - Delta * math.max(0, RuntimeConfig.ClientIntegrityScoreDecayPerSecond))
+end
+
+function RuntimeSupport.RecordClientIntegrityEvidence(Source: any, Peer: any, Reason: string, Detail: string, Weight: number)
+    local Now = os.clock()
+    RuntimeSupport.DecayClientIntegrityPeer(Peer, Now)
+    Weight = math.max(1, math.floor(Weight))
+    Peer.Score = math.min(1000, Peer.Score + Weight)
+    Peer.LastReason = Reason
+
+    local FailureLimit = math.max(1, math.floor(RuntimeConfig.ClientIntegrityMaxConsecutiveFailures))
+    local ShouldKick = RuntimeConfig.ClientShieldKick
+        and Peer.Score >= RuntimeConfig.ClientIntegrityScoreThreshold
+        and Peer.ConsecutiveFailures >= FailureLimit
+    Peer.LastAction = if ShouldKick then "kick" else "report"
+
+    local Key = RuntimeSupport.PeerKey(Source)
+    local ByReason = RuntimeState.ClientShield.Integrity.LastEvidence[Key]
+    if ByReason == nil then
+        ByReason = {}
+        RuntimeState.ClientShield.Integrity.LastEvidence[Key] = ByReason
+    end
+    local Last = ByReason[Reason]
+    local Throttled = Last ~= nil and Now - Last < math.max(0, RuntimeConfig.ClientShieldReportCooldownSeconds)
+    if not Throttled or ShouldKick then
+        ByReason[Reason] = Now
+        local Entry = {
+            Source = Source,
+            UserId = TryGetUserId(Source),
+            Reason = Reason,
+            Detail = Detail,
+            Weight = Weight,
+            Score = Peer.Score,
+            ConsecutiveFailures = Peer.ConsecutiveFailures,
+            ConsecutiveMisses = Peer.ConsecutiveMisses,
+            Action = Peer.LastAction,
+            Time = Now,
+        }
+        table.insert(RuntimeState.ClientShield.Integrity.Evidence, Entry)
+        while #RuntimeState.ClientShield.Integrity.Evidence > 256 do
+            table.remove(RuntimeState.ClientShield.Integrity.Evidence, 1)
+        end
+
+        MetricAdd("ClientIntegrityFailures", Reason)
+        ReportViolation(Source, "$clientIntegrity", "ClientIntegrity", Reason, Weight, Peer.LastAction)
+        EmitTelemetry("security.clientIntegrity", Entry)
+    end
+
+    if ShouldKick then
+        KickClientShieldSource(Source)
+    end
+end
+
+function RuntimeSupport.CreateClientIntegrityChallenge(Source: any, Force: boolean?): (number?, number?)
+    if not RuntimeConfig.EnableClientIntegrity or not IsPlayerActive(Source) then
+        return nil, nil
+    end
+
+    local Peer = RuntimeSupport.GetClientIntegrityPeer(Source)
+    local Now = os.clock()
+    RuntimeSupport.DecayClientIntegrityPeer(Peer, Now)
+    if Now < Peer.GraceUntil then
+        return nil, nil
+    end
+    if Peer.Pending ~= nil and Force ~= true then
+        return nil, nil
+    end
+
+    Peer.NextChallengeId = (Peer.NextChallengeId + 1) % 2147483647
+    if Peer.NextChallengeId == 0 then
+        Peer.NextChallengeId = 1
+    end
+    local Nonce = (math.random(1, 1073741823) + math.floor(Now * 1000000)) % 2147483647
+    if Nonce == 0 then
+        Nonce = 1
+    end
+
+    Peer.Pending = {
+        Id = Peer.NextChallengeId,
+        Nonce = Nonce,
+        IssuedAt = Now,
+        Deadline = Now + math.max(0.5, RuntimeConfig.ClientIntegrityReceiptTimeoutSeconds),
+    }
+    Peer.NextChallengeAt = Now + math.max(0.5, RuntimeConfig.ClientIntegrityChallengeIntervalSeconds)
+    Peer.ChallengesIssued += 1
+    return Peer.Pending.Id, Peer.Pending.Nonce
+end
+
+function RuntimeSupport.AcceptClientIntegrityReceipt(
+    Source: any,
+    ChallengeId: number,
+    Nonce: number,
+    Completion: number,
+    Sweep: number,
+    SamplerCount: number,
+    Healthy: boolean,
+    Checksum: number
+): boolean
+    if not RuntimeConfig.EnableClientIntegrity or Source == SERVER_PEER_KEY or Source == "Server" then
+        return false
+    end
+
+    local Peer = RuntimeSupport.GetClientIntegrityPeer(Source)
+    local Now = os.clock()
+    RuntimeSupport.DecayClientIntegrityPeer(Peer, Now)
+    local Pending = Peer.Pending
+    local Reason = nil
+    if Pending == nil then
+        Reason = "unexpected-receipt"
+    elseif ChallengeId ~= Pending.Id or Nonce ~= Pending.Nonce then
+        Reason = "challenge-mismatch"
+    elseif Now > Pending.Deadline then
+        Reason = "expired-receipt"
+    elseif Completion <= Peer.LastCompletion then
+        Reason = "replayed-completion"
+    elseif SamplerCount < 1 then
+        Reason = "empty-sample"
+    elseif Checksum ~= RuntimeSupport.ClientIntegrityChecksum(ChallengeId, Nonce, Completion, Sweep, SamplerCount, Healthy) then
+        Reason = "checksum-mismatch"
+    end
+
+    if Reason ~= nil then
+        Peer.Pending = nil
+        Peer.ConsecutiveFailures += 1
+        Peer.ConsecutiveMisses = 0
+        RuntimeSupport.RecordClientIntegrityEvidence(
+            Source,
+            Peer,
+            TransportError.IntegrityReceiptInvalid,
+            Reason,
+            RuntimeConfig.ClientIntegrityInvalidWeight
+        )
+        return false
+    end
+
+    Peer.Pending = nil
+    Peer.LastReceiptAt = Now
+    Peer.LastCompletion = Completion
+    Peer.LastSweep = Sweep
+    Peer.ValidReceipts += 1
+    MetricAdd("ClientIntegrityReceipts", "Valid")
+
+    if not Healthy then
+        Peer.ConsecutiveFailures += 1
+        Peer.ConsecutiveMisses = 0
+        RuntimeSupport.RecordClientIntegrityEvidence(
+            Source,
+            Peer,
+            TransportError.IntegrityEvaluatorFailed,
+            `challenge:{ChallengeId}`,
+            RuntimeConfig.ClientIntegrityInvalidWeight
+        )
+        return false
+    end
+
+    Peer.ConsecutiveFailures = 0
+    Peer.ConsecutiveMisses = 0
+    Peer.Score = math.max(0, Peer.Score - math.max(0, RuntimeConfig.ClientIntegrityCleanReceiptDecay))
+    Peer.LastReason = ""
+    Peer.LastAction = "accept"
+    return true
+end
+
+function RuntimeSupport.GrantClientIntegrityGrace(Source: any, Seconds: number?, Reason: string?)
+    local Peer = RuntimeSupport.GetClientIntegrityPeer(Source)
+    local Now = os.clock()
+    local Duration = math.max(0, Seconds or RuntimeConfig.ClientIntegrityJoinGraceSeconds)
+    Peer.GraceUntil = math.max(Peer.GraceUntil, Now + Duration)
+    Peer.NextChallengeAt = math.max(Peer.NextChallengeAt, Peer.GraceUntil)
+    Peer.Pending = nil
+    Peer.LastReason = Reason or "grace"
+end
+
+function RuntimeSupport.CopyClientIntegrityPeer(Peer: any): any
+    if Peer == nil then
+        return nil
+    end
+
+    return {
+        UserId = TryGetUserId(Peer.Source),
+        Score = Peer.Score,
+        PendingChallenge = if Peer.Pending then Peer.Pending.Id else nil,
+        PendingDeadline = if Peer.Pending then Peer.Pending.Deadline else nil,
+        NextChallengeAt = Peer.NextChallengeAt,
+        GraceUntil = Peer.GraceUntil,
+        LastReceiptAt = Peer.LastReceiptAt,
+        LastCompletion = Peer.LastCompletion,
+        LastSweep = Peer.LastSweep,
+        ChallengesIssued = Peer.ChallengesIssued,
+        ValidReceipts = Peer.ValidReceipts,
+        ConsecutiveFailures = Peer.ConsecutiveFailures,
+        ConsecutiveMisses = Peer.ConsecutiveMisses,
+        LastReason = Peer.LastReason,
+        LastAction = Peer.LastAction,
+    }
+end
+
+function RuntimeSupport.ClientIntegritySnapshot(Source: any?): any
+    local Local = RuntimeState.ClientShield.Local
+    if Source ~= nil then
+        return RuntimeSupport.CopyClientIntegrityPeer(RuntimeState.ClientShield.Integrity.Peers[RuntimeSupport.PeerKey(Source)])
+    end
+
+    local Peers = {}
+    for Key, Peer in RuntimeState.ClientShield.Integrity.Peers do
+        Peers[tostring(Key)] = RuntimeSupport.CopyClientIntegrityPeer(Peer)
+    end
+    return {
+        Enabled = RuntimeConfig.EnableClientIntegrity,
+        Peers = Peers,
+        Evidence = table.clone(RuntimeState.ClientShield.Integrity.Evidence),
+        Local = {
+            MonitorRunning = Local.MonitorRunning,
+            PendingChallenge = if Local.MonitorPending then Local.MonitorPending.Id else nil,
+            Completion = Local.Completion,
+            LastChallenge = Local.LastChallenge,
+            LastReceipt = Local.LastReceipt,
+            SamplerCount = #Local.Samplers + 1,
+        },
+    }
+end
+
+function RuntimeSupport.StepClientIntegrity(Sources: {any}, QueueChallenge: (any, number, number) -> ())
+    if not RuntimeConfig.EnableClientIntegrity then
+        return
+    end
+
+    local Now = os.clock()
+    for _, Source in Sources do
+        if not IsPlayerActive(Source) then
+            continue
+        end
+
+        local Peer = RuntimeSupport.GetClientIntegrityPeer(Source)
+        RuntimeSupport.DecayClientIntegrityPeer(Peer, Now)
+        if Now < Peer.GraceUntil then
+            if Peer.Pending ~= nil then
+                Peer.Pending = nil
+            end
+            continue
+        end
+
+        if Peer.Pending ~= nil and Now > Peer.Pending.Deadline then
+            local MissedId = Peer.Pending.Id
+            Peer.Pending = nil
+            Peer.ConsecutiveMisses += 1
+            Peer.ConsecutiveFailures += 1
+            RuntimeSupport.RecordClientIntegrityEvidence(
+                Source,
+                Peer,
+                TransportError.IntegrityReceiptMissing,
+                `challenge:{MissedId}`,
+                RuntimeConfig.ClientIntegrityMissWeight
+            )
+        end
+
+        if Peer.Pending == nil and Now >= Peer.NextChallengeAt then
+            local ChallengeId, Nonce = RuntimeSupport.CreateClientIntegrityChallenge(Source)
+            if ChallengeId ~= nil and Nonce ~= nil then
+                QueueChallenge(Source, ChallengeId, Nonce)
+            end
+        end
+    end
+end
+
+function RuntimeSupport.FiniteNumber(Value: any): boolean
+    return type(Value) == "number" and Value == Value and math.abs(Value) < math.huge
+end
+
+--> Pure movement classification used by the live server sampler and exposed for
+--> deterministic tests. Client-reported position is never an input here.
+function RuntimeSupport.EvaluateCharacterMovement(Sample: {[string]: any}): any
+    local DeltaTime = Sample.DeltaTime
+    local HorizontalDistance = Sample.HorizontalDistance
+    local VerticalDistance = Sample.VerticalDistance
+    local WalkSpeed = Sample.WalkSpeed or 0
+    local HorizontalVelocity = Sample.HorizontalVelocity or 0
+    local VerticalVelocity = Sample.VerticalVelocity or 0
+    local Ping = Sample.Ping or 0
+
+    for _, Value in { DeltaTime, HorizontalDistance, VerticalDistance, WalkSpeed, HorizontalVelocity, VerticalVelocity, Ping } do
+        if not RuntimeSupport.FiniteNumber(Value) then
+            return {
+                Suspicious = true,
+                Resync = false,
+                Reasons = { "NonFiniteMovement" },
+                Weight = 12,
+                AllowedHorizontal = 0,
+                AllowedVertical = 0,
+            }
+        end
+    end
+
+    if DeltaTime <= 0 or DeltaTime > math.max(0.1, RuntimeConfig.CharacterIntegrityMaxStepSeconds) then
+        return {
+            Suspicious = false,
+            Resync = true,
+            Reasons = {},
+            Weight = 0,
+            AllowedHorizontal = 0,
+            AllowedVertical = 0,
+        }
+    end
+    if Sample.Seated == true then
+        return {
+            Suspicious = false,
+            Resync = false,
+            Reasons = {},
+            Weight = 0,
+            AllowedHorizontal = math.huge,
+            AllowedVertical = math.huge,
+        }
+    end
+
+    local ConfiguredHorizontal = math.max(1, RuntimeConfig.CharacterIntegrityMaxHorizontalSpeed)
+    local ConfiguredVertical = math.max(1, RuntimeConfig.CharacterIntegrityMaxVerticalSpeed)
+    local SpeedMultiplier = math.max(1, RuntimeConfig.CharacterIntegritySpeedMultiplier)
+    local Slack = math.max(0, RuntimeConfig.CharacterIntegrityDistanceSlack)
+    local PingSeconds = math.clamp(Ping, 0, 2)
+    local PingAllowance = math.max(0, RuntimeConfig.CharacterIntegrityPingAllowance)
+    local NominalHorizontal = math.max(ConfiguredHorizontal, math.max(0, WalkSpeed) * SpeedMultiplier)
+    local VelocityHorizontal = math.min(math.max(0, HorizontalVelocity), NominalHorizontal * 2)
+    local VelocityVertical = math.min(math.abs(VerticalVelocity), ConfiguredVertical * 2)
+    local AllowedHorizontal = NominalHorizontal * DeltaTime
+        + VelocityHorizontal * DeltaTime * 0.5
+        + Slack
+        + PingSeconds * NominalHorizontal * PingAllowance
+    local AllowedVertical = ConfiguredVertical * DeltaTime
+        + VelocityVertical * DeltaTime * 0.5
+        + Slack
+        + PingSeconds * ConfiguredVertical * PingAllowance
+
+    local Reasons = {}
+    local Weight = 0
+    if HorizontalDistance > AllowedHorizontal then
+        table.insert(Reasons, "HorizontalDisplacement")
+        Weight += math.clamp(math.floor(HorizontalDistance / math.max(1, AllowedHorizontal)), 2, 8)
+    end
+    if VerticalDistance > AllowedVertical then
+        table.insert(Reasons, "VerticalDisplacement")
+        Weight += math.clamp(math.floor(VerticalDistance / math.max(1, AllowedVertical)), 2, 8)
+    end
+    if WalkSpeed > ConfiguredHorizontal * SpeedMultiplier then
+        table.insert(Reasons, "WalkSpeedMutation")
+        Weight += 3
+    end
+    if Sample.PathBlocked == true and HorizontalDistance > math.max(4, Slack * 0.5) then
+        table.insert(Reasons, "CollidableTraversal")
+        Weight += 3
+    end
+
+    return {
+        Suspicious = #Reasons > 0,
+        Resync = false,
+        Reasons = Reasons,
+        Weight = math.max(0, math.min(16, Weight)),
+        AllowedHorizontal = AllowedHorizontal,
+        AllowedVertical = AllowedVertical,
+    }
+end
+
+function RuntimeSupport.GetCharacterIntegrityPlayer(Player: any): any
+    local Key = RuntimeSupport.PeerKey(Player)
+    local PlayerState = RuntimeState.CharacterIntegrity.Players[Key]
+    if PlayerState ~= nil then
+        PlayerState.Player = Player
+        return PlayerState
+    end
+
+    local Now = os.clock()
+    PlayerState = {
+        Player = Player,
+        Character = nil,
+        LastPosition = nil,
+        LastSafeCFrame = nil,
+        LastSampleAt = 0,
+        NextSampleAt = Now,
+        LastDecayAt = Now,
+        GraceUntil = Now + math.max(0, RuntimeConfig.CharacterIntegrityJoinGraceSeconds),
+        Score = 0,
+        ConsecutiveBreaches = 0,
+        LastCorrectionAt = 0,
+        LastReason = "",
+        LastAction = "none",
+        Reasons = {} :: {[string]: number},
+        History = {},
+    }
+    RuntimeState.CharacterIntegrity.Players[Key] = PlayerState
+    return PlayerState
+end
+
+function RuntimeSupport.DecayCharacterIntegrityPlayer(PlayerState: any, Now: number)
+    local Delta = math.max(0, Now - (PlayerState.LastDecayAt or Now))
+    PlayerState.LastDecayAt = Now
+    local Decay = Delta * math.max(0, RuntimeConfig.CharacterIntegrityScoreDecayPerSecond)
+    PlayerState.Score = math.max(0, PlayerState.Score - Decay)
+    if Decay > 0 then
+        for Reason, Score in PlayerState.Reasons do
+            local Next = math.max(0, Score - Decay)
+            PlayerState.Reasons[Reason] = if Next > 0 then Next else nil
+        end
+    end
+end
+
+function RuntimeSupport.CharacterIntegrityAction(PlayerState: any): string
+    local Mode = string.lower(tostring(RuntimeConfig.CharacterIntegrityMode))
+    if
+        Mode == "kick"
+        and RuntimeConfig.CharacterIntegrityKick
+        and PlayerState.Score >= RuntimeConfig.CharacterIntegrityKickScore
+        and PlayerState.ConsecutiveBreaches >= math.max(1, RuntimeConfig.CharacterIntegrityMaxConsecutiveBreaches)
+    then
+        return "kick"
+    end
+
+    if
+        (Mode == "correct" or Mode == "kick")
+        and PlayerState.Score >= RuntimeConfig.CharacterIntegrityCorrectionScore
+        and os.clock() >= PlayerState.LastCorrectionAt
+    then
+        return "correct"
+    end
+    return if Mode == "observe" then "observe" else "report"
+end
+
+function RuntimeSupport.ReportCharacterIntegrity(Player: any, Reason: string, Weight: number?, Detail: string?): (number, string)
+    local PlayerState = RuntimeSupport.GetCharacterIntegrityPlayer(Player)
+    local Now = os.clock()
+    RuntimeSupport.DecayCharacterIntegrityPlayer(PlayerState, Now)
+    local Amount = math.max(1, math.floor(Weight or 1))
+    PlayerState.Score = math.min(1000, PlayerState.Score + Amount)
+    PlayerState.Reasons[Reason] = math.min(1000, (PlayerState.Reasons[Reason] or 0) + Amount)
+    PlayerState.LastReason = Reason
+    local Action = RuntimeSupport.CharacterIntegrityAction(PlayerState)
+    PlayerState.LastAction = Action
+
+    local Key = RuntimeSupport.PeerKey(Player)
+    local ByReason = RuntimeState.CharacterIntegrity.LastEvidence[Key]
+    if ByReason == nil then
+        ByReason = {}
+        RuntimeState.CharacterIntegrity.LastEvidence[Key] = ByReason
+    end
+    local Last = ByReason[Reason]
+    local Throttled = Last ~= nil and Now - Last < math.max(0, RuntimeConfig.CharacterIntegrityReportCooldownSeconds)
+    if not Throttled or Action == "kick" then
+        ByReason[Reason] = Now
+        local Entry = {
+            Player = Player,
+            UserId = TryGetUserId(Player),
+            Reason = Reason,
+            Detail = Detail or "",
+            Weight = Amount,
+            Score = PlayerState.Score,
+            ConsecutiveBreaches = PlayerState.ConsecutiveBreaches,
+            Action = Action,
+            Time = Now,
+        }
+        table.insert(RuntimeState.CharacterIntegrity.Evidence, Entry)
+        while #RuntimeState.CharacterIntegrity.Evidence > math.max(1, RuntimeConfig.CharacterIntegrityHistoryLimit * 8) do
+            table.remove(RuntimeState.CharacterIntegrity.Evidence, 1)
+        end
+        table.insert(PlayerState.History, Entry)
+        while #PlayerState.History > math.max(1, RuntimeConfig.CharacterIntegrityHistoryLimit) do
+            table.remove(PlayerState.History, 1)
+        end
+
+        MetricAdd("CharacterIntegrityActions", Action)
+        if Action ~= "observe" then
+            ReportViolation(Player, "$characterIntegrity", "CharacterIntegrity", Reason, Amount, Action)
+        end
+        EmitTelemetry("security.characterIntegrity", Entry)
+    end
+
+    if Action == "kick" then
+        KickClientShieldSource(Player)
+    end
+    return PlayerState.Score, Action
+end
+
+function RuntimeSupport.GrantCharacterIntegrityGrace(Player: any, Seconds: number?, Reason: string?)
+    local PlayerState = RuntimeSupport.GetCharacterIntegrityPlayer(Player)
+    local Now = os.clock()
+    local Duration = math.max(0, Seconds or RuntimeConfig.CharacterIntegrityTeleportGraceSeconds)
+    PlayerState.GraceUntil = math.max(PlayerState.GraceUntil, Now + Duration)
+    PlayerState.LastPosition = nil
+    PlayerState.LastSampleAt = 0
+    PlayerState.LastReason = Reason or "grace"
+    PlayerState.ConsecutiveBreaches = 0
+end
+
+function RuntimeSupport.ReadCharacterSnapshot(Player: any): (any, any, any, any)
+    local Success, Character, Root, Humanoid = pcall(function()
+        local Character = Player.Character
+        if Character == nil then
+            return nil, nil, nil
+        end
+        return Character, Character:FindFirstChild("HumanoidRootPart"), Character:FindFirstChildOfClass("Humanoid")
+    end)
+    if not Success or Character == nil or Root == nil or Humanoid == nil then
+        return nil, nil, nil, nil
+    end
+    return Character, Root, Humanoid, Root.CFrame
+end
+
+function RuntimeSupport.ReconcileCharacterIntegrity(Player: any, ResetScore: boolean?): boolean
+    local PlayerState = RuntimeSupport.GetCharacterIntegrityPlayer(Player)
+    local Character, Root, Humanoid, RootCFrame = RuntimeSupport.ReadCharacterSnapshot(Player)
+    if Character == nil or Root == nil or Humanoid == nil then
+        return false
+    end
+
+    PlayerState.Character = Character
+    PlayerState.LastPosition = Root.Position
+    PlayerState.LastSafeCFrame = RootCFrame
+    PlayerState.LastSampleAt = os.clock()
+    PlayerState.NextSampleAt = PlayerState.LastSampleAt + math.max(0.05, RuntimeConfig.CharacterIntegritySampleIntervalSeconds)
+    PlayerState.ConsecutiveBreaches = 0
+    if ResetScore == true then
+        PlayerState.Score = 0
+        table.clear(PlayerState.Reasons)
+    end
+    return true
+end
+
+function RuntimeSupport.TeleportCharacterIntegrity(Player: any, Target: CFrame, GraceSeconds: number?): boolean
+    if typeof(Target) ~= "CFrame" then
+        return false
+    end
+
+    RuntimeSupport.GrantCharacterIntegrityGrace(Player, GraceSeconds, "server-teleport")
+    local Character, Root = RuntimeSupport.ReadCharacterSnapshot(Player)
+    if Character == nil or Root == nil then
+        return false
+    end
+
+    local Success = pcall(function()
+        Character:PivotTo(Target)
+        Root.AssemblyLinearVelocity = Vector3.zero
+        Root.AssemblyAngularVelocity = Vector3.zero
+    end)
+    if Success then
+        RuntimeSupport.ReconcileCharacterIntegrity(Player, false)
+    end
+    return Success
+end
+
+function RuntimeSupport.CharacterPathBlocked(Character: any, Origin: Vector3, Delta: Vector3): boolean
+    if Delta.Magnitude <= 4 then
+        return false
+    end
+
+    local Success, Blocked = pcall(function()
+        local Workspace = game:GetService("Workspace")
+        local Params = RaycastParams.new()
+        Params.FilterType = Enum.RaycastFilterType.Exclude
+        Params.FilterDescendantsInstances = { Character }
+        Params.IgnoreWater = true
+        local Hit = Workspace:Raycast(Origin, Delta, Params)
+        return Hit ~= nil and Hit.Instance ~= nil and Hit.Instance:IsA("BasePart") and Hit.Instance.CanCollide
+    end)
+    return Success and Blocked == true
+end
+
+function RuntimeSupport.StepCharacterIntegrityPlayer(Player: any, Now: number)
+    local PlayerState = RuntimeSupport.GetCharacterIntegrityPlayer(Player)
+    RuntimeSupport.DecayCharacterIntegrityPlayer(PlayerState, Now)
+    if Now < PlayerState.NextSampleAt then
+        return
+    end
+    PlayerState.NextSampleAt = Now + math.max(0.05, RuntimeConfig.CharacterIntegritySampleIntervalSeconds)
+
+    local Character, Root, Humanoid, RootCFrame = RuntimeSupport.ReadCharacterSnapshot(Player)
+    if Character == nil or Root == nil or Humanoid == nil then
+        PlayerState.Character = nil
+        PlayerState.LastPosition = nil
+        PlayerState.LastSampleAt = 0
+        return
+    end
+
+    if PlayerState.Character ~= Character or PlayerState.LastPosition == nil or PlayerState.LastSampleAt <= 0 then
+        PlayerState.Character = Character
+        PlayerState.LastPosition = Root.Position
+        PlayerState.LastSafeCFrame = RootCFrame
+        PlayerState.LastSampleAt = Now
+        PlayerState.GraceUntil = math.max(
+            PlayerState.GraceUntil,
+            Now + math.max(0, RuntimeConfig.CharacterIntegrityJoinGraceSeconds)
+        )
+        return
+    end
+
+    local Position = Root.Position
+    local Delta = Position - PlayerState.LastPosition
+    local DeltaTime = Now - PlayerState.LastSampleAt
+    PlayerState.LastSampleAt = Now
+
+    if Now < PlayerState.GraceUntil then
+        PlayerState.LastPosition = Position
+        PlayerState.LastSafeCFrame = RootCFrame
+        PlayerState.ConsecutiveBreaches = 0
+        return
+    end
+
+    local HumanoidState = Humanoid:GetState()
+    local Ping = 0
+    pcall(function()
+        Ping = Player:GetNetworkPing()
+    end)
+    local HorizontalDelta = Vector3.new(Delta.X, 0, Delta.Z)
+    local Velocity = Root.AssemblyLinearVelocity
+    local HorizontalVelocity = Vector3.new(Velocity.X, 0, Velocity.Z).Magnitude
+    local Evaluation = RuntimeSupport.EvaluateCharacterMovement({
+        DeltaTime = DeltaTime,
+        HorizontalDistance = HorizontalDelta.Magnitude,
+        VerticalDistance = math.abs(Delta.Y),
+        WalkSpeed = Humanoid.WalkSpeed,
+        HorizontalVelocity = HorizontalVelocity,
+        VerticalVelocity = Velocity.Y,
+        Ping = Ping,
+        Seated = Humanoid.Sit or HumanoidState == Enum.HumanoidStateType.Seated,
+        Grounded = Humanoid.FloorMaterial ~= Enum.Material.Air,
+        PathBlocked = RuntimeSupport.CharacterPathBlocked(Character, PlayerState.LastPosition, Delta),
+    })
+
+    if Evaluation.Resync then
+        PlayerState.LastPosition = Position
+        PlayerState.LastSafeCFrame = RootCFrame
+        PlayerState.ConsecutiveBreaches = 0
+        return
+    end
+
+    if not Evaluation.Suspicious then
+        PlayerState.LastPosition = Position
+        PlayerState.LastSafeCFrame = RootCFrame
+        PlayerState.ConsecutiveBreaches = 0
+        return
+    end
+
+    PlayerState.ConsecutiveBreaches += 1
+    local Reason = table.concat(Evaluation.Reasons, "+")
+    local _, Action = RuntimeSupport.ReportCharacterIntegrity(
+        Player,
+        Reason,
+        Evaluation.Weight,
+        `horizontal:{math.floor(HorizontalDelta.Magnitude * 100) / 100};vertical:{math.floor(Delta.Y * 100) / 100};dt:{math.floor(DeltaTime * 1000) / 1000}`
+    )
+
+    if Action == "correct" and PlayerState.LastSafeCFrame ~= nil then
+        local Corrected = pcall(function()
+            Character:PivotTo(PlayerState.LastSafeCFrame)
+            Root.AssemblyLinearVelocity = Vector3.zero
+            Root.AssemblyAngularVelocity = Vector3.zero
+        end)
+        if Corrected then
+            PlayerState.LastCorrectionAt = Now + math.max(0, RuntimeConfig.CharacterIntegrityCorrectionCooldownSeconds)
+            PlayerState.GraceUntil = Now + math.max(0, RuntimeConfig.CharacterIntegrityTeleportGraceSeconds)
+            PlayerState.LastPosition = PlayerState.LastSafeCFrame.Position
+            PlayerState.LastSampleAt = Now
+            MetricAdd("CharacterIntegrityActions", "corrected")
+        else
+            PlayerState.LastPosition = Position
+        end
+    else
+        PlayerState.LastPosition = Position
+    end
+end
+
+function RuntimeSupport.StepCharacterIntegrity(PlayersList: {any})
+    if not RuntimeConfig.EnableCharacterIntegrity then
+        return
+    end
+
+    local Now = os.clock()
+    for _, Player in PlayersList do
+        if not IsPlayerActive(Player) then
+            continue
+        end
+        local Success, Failure = pcall(RuntimeSupport.StepCharacterIntegrityPlayer, Player, Now)
+        if not Success then
+            EmitTelemetry("security.characterIntegrityError", {
+                Player = Player,
+                UserId = TryGetUserId(Player),
+                Error = tostring(Failure),
+                Time = Now,
+            })
+        end
+    end
+end
+
+function RuntimeSupport.CopyCharacterIntegrityPlayer(PlayerState: any): any
+    if PlayerState == nil then
+        return nil
+    end
+    return {
+        UserId = TryGetUserId(PlayerState.Player),
+        Score = PlayerState.Score,
+        ConsecutiveBreaches = PlayerState.ConsecutiveBreaches,
+        GraceUntil = PlayerState.GraceUntil,
+        LastSampleAt = PlayerState.LastSampleAt,
+        LastReason = PlayerState.LastReason,
+        LastAction = PlayerState.LastAction,
+        Reasons = table.clone(PlayerState.Reasons),
+        History = table.clone(PlayerState.History),
+    }
+end
+
+function RuntimeSupport.CharacterIntegritySnapshot(Player: any?): any
+    if Player ~= nil then
+        return RuntimeSupport.CopyCharacterIntegrityPlayer(RuntimeState.CharacterIntegrity.Players[RuntimeSupport.PeerKey(Player)])
+    end
+
+    local PlayersSnapshot = {}
+    for Key, PlayerState in RuntimeState.CharacterIntegrity.Players do
+        PlayersSnapshot[tostring(Key)] = RuntimeSupport.CopyCharacterIntegrityPlayer(PlayerState)
+    end
+    return {
+        Enabled = RuntimeConfig.EnableCharacterIntegrity,
+        Mode = RuntimeConfig.CharacterIntegrityMode,
+        Kick = RuntimeConfig.CharacterIntegrityKick,
+        Players = PlayersSnapshot,
+        Evidence = table.clone(RuntimeState.CharacterIntegrity.Evidence),
     }
 end
 
@@ -1974,6 +2791,11 @@ local function Configure(Options: {[string]: any})
             error("[Cheeto]: ProtocolMode is retired in this v2-only fork.")
         elseif Key == "AcceptProtocolVersion1" then
             error("[Cheeto]: AcceptProtocolVersion1 is retired in this v2-only fork.")
+        elseif Key == "CharacterIntegrityMode" then
+            local Mode = string.lower(tostring(Value))
+            if Mode ~= "observe" and Mode ~= "report" and Mode ~= "correct" and Mode ~= "kick" then
+                error('[Cheeto]: CharacterIntegrityMode must be "Observe", "Report", "Correct", or "Kick".')
+            end
         end
 
         RuntimeConfig[Key] = Value
@@ -3069,6 +3891,8 @@ function RuntimeSupport.SendClientShieldReport(Reason: string, Detail: string?, 
     RuntimeState.ClientShield.Local.Reported[Reason] = Now
 
     local Frame = BeginMessage(CLIENT_SHIELD_INDEX)
+    local KindOffset = Allocate(1)
+    buffer.writeu8(SendBuffer, KindOffset, 0) --> client shield report
     WriteStringValue(Reason, 2)
     WriteStringValue(Detail or "", 2)
     WriteVarint(math.max(1, math.floor(Score or 1)))
@@ -3076,12 +3900,167 @@ function RuntimeSupport.SendClientShieldReport(Reason: string, Detail: string?, 
     EndMessage(Frame)
 end
 
+function RuntimeSupport.WriteClientIntegrityChallenge(ChallengeId: number, Nonce: number)
+    local Frame = BeginMessage(CLIENT_SHIELD_INDEX)
+    local KindOffset = Allocate(1)
+    buffer.writeu8(SendBuffer, KindOffset, 1) --> server integrity challenge
+    WriteVarint(ChallengeId)
+    WriteVarint(Nonce)
+    EndMessage(Frame)
+end
+
+function RuntimeSupport.SendClientIntegrityReceipt(
+    ChallengeId: number,
+    Nonce: number,
+    Completion: number,
+    Sweep: number,
+    SamplerCount: number,
+    Healthy: boolean
+)
+    local Frame = BeginMessage(CLIENT_SHIELD_INDEX)
+    local KindOffset = Allocate(1)
+    buffer.writeu8(SendBuffer, KindOffset, 2) --> client integrity receipt
+    WriteVarint(ChallengeId)
+    WriteVarint(Nonce)
+    WriteVarint(Completion)
+    WriteVarint(Sweep)
+    WriteVarint(SamplerCount)
+    WriteBit(Healthy)
+    WriteVarint(RuntimeSupport.ClientIntegrityChecksum(ChallengeId, Nonce, Completion, Sweep, SamplerCount, Healthy))
+    EndMessage(Frame)
+end
+
+function RuntimeSupport.RegisterClientIntegritySampler(Callback: (any) -> any): () -> ()
+    if type(Callback) ~= "function" then
+        error("[Cheeto]: integrity sampler must be a function.")
+    end
+
+    table.insert(RuntimeState.ClientShield.Local.Samplers, Callback)
+    local Connected = true
+    return function()
+        if not Connected then
+            return
+        end
+        Connected = false
+        local Index = table.find(RuntimeState.ClientShield.Local.Samplers, Callback)
+        if Index ~= nil then
+            table.remove(RuntimeState.ClientShield.Local.Samplers, Index)
+        end
+    end
+end
+
+function RuntimeSupport.RunClientIntegrityChallenge(ChallengeId: number, Nonce: number)
+    if not RuntimeConfig.EnableClientIntegrity then
+        return
+    end
+
+    local Local = RuntimeState.ClientShield.Local
+    if ChallengeId <= Local.LastChallenge then
+        return
+    end
+    Local.LastChallenge = ChallengeId
+    Local.MonitorPending = {
+        Id = ChallengeId,
+        Nonce = Nonce,
+        ReceivedAt = os.clock(),
+    }
+    if Local.MonitorRunning then
+        return
+    end
+
+    Local.MonitorRunning = true
+    task.defer(function()
+        while Local.MonitorPending ~= nil do
+            local Challenge = Local.MonitorPending
+            Local.MonitorPending = nil
+            Local.Completion += 1
+
+            local Healthy = true
+            local SamplerCount = 1 --> the built-in runtime invariant sample
+            local Context = {
+                ChallengeId = Challenge.Id,
+                Nonce = Challenge.Nonce,
+                Completion = Local.Completion,
+                Sweep = Local.Sweep,
+                ProtocolVersion = PROTOCOL_VERSION,
+                SchemaVersion = RuntimeConfig.SchemaVersion,
+                ReceivedAt = Challenge.ReceivedAt,
+            }
+            if
+                RuntimeSupport.CurrentProtocolVersion() ~= PROTOCOL_VERSION
+                or type(BeginMessage) ~= "function"
+                or type(EndMessage) ~= "function"
+                or type(Read) ~= "function"
+            then
+                Healthy = false
+            end
+
+            for _, Sampler in table.clone(Local.Samplers) do
+                SamplerCount += 1
+                local Success, Result = pcall(Sampler, Context)
+                if not Success or Result == false then
+                    Healthy = false
+                elseif Result ~= nil and Result ~= true then
+                    if type(Result) ~= "table" or Result.Healthy ~= true then
+                        Healthy = false
+                    end
+                end
+            end
+
+            RuntimeSupport.SendClientIntegrityReceipt(
+                Challenge.Id,
+                Challenge.Nonce,
+                Local.Completion,
+                Local.Sweep,
+                SamplerCount,
+                Healthy
+            )
+            Local.LastReceipt = Challenge.Id
+        end
+        Local.MonitorRunning = false
+    end)
+end
+
 local function ReadClientShieldPayload()
-    local Reason = ReadStringValue(2)
-    local Detail = ReadStringValue(2)
-    local Score = ReadVarint()
-    local ImmediateKick = ReadBit()
-    RuntimeSupport.ReportClientShield(RecieveSource, Reason, Detail, Score, ImmediateKick)
+    local Kind = buffer.readu8(RecieveBuffer, Read(1))
+    if Kind == 0 then --> client shield report
+        if RecieveSource == SERVER_PEER_KEY or RecieveSource == "Server" then
+            error("[Cheeto]: server sent a client-shield report frame.")
+        end
+        local Reason = ReadStringValue(2)
+        local Detail = ReadStringValue(2)
+        local Score = ReadVarint()
+        local ImmediateKick = ReadBit()
+        RuntimeSupport.ReportClientShield(RecieveSource, Reason, Detail, Score, ImmediateKick)
+    elseif Kind == 1 then --> server integrity challenge
+        if RecieveSource ~= SERVER_PEER_KEY and RecieveSource ~= "Server" then
+            error("[Cheeto]: client sent an integrity challenge frame.")
+        end
+        RuntimeSupport.RunClientIntegrityChallenge(ReadVarint(), ReadVarint())
+    elseif Kind == 2 then --> client integrity receipt
+        if RecieveSource == SERVER_PEER_KEY or RecieveSource == "Server" then
+            error("[Cheeto]: server sent an integrity receipt frame.")
+        end
+        local ChallengeId = ReadVarint()
+        local Nonce = ReadVarint()
+        local Completion = ReadVarint()
+        local Sweep = ReadVarint()
+        local SamplerCount = ReadVarint()
+        local Healthy = ReadBit()
+        local Checksum = ReadVarint()
+        RuntimeSupport.AcceptClientIntegrityReceipt(
+            RecieveSource,
+            ChallengeId,
+            Nonce,
+            Completion,
+            Sweep,
+            SamplerCount,
+            Healthy,
+            Checksum
+        )
+    else
+        error(`[Cheeto]: unknown client-shield frame kind {Kind}.`)
+    end
 end
 
 function RuntimeSupport.StartClientShield()
@@ -3742,6 +4721,10 @@ local function ClearPlayerRuntimeState(Player: Player)
     RuntimeState.Abuse[Player] = nil
     RuntimeState.Idempotency[Player] = nil
     RuntimeState.ClientShield.LastReport[Player] = nil
+    RuntimeState.ClientShield.Integrity.Peers[Player] = nil
+    RuntimeState.ClientShield.Integrity.LastEvidence[Player] = nil
+    RuntimeState.CharacterIntegrity.Players[Player] = nil
+    RuntimeState.CharacterIntegrity.LastEvidence[Player] = nil
     for _, Group in RuntimeState.Groups do
         Group[Player] = nil
     end
@@ -3983,6 +4966,8 @@ function RuntimeSupport.InspectorSnapshot()
         Protocol = RuntimeSupport.ProtocolInfo(nil),
         Peers = table.clone(RuntimeState.PeerCapabilities),
         Capture = RuntimeSupport.CaptureEntries(),
+        ClientIntegrity = RuntimeSupport.ClientIntegritySnapshot(),
+        CharacterIntegrity = RuntimeSupport.CharacterIntegritySnapshot(),
         Runtime = {
             ProtocolVersion = RuntimeConfig.ProtocolVersion,
             ProtocolMode = "StrictV2Only",

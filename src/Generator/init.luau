@@ -34,6 +34,7 @@ local RUNTIME_EXPORTS = {
 	"CAPABILITY_HANDSHAKE_INDEX",
 	"CLIENT_SHIELD_INDEX",
 	"CancelInvocations",
+	"ChallengeClientIntegrity",
 	"CheckAuth",
 	"CheckPolicy",
 	"CheckRateLimit",
@@ -288,6 +289,10 @@ local function RuntimeConfigLines(): { string }
 	local ClientShieldDefault = MaximumSecurity
 	local RemoteNameRotationDefault = MaximumSecurity
 	local RemoteDecoyDefault = MaximumSecurity
+	local CharacterIntegrityMode = Options.CharacterIntegrityMode or (if MaximumSecurity then "Correct" else "Observe")
+	if not table.find({ "Observe", "Report", "Correct", "Kick" }, CharacterIntegrityMode) then
+		error('CharacterIntegrityMode must be "Observe", "Report", "Correct", or "Kick".')
+	end
 	return {
 		"local RuntimeConfig = {\n",
 		"\tProtocolVersion = 2,\n",
@@ -348,6 +353,44 @@ local function RuntimeConfigLines(): { string }
 		`\tClientShieldProbeIntervalSeconds = {NumberLiteral(Options.ClientShieldProbeIntervalSeconds, 1.25)},\n`,
 		`\tClientShieldReportCooldownSeconds = {NumberLiteral(Options.ClientShieldReportCooldownSeconds, 2)},\n`,
 		`\tClientShieldScoreThreshold = {NumberLiteral(Options.ClientShieldScoreThreshold, 10)},\n`,
+		`\tEnableClientIntegrity = {BooleanLiteral(Options.EnableClientIntegrity, MaximumSecurity)},\n`,
+		`\tClientIntegrityChallengeIntervalSeconds = {NumberLiteral(Options.ClientIntegrityChallengeIntervalSeconds, 4)},\n`,
+		`\tClientIntegrityReceiptTimeoutSeconds = {NumberLiteral(Options.ClientIntegrityReceiptTimeoutSeconds, 8)},\n`,
+		`\tClientIntegrityJoinGraceSeconds = {NumberLiteral(Options.ClientIntegrityJoinGraceSeconds, 20)},\n`,
+		`\tClientIntegrityScoreDecayPerSecond = {NumberLiteral(Options.ClientIntegrityScoreDecayPerSecond, 0.5)},\n`,
+		`\tClientIntegrityCleanReceiptDecay = {NumberLiteral(Options.ClientIntegrityCleanReceiptDecay, 2)},\n`,
+		`\tClientIntegrityMissWeight = {NumberLiteral(Options.ClientIntegrityMissWeight, 4)},\n`,
+		`\tClientIntegrityInvalidWeight = {NumberLiteral(Options.ClientIntegrityInvalidWeight, 6)},\n`,
+		`\tClientIntegrityScoreThreshold = {NumberLiteral(Options.ClientIntegrityScoreThreshold, 16)},\n`,
+		`\tClientIntegrityMaxConsecutiveFailures = {NumberLiteral(Options.ClientIntegrityMaxConsecutiveFailures, 4)},\n`,
+		`\tEnableCharacterIntegrity = {BooleanLiteral(Options.EnableCharacterIntegrity, MaximumSecurity)},\n`,
+		`\tCharacterIntegrityMode = {StringLiteral(CharacterIntegrityMode, "Observe")},\n`,
+		`\tCharacterIntegrityKick = {BooleanLiteral(Options.CharacterIntegrityKick, false)},\n`,
+		`\tCharacterIntegritySampleIntervalSeconds = {NumberLiteral(
+			Options.CharacterIntegritySampleIntervalSeconds,
+			0.25
+		)},\n`,
+		`\tCharacterIntegrityJoinGraceSeconds = {NumberLiteral(Options.CharacterIntegrityJoinGraceSeconds, 5)},\n`,
+		`\tCharacterIntegrityTeleportGraceSeconds = {NumberLiteral(Options.CharacterIntegrityTeleportGraceSeconds, 2)},\n`,
+		`\tCharacterIntegrityMaxStepSeconds = {NumberLiteral(Options.CharacterIntegrityMaxStepSeconds, 1.5)},\n`,
+		`\tCharacterIntegrityMaxHorizontalSpeed = {NumberLiteral(Options.CharacterIntegrityMaxHorizontalSpeed, 64)},\n`,
+		`\tCharacterIntegrityMaxVerticalSpeed = {NumberLiteral(Options.CharacterIntegrityMaxVerticalSpeed, 120)},\n`,
+		`\tCharacterIntegritySpeedMultiplier = {NumberLiteral(Options.CharacterIntegritySpeedMultiplier, 1.75)},\n`,
+		`\tCharacterIntegrityDistanceSlack = {NumberLiteral(Options.CharacterIntegrityDistanceSlack, 12)},\n`,
+		`\tCharacterIntegrityPingAllowance = {NumberLiteral(Options.CharacterIntegrityPingAllowance, 1.5)},\n`,
+		`\tCharacterIntegrityScoreDecayPerSecond = {NumberLiteral(Options.CharacterIntegrityScoreDecayPerSecond, 2)},\n`,
+		`\tCharacterIntegrityCorrectionScore = {NumberLiteral(Options.CharacterIntegrityCorrectionScore, 12)},\n`,
+		`\tCharacterIntegrityKickScore = {NumberLiteral(Options.CharacterIntegrityKickScore, 40)},\n`,
+		`\tCharacterIntegrityMaxConsecutiveBreaches = {NumberLiteral(
+			Options.CharacterIntegrityMaxConsecutiveBreaches,
+			8
+		)},\n`,
+		`\tCharacterIntegrityCorrectionCooldownSeconds = {NumberLiteral(
+			Options.CharacterIntegrityCorrectionCooldownSeconds,
+			1
+		)},\n`,
+		`\tCharacterIntegrityReportCooldownSeconds = {NumberLiteral(Options.CharacterIntegrityReportCooldownSeconds, 1)},\n`,
+		`\tCharacterIntegrityHistoryLimit = {NumberLiteral(Options.CharacterIntegrityHistoryLimit, 32)},\n`,
 		`\tEnableRemoteNameRotation = {BooleanLiteral(Options.EnableRemoteNameRotation, RemoteNameRotationDefault)},\n`,
 		`\tRemoteNameRotationSeconds = {NumberLiteral(Options.RemoteNameRotationSeconds, 45)},\n`,
 		`\tEnableRemoteDecoys = {BooleanLiteral(Options.EnableRemoteDecoys, RemoteDecoyDefault)},\n`,
@@ -650,6 +693,19 @@ local function PushRuntimeApi(Target: Builder.Builder, Indent: number, ReplayRaw
 	Target.Push(`ReportClientShield = RuntimeSupport.ReportClientShield,`, 0, Indent + 1)
 	Target.Push(`ClientShield = RuntimeSupport.ClientShieldSnapshot,`, 0, Indent + 1)
 	Target.Push(`StartClientShield = RuntimeSupport.StartClientShield,`, 0, Indent + 1)
+	Target.Push(`ClientIntegrity = RuntimeSupport.ClientIntegritySnapshot,`, 0, Indent + 1)
+	Target.Push(`EvaluateMovement = RuntimeSupport.EvaluateCharacterMovement,`, 0, Indent + 1)
+	if Context == "Server" then
+		Target.Push(`ChallengeIntegrity = ChallengeClientIntegrity,`, 0, Indent + 1)
+		Target.Push(`GrantIntegrityGrace = RuntimeSupport.GrantClientIntegrityGrace,`, 0, Indent + 1)
+		Target.Push(`CharacterIntegrity = RuntimeSupport.CharacterIntegritySnapshot,`, 0, Indent + 1)
+		Target.Push(`ObserveCharacter = RuntimeSupport.ReportCharacterIntegrity,`, 0, Indent + 1)
+		Target.Push(`GrantMovementGrace = RuntimeSupport.GrantCharacterIntegrityGrace,`, 0, Indent + 1)
+		Target.Push(`ReconcileCharacter = RuntimeSupport.ReconcileCharacterIntegrity,`, 0, Indent + 1)
+		Target.Push(`TeleportCharacter = RuntimeSupport.TeleportCharacterIntegrity,`, 0, Indent + 1)
+	else
+		Target.Push(`OnIntegritySample = RuntimeSupport.RegisterClientIntegritySampler,`, 0, Indent + 1)
+	end
 	Target.Push(`}),`, 0, Indent)
 	Target.Push(`Diagnostics = table.freeze(\{`, 0, Indent)
 	Target.Push(`Listeners = RuntimeSupport.ListenerSnapshot,`, 0, Indent + 1)

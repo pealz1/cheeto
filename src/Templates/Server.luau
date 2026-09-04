@@ -121,6 +121,22 @@ do
     RuntimeSupport.InstallRemoteDecoys(GetRemoteParent(), RuntimeConfig.RemoteDecoyCount)
 end
 
+local function QueueClientIntegrityChallenge(Player: Player, ChallengeId: number, Nonce: number)
+    Load(PlayersMap[Player])
+    RuntimeSupport.WriteClientIntegrityChallenge(ChallengeId, Nonce)
+    PlayersMap[Player] = Save()
+end
+
+local function ChallengeClientIntegrity(Player: Player): number?
+    local ChallengeId, Nonce = RuntimeSupport.CreateClientIntegrityChallenge(Player, true)
+    if ChallengeId == nil or Nonce == nil then
+        return nil
+    end
+
+    QueueClientIntegrityChallenge(Player, ChallengeId, Nonce)
+    return ChallengeId
+end
+
 Players.PlayerRemoving:Connect(function(Player)
     PlayersMap[Player] = nil
     ClearPlayerRuntimeState(Player)
@@ -133,6 +149,9 @@ local function StepReplication()
     --> the life of the server -- a lost reply, or a peer that simply never
     --> answers, silently leaks a coroutine and hangs that caller forever.
     ExpireInvocations()
+    local ActivePlayers = Players:GetPlayers()
+    RuntimeSupport.StepClientIntegrity(ActivePlayers, QueueClientIntegrityChallenge)
+    RuntimeSupport.StepCharacterIntegrity(ActivePlayers)
     RunStateFlushers()
     for Player, Send in PlayersMap do
         Load(Send)

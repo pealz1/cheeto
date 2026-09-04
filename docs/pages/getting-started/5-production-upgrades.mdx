@@ -110,6 +110,17 @@ end)
 
 Remote spying cannot be fully prevented because clients can observe traffic addressed to them. The hardening model is server authority, no secrets in remotes, strict schema/hash checks, replay protection, policy validation, object capability handles, and abuse scoring.
 
+## Runtime integrity
+
+`SecurityPreset = Maximum` enables two generated integrity layers without creating a parallel RemoteEvent protocol:
+
+- Server-issued client challenges use the existing reliable Cheeto frame. Receipts bind a one-time id and nonce to a monotonic completion counter, reject replay and expiration, coalesce overlapping checks, and aggregate built-in plus game-registered samplers.
+- Server character sampling scores impossible horizontal or vertical displacement, abnormal `WalkSpeed`, and collidable traversal. Evidence decays; hitches resynchronize; seating, joins, and intentional movement have explicit grace paths.
+
+The server surface is `Security.ChallengeIntegrity`, `Security.GrantIntegrityGrace`, `Security.ClientIntegrity`, `Security.CharacterIntegrity`, `Security.GrantMovementGrace`, `Security.ReconcileCharacter`, `Security.TeleportCharacter`, and the pure `Security.EvaluateMovement` classifier. Clients register game-specific checks with `Security.OnIntegritySample`.
+
+Character enforcement progresses through `Observe`, `Report`, `Correct`, and `Kick`. The `Kick` mode additionally requires `CharacterIntegrityKick = true`, making accidental enforcement during tuning less likely. Maximum security selects `Correct` but leaves character kicks disabled. See [Maximum Security](./8-maximum-security) for configuration and examples.
+
 ## Packet capture and replay
 
 Capture is disabled by default unless `option EnablePacketCapture = true` is set or `Capture.Start()` is called.

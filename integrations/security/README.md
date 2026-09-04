@@ -1,5 +1,7 @@
 # Cheeto Security
 
+For newly generated Cheeto networks, prefer the built-in `SecurityPreset = Maximum` integrity runtime documented in [Maximum Security](../../docs/pages/getting-started/8-maximum-security.mdx). It carries one-time client liveness challenges over Cheeto's typed transport and performs server-observed character reconciliation, so it does not add a second raw RemoteEvent channel. This folder remains the standalone detector package for projects that have not migrated their network schema.
+
 Client/server security layer for Cheeto. It runs two detectors over one shared,
 signed report channel with a heartbeat-timeout fallback:
 

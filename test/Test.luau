@@ -1413,6 +1413,17 @@ RunClosure("V2-only protocol rejects legacy options and validates schema hash", 
 	)
 	assert(not Result.ok, "Expected ProtocolVersion = 1 schema to fail compilation.")
 
+	local IntegrityModeResult = process.exec(
+		"lune",
+		{ "run", Compiler, "../../test/Sources/CharacterIntegrityBad", "--", "--yes" },
+		{ cwd = "../src/CLI" }
+	)
+	assert(not IntegrityModeResult.ok, "Expected an unknown character-integrity mode to fail compilation.")
+	local RuntimeModeSuccess = pcall(function()
+		Server.Configure({ CharacterIntegrityMode = "ImmediateBan" })
+	end)
+	assert(not RuntimeModeSuccess, "Expected an unknown runtime character-integrity mode to fail configuration.")
+
 	local Info = Client.Protocol.Info()
 	assert(Info.LocalProtocolVersion == 2, "Expected v2-only runtime protocol.")
 	assert(Info.ProtocolMode == "StrictV2Only", "Expected strict v2-only protocol mode.")
@@ -1980,6 +1991,165 @@ RunClosure("Transport hardening runtime APIs", function()
 	assert(ShieldScore >= 5, "Expected client shield report to add weighted abuse score.")
 	assert(ShieldViolations == 1, "Expected client shield report to emit a violation.")
 	assert(#ShieldSnapshot.Reports >= 1, "Expected client shield report to be retained in the snapshot.")
+
+	--> Server-issued integrity challenges share Cheeto's typed transport. The client
+	--> coalesces overlapping work, and the server accepts only the current one-time
+	--> receipt. This covers the liveness path that catches a stopped sampler.
+	Client.Configure({
+		EnableClientIntegrity = true,
+		ClientIntegrityChallengeIntervalSeconds = 1000,
+		ClientIntegrityJoinGraceSeconds = 0,
+	})
+	Server.Configure({
+		EnableClientIntegrity = true,
+		ClientIntegrityChallengeIntervalSeconds = 1000,
+		ClientIntegrityJoinGraceSeconds = 0,
+		ClientIntegrityReceiptTimeoutSeconds = 5,
+		ClientIntegrityScoreThreshold = 100,
+	})
+
+	local IntegritySamples = 0
+	local ReleaseIntegritySampler = Client.Security.OnIntegritySample(function(Context)
+		IntegritySamples += 1
+		assert(Context.ChallengeId > 0, "Expected a positive one-time challenge id.")
+		assert(Context.ProtocolVersion == 2, "Expected the integrity sample to bind protocol v2.")
+		return true
+	end)
+
+	local FirstChallenge = Server.Security.ChallengeIntegrity(Shared.Player)
+	assert(FirstChallenge ~= nil, "Expected the server to queue an integrity challenge.")
+	Server.StepReplication()
+	task.wait(1 / 30)
+	Client.StepReplication()
+	task.wait(1 / 30)
+	local FirstIntegrity = Server.Security.ClientIntegrity(Shared.Player)
+	assert(FirstIntegrity ~= nil and FirstIntegrity.ValidReceipts == 1, "Expected one valid integrity receipt.")
+	assert(FirstIntegrity.PendingChallenge == nil, "Expected a valid receipt to consume its challenge.")
+
+	local Superseded = Server.Security.ChallengeIntegrity(Shared.Player)
+	local Current = Server.Security.ChallengeIntegrity(Shared.Player)
+	assert(Superseded ~= nil and Current ~= nil and Current > Superseded, "Expected monotonic forced challenges.")
+	Server.StepReplication()
+	task.wait(1 / 30)
+	Client.StepReplication()
+	task.wait(1 / 30)
+	local CoalescedIntegrity = Server.Security.ClientIntegrity(Shared.Player)
+	assert(CoalescedIntegrity.ValidReceipts == 2, "Expected only the newest overlapping challenge to complete.")
+	assert(IntegritySamples == 2, `Expected overlapping samples to coalesce, sampler ran {IntegritySamples} times.`)
+	ReleaseIntegritySampler()
+
+	local IntegrityFailures = 0
+	local ReleaseIntegrityViolation = Server.Security.OnViolation(function(Context)
+		if Context.Event == "$clientIntegrity" and Context.Reason == "IntegrityEvaluatorFailed" then
+			IntegrityFailures += 1
+		end
+	end)
+	local ReleaseFailingSampler = Client.Security.OnIntegritySample(function()
+		return false
+	end)
+	assert(Server.Security.ChallengeIntegrity(Shared.Player) ~= nil, "Expected a challenge for the failing sampler.")
+	Server.StepReplication()
+	task.wait(1 / 30)
+	Client.StepReplication()
+	task.wait(1 / 30)
+	local FailedIntegrity = Server.Security.ClientIntegrity(Shared.Player)
+	assert(FailedIntegrity.ConsecutiveFailures == 1, "Expected an unhealthy completion to add evidence.")
+	assert(FailedIntegrity.Score > 0, "Expected an unhealthy completion to raise the decaying evidence score.")
+	assert(IntegrityFailures == 1, "Expected one structured evaluator-failure violation.")
+	ReleaseFailingSampler()
+	ReleaseIntegrityViolation()
+
+	--> A completed local sweep is not enough by itself: if its receipt never
+	--> crosses the client transport, the server must expire the one-time challenge.
+	Server.Configure({
+		ClientIntegrityReceiptTimeoutSeconds = 0.5,
+		ClientIntegrityScoreThreshold = 100,
+	})
+	local MissingReceipts = 0
+	local ReleaseMissingReceipt = Server.Security.OnViolation(function(Context)
+		if Context.Event == "$clientIntegrity" and Context.Reason == "IntegrityReceiptMissing" then
+			MissingReceipts += 1
+		end
+	end)
+	assert(Server.Security.ChallengeIntegrity(Shared.Player) ~= nil, "Expected a challenge for timeout coverage.")
+	Server.StepReplication()
+	--> Lune pauses its os.clock during task.wait, while the generated Roblox
+	--> runtime uses os.clock as its monotonic deadline source. Advance that exact
+	--> clock here so this remains a deterministic expiry test in both runtimes.
+	local ReceiptDeadline = os.clock() + 0.55
+	while os.clock() < ReceiptDeadline do
+		-- Intentional bounded spin for the standalone Luau clock.
+	end
+	Server.StepReplication()
+	local MissedIntegrity = Server.Security.ClientIntegrity(Shared.Player)
+	assert(MissedIntegrity.ConsecutiveMisses == 1, "Expected an unreturned receipt to count as one miss.")
+	assert(MissedIntegrity.PendingChallenge == nil, "Expected the expired challenge to be cleared.")
+	assert(MissingReceipts == 1, "Expected one structured missing-receipt violation.")
+	ReleaseMissingReceipt()
+
+	--> Pure server movement classification: ordinary movement passes, a long frame
+	--> resyncs, sitting is exempt, and impossible displacement yields named evidence.
+	Server.Configure({
+		CharacterIntegrityMaxHorizontalSpeed = 64,
+		CharacterIntegrityMaxVerticalSpeed = 120,
+		CharacterIntegritySpeedMultiplier = 1.75,
+		CharacterIntegrityDistanceSlack = 12,
+		CharacterIntegrityPingAllowance = 1.5,
+		CharacterIntegrityMaxStepSeconds = 1.5,
+	})
+	local NormalMovement = Server.Security.EvaluateMovement({
+		DeltaTime = 0.25,
+		HorizontalDistance = 10,
+		VerticalDistance = 2,
+		WalkSpeed = 16,
+		HorizontalVelocity = 16,
+		VerticalVelocity = 8,
+		Ping = 0.08,
+	})
+	assert(not NormalMovement.Suspicious and not NormalMovement.Resync, "Expected ordinary movement to pass.")
+	local HitchMovement = Server.Security.EvaluateMovement({
+		DeltaTime = 2,
+		HorizontalDistance = 500,
+		VerticalDistance = 500,
+	})
+	assert(HitchMovement.Resync and not HitchMovement.Suspicious, "Expected a long server frame to resync, not accuse.")
+	local SeatedMovement = Server.Security.EvaluateMovement({
+		DeltaTime = 0.25,
+		HorizontalDistance = 500,
+		VerticalDistance = 500,
+		Seated = true,
+	})
+	assert(not SeatedMovement.Suspicious, "Expected seated/vehicle movement to be exempt.")
+	local ImpossibleMovement = Server.Security.EvaluateMovement({
+		DeltaTime = 0.25,
+		HorizontalDistance = 250,
+		VerticalDistance = 200,
+		WalkSpeed = 16,
+		HorizontalVelocity = 0,
+		VerticalVelocity = 0,
+		Ping = 0.05,
+		PathBlocked = true,
+	})
+	assert(ImpossibleMovement.Suspicious and ImpossibleMovement.Weight >= 7, "Expected impossible movement evidence.")
+	assert(table.find(ImpossibleMovement.Reasons, "HorizontalDisplacement"), "Expected horizontal evidence.")
+	assert(table.find(ImpossibleMovement.Reasons, "VerticalDisplacement"), "Expected vertical evidence.")
+	assert(table.find(ImpossibleMovement.Reasons, "CollidableTraversal"), "Expected traversal evidence.")
+
+	Server.Configure({
+		EnableCharacterIntegrity = true,
+		CharacterIntegrityMode = "Observe",
+		CharacterIntegrityKick = true,
+		CharacterIntegrityCorrectionScore = 1,
+		CharacterIntegrityKickScore = 1,
+	})
+	local _, ObserveAction = Server.Security.ObserveCharacter(Shared.Player, "UnitTestObserve", 10)
+	assert(ObserveAction == "observe", "Expected Observe mode to retain evidence without escalating it.")
+	Server.Configure({ CharacterIntegrityMode = "Report" })
+	local _, ReportAction = Server.Security.ObserveCharacter(Shared.Player, "UnitTestReport", 1)
+	assert(ReportAction == "report", "Expected Report mode to emit evidence without correction.")
+
+	Server.Configure({ EnableClientIntegrity = false, EnableCharacterIntegrity = false })
+	Client.Configure({ EnableClientIntegrity = false, EnableCharacterIntegrity = false })
 
 	local Handle = Server.Handles.Register(Shared.ServerOnlyInstance, Shared.Player, os.clock() + 10)
 	assert(
