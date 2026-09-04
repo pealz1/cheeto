@@ -32,8 +32,6 @@ jobs:
 
       - name: Install Rokit tools
         uses: CompeyDev/setup-rokit@v0.2.1
-        with:
-          cache: true
 
       - name: Check formatting
         run: stylua --check src test benchmark plugin
