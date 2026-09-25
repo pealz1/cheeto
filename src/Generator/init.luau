@@ -599,6 +599,24 @@ local function AddAfterReceive(
 	end
 end
 
+--> A bare Read(1) throws straight out of the packet loop when the frame is
+--> short, which strands every later message in the same packet -- including a
+--> function reply, whose invocation then sits until it times out, and the
+--> trailing ProfileEnd() never runs, so the profiler depth leaks. Every other
+--> decode in this loop drops and recovers instead; these two single-byte reads
+--> were the only ones left unguarded.
+local function AddGuardedByteRead(Block: Blocks.Block, Variable: string, Reliability: string)
+	local Source = SourceExpression()
+	local OkName = `{Variable}Ok`
+	Block:Line(
+		`local {OkName}, {Variable} = pcall(function() return buffer.readu8(State.RecieveBuffer, Read(1)) end)`
+	)
+	local Failure = Block:Compare(OkName, "true", "Not")
+	Failure:Line(`DropPacket({Source}, "{Reliability}", "MalformedPacket", Size)`)
+	Failure:Line(AbortReadLine())
+	Failure:End()
+end
+
 local function AddDecodeFailureGuard(Block: Blocks.Block, Name: string, Reliability: string, ErrorExpression: string)
 	local Source = SourceExpression()
 	local Failure = Block:Compare("Success", "true", "Not")
@@ -1690,7 +1708,7 @@ function Declarations.Function(Declaration: Parser.Function)
 	if Context == "Server" then
 		--> Data recieve body
 		AddReceiveGuards(Block, Name, "Reliable", Value)
-		Block:Line("local InvocationIdentifier = buffer.readu8(State.RecieveBuffer, Read(1))")
+		AddGuardedByteRead(Block, "InvocationIdentifier", "Reliable")
 		local DecodeError = string.split(DataArguments, ",")[1] or "Value"
 		Block:Line(`local Success, {DataArguments} = pcall({Util.GetPath(DataIdentifier, false, Scope)})`)
 		AddDecodeFailureGuard(Block, Name, "Reliable", DecodeError)
@@ -1757,7 +1775,7 @@ function Declarations.Function(Declaration: Parser.Function)
 
 		--> The reply leg: source is the server, so no auth/policy/rate limit.
 		AddReceiveGuards(Block, Name, "Reliable", Value, true)
-		Block:Line("local InvocationIdentifier = buffer.readu8(State.RecieveBuffer, Read(1))")
+		AddGuardedByteRead(Block, "InvocationIdentifier", "Reliable")
 		Block:Lines(Deserialize.Content, Block.Indent + 1)
 		AddAfterReceive(Block, Name, "Reliable", `table.pack({ReturnArguments})`)
 		--> Through ResumeInvocation, not task.spawn: InvocationIdentifier is a u8
@@ -1890,7 +1908,7 @@ function Declarations.Channel(Declaration: Parser.Channel)
 		end
 
 		AddReceiveGuards(Block, Declaration.Name, Reliability, Value)
-		Block:Line("local CHANNEL_MODE = buffer.readu8(State.RecieveBuffer, Read(1))")
+		AddGuardedByteRead(Block, "CHANNEL_MODE", Reliability)
 		local ModeBranch = Block:Compare("CHANNEL_MODE", "0", "Equals")
 		ModeBranch:Line(`local Success, Value = pcall({ReadFullPath})`)
 		AddDecodeFailureGuard(ModeBranch, Declaration.Name, Reliability, "Value")
