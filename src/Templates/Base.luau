@@ -286,7 +286,12 @@ local RuntimeState = {
     },
     Profile = {
         MainThread = {},
-        Depth = setmetatable({}, { __mode = "k" })
+        Depth = setmetatable({}, { __mode = "k" }),
+        --> Which frame each thread's annotation was opened in. The engine closes every
+        --> open annotation at the end of a frame, so a depth recorded in an earlier frame
+        --> is stale and must not be matched with a profileend call.
+        Frame = setmetatable({}, { __mode = "k" }),
+        FrameId = 0
     },
     SchemaMigrations = {} :: {[number]: (any) -> any},
     SchemaDefaults = {} :: {[string]: any},
@@ -566,6 +571,7 @@ local function ProfileBegin(Name: string)
         if Success then
             local Thread = coroutine.running() or RuntimeState.Profile.MainThread
             RuntimeState.Profile.Depth[Thread] = (RuntimeState.Profile.Depth[Thread] or 0) + 1
+            RuntimeState.Profile.Frame[Thread] = RuntimeState.Profile.FrameId
         end
     end
 end
@@ -581,14 +587,32 @@ local function ProfileEnd()
         return
     end
 
+    --> A decode that yields across a frame boundary comes back to an annotation the
+    --> engine has already closed, while this counter still says one is open. Calling
+    --> profileend then is exactly what logs "debug.profileEnd() - No active profile
+    --> annotation". Drop the stale count instead of matching it.
+    if RuntimeState.Profile.Frame[Thread] ~= RuntimeState.Profile.FrameId then
+        RuntimeState.Profile.Depth[Thread] = nil
+        RuntimeState.Profile.Frame[Thread] = nil
+        return
+    end
+
     local Debug = debug
     if Debug and Debug.profileend and pcall(Debug.profileend) then
         if Depth == 1 then
             RuntimeState.Profile.Depth[Thread] = nil
+            RuntimeState.Profile.Frame[Thread] = nil
         else
             RuntimeState.Profile.Depth[Thread] = Depth - 1
         end
     end
+end
+
+--> Frame ticker for the annotation bookkeeping above.
+if RuntimeConfig.EnableMicroProfiler then
+    RunService.Heartbeat:Connect(function()
+        RuntimeState.Profile.FrameId += 1
+    end)
 end
 
 local function EmitTelemetry(Name: string, Payload: any)
