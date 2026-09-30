@@ -457,7 +457,15 @@ end
 --> prediction failed instead of waiting for a timeout.
 local Rejecting: { Name: string, Index: number, Invocation: string }? = nil
 
+--> Set while a client's function-reply branch is generated. A reply the
+--> client drops fails its Invoke straight away with the reason, instead of
+--> leaving the caller waiting for the timeout.
+local FailingReply: string? = nil
+
 local function AbortReadLine(Reason: string?): string
+	if Context == "Client" and FailingReply ~= nil and Reason ~= nil then
+		return `RuntimeSupport.FailInvocation(InvocationIdentifier, "{FailingReply}", {Reason}) RecoverMessage() continue`
+	end
 	if Context == "Server" and Rejecting ~= nil and Reason ~= nil then
 		return `RuntimeSupport.RejectReceive(Player, "{Rejecting.Name}", {Rejecting.Index}, {Rejecting.Invocation}, {Reason}) RecoverMessage() continue`
 	end
@@ -1680,10 +1688,13 @@ function Declarations.Function(Declaration: Parser.Function)
 			:Wrap(`local Success, {ReturnArguments} = pcall(`, ")")
 
 		--> The reply leg: source is the server, so no auth/policy/rate limit.
-		AddReceiveGuards(Block, Name, "Reliable", Index, Value, true)
+		--> The invocation id is read first so a dropped reply can fail its call.
 		AddGuardedByteRead(Block, "InvocationIdentifier", "Reliable")
+		FailingReply = Name
+		AddReceiveGuards(Block, Name, "Reliable", Index, Value, true)
 		Block:Lines(Deserialize.Content, Block.Indent + 1)
 		AddAfterReceive(Block, Name, "Reliable", Index, `table.pack({ReturnArguments})`)
+		FailingReply = nil
 		--> Through ResumeInvocation, not task.spawn: InvocationIdentifier is a u8
 		--> read straight off the wire, so this is the one resume path an attacker
 		--> can aim. The guard refuses to resume a thread that is not parked on this
@@ -2732,6 +2743,7 @@ function Generator.Reset()
 
 	table.clear(ConstraintsEmitted)
 	Rejecting = nil
+	FailingReply = nil
 	Events.Push("local EndpointConstraints = { Reliable = {}, Unreliable = {} }")
 
 	--> Reset channels

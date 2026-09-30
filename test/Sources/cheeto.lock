@@ -1,7 +1,7 @@
 {
 	"schemaVersion": 2,
 	"minimumSchemaVersion": 1,
-	"schemaHash": "eaf6660880177b62",
+	"schemaHash": "3da54c2bfad27f05",
 	"options": {
 		"securityProfile": "Development",
 		"requirePolicies": false,
@@ -14,6 +14,7 @@
 		"AnotherScope.ScopeWithinAnotherScope.InAnotherScopeEvent": { "kind": "Event", "channel": "Reliable", "id": 47, "shape": "5873ae3de6e22a83" },
 		"ArrayPrimitive": { "kind": "Event", "channel": "Unreliable", "id": 7, "shape": "a947dd7462e84c9a" },
 		"AuthedClient": { "kind": "Event", "channel": "Reliable", "id": 40, "shape": "d9b6fa0949e4be7b" },
+		"BigReplyFunction": { "kind": "Function", "channel": "Reliable", "id": 63, "shape": "74105372ec34f1b4" },
 		"Booleans": { "kind": "Event", "channel": "Reliable", "id": 17, "shape": "be1e250895a34936" },
 		"BoundedMapServer": { "kind": "Event", "channel": "Reliable", "id": 60, "shape": "0caa5f55b88e7a17" },
 		"ClientEmptyEvent": { "kind": "Event", "channel": "Reliable", "id": 6, "shape": "8799942a402d964c" },

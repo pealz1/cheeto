@@ -5223,6 +5223,13 @@ local function ClearInvocation(Identifier: number): Invocation?
     return Invocation
 end
 
+function RuntimeSupport.FailInvocation(Identifier: number, Name: string, Reason: string?)
+    local Invocation = ClearInvocation(Identifier)
+    if Invocation ~= nil then
+        ResumeInvocation(Invocation, false, `[Cheeto]: The reply to "{Name}" was dropped: {Reason or "Rejected"}`)
+    end
+end
+
 local function CancelInvocations(Reason: string?)
     for Identifier, Invocation in Calls do
         Calls[Identifier] = nil

@@ -27,6 +27,7 @@ Every request gets an answer: a reply, a failure reply with a reason, or a timeo
 | --- | --- |
 | The server dropped the request before the handler ran (policy, auth, constraint, cooldown, rate limit, kill switch, replay, malformed payload, queue full) | `[Cheeto]: The server rejected "Name": <reason>`, with the drop reason, or the reason your policy returned |
 | The handler errored, or returned something that does not fit the `Return` type | `[Cheeto]: The server rejected "Name": HandlerError` |
+| The client dropped the reply, for example because it exceeds the [decode budgets](/reference/options/limits#decode-budgets) | `[Cheeto]: The reply to "Name" was dropped: <reason>`, straight away |
 | No reply within the timeout | `[Cheeto]: Invoke timed out after N seconds.` |
 | Too many invokes pending | Immediately, before anything is sent |
 | The request could not be encoded (a value out of range, a wrong enum) | Immediately, with the encoding error |

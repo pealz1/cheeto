@@ -199,7 +199,10 @@ function Utility.Compile(Path: string, Options: CompileOptions)
 
 	local TypesSource: string?
 	if FileOptions.TypesOutput then
-		TypesOutput = if PathParser.PathType(Path) == "absolute"
+		--> Relative to the schema, like the other outputs. This tested the schema
+		--> path instead, so an absolute schema path wrote the types module
+		--> relative to the working directory.
+		TypesOutput = if PathParser.PathType(FileOptions.TypesOutput) == "absolute"
 			then FileOptions.TypesOutput
 			else `{FileDirectory}{FileOptions.TypesOutput}`
 		TypesSource = Generator.GenerateShared(AbstractSyntaxTree)

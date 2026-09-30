@@ -3024,6 +3024,29 @@ RunClosure("Broadcasts to several players keep every batch intact", function()
 	)
 end)
 
+RunClosure("A reply the client drops fails its invoke immediately", function()
+	Server.BigReplyFunction.On(function(_, Count)
+		local Reply = {}
+		for Index = 1, Count do
+			Reply[`key{Index}`] = Index
+		end
+		return Reply
+	end)
+	Client.Configure({ MaxTableKeys = 16, InvokeTimeoutSeconds = 5 })
+	local Started = os.clock()
+	local Ok, Error = pcall(Client.BigReplyFunction.Invoke, 100)
+	local Elapsed = os.clock() - Started
+	Client.Configure({ MaxTableKeys = 2048, InvokeTimeoutSeconds = 0 })
+	assert(not Ok, "Expected an over-budget reply to fail the invoke.")
+	assert(
+		string.find(tostring(Error), "was dropped", 1, true),
+		`Expected a dropped-reply error, got {tostring(Error)}.`
+	)
+	assert(Elapsed < 1, `The invoke waited {Elapsed}s for a reply that had already been dropped.`)
+	local Fine = Client.BigReplyFunction.Invoke(4)
+	assert(type(Fine) == "table" and Fine.key4 == 4, "Expected a reply within budget to arrive.")
+end)
+
 RunClosure("Fuzz malformed packets", function()
 	Server.Configure({
 		MaxReliablePacketBytes = 256,

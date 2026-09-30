@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-09-30
+
+### Fixed
+
+- A function reply the client drops (over its decode budgets, or malformed) now fails the waiting `Invoke` straight away with `The reply to "Name" was dropped: <reason>`, instead of leaving it until the timeout.
+- `TypesOutput` is resolved relative to the schema even when the schema path is absolute; it used to be written relative to the working directory.
+
 ## [1.1.0] - 2026-09-30
 
 This release fixes defects found while rebuilding the documentation against the compiler, and makes every documented feature do what it says. The wire format changed; regenerate both modules together, as always.
@@ -108,6 +115,7 @@ The first public release.
 - Standalone Infinite Yield detection and movement anti-cheat in `extras/security`.
 - Prebuilt binaries for Windows, macOS and Linux, and a pesde package.
 
-[Unreleased]: https://github.com/pealz1/cheeto/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/pealz1/cheeto/compare/v1.1.1...HEAD
+[1.1.1]: https://github.com/pealz1/cheeto/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/pealz1/cheeto/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/pealz1/cheeto/releases/tag/v1.0.0

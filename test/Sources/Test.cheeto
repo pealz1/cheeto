@@ -806,3 +806,10 @@ event IdempotentFire {
     Idempotency: true,
     Data: u8
 }
+
+--> Returns an arbitrary table, so the client's decode budget can reject it.
+function BigReplyFunction {
+    Yield: Coroutine,
+    Data: u8,
+    Return: unknown
+}
