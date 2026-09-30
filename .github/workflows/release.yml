@@ -49,7 +49,7 @@ jobs:
         run: |
           awk -v version="${TAG#v}" '
             index($0, "## [" version "]") == 1 { found = 1; next }
-            found && /^## \[/ { exit }
+            found && (/^## \[/ || /^\[[^]]+\]: /) { exit }
             found { print }
           ' CHANGELOG.md > release-notes.md
           if [ ! -s release-notes.md ]; then
