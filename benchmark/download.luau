@@ -8,9 +8,10 @@ local PATH_TO_7ZIP = "C:\\Program Files\\7-Zip\\7z.exe"
 local PATH_TO_TOOLS = "./tools/"
 local PATH_TO_PACKAGES = "./packages/"
 
+--> Cheeto itself is not downloaded: build.bat compiles the benchmark
+--> definition with the compiler in this repository.
 local Tools = {
 	zap = "https://api.github.com/repos/red-blox/zap/releases/latest",
-	cheeto = "https://api.github.com/repos/pealz1/cheeto/releases/latest",
 }
 
 local Packages: { [string]: { GitHub: string, Wally: string } } = {

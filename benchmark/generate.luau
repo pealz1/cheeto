@@ -1,11 +1,14 @@
 local DateTime = require("@lune/datetime")
-local DateTime = require("@lune/datetime")
 local fs = require("@lune/fs")
 local process = require("@lune/process")
 local serde = require("@lune/serde")
 
 local VersionsJSON = fs.readFile("./tools/versions.json")
 local Versions = serde.decode("json", VersionsJSON)
+
+--> The cheeto mode is compiled from this checkout, so report its version
+local Manifest = fs.readFile("../pesde.toml")
+Versions.cheeto = `v{string.match(Manifest, 'version%s*=%s*"([^"]+)"') or "dev"} (source)`
 
 local RobloxResult = process.exec("run-in-roblox", { "--place", "Benchmark.rbxl", "--script", "run.luau" })
 if not RobloxResult.ok then

@@ -20,7 +20,7 @@ echo Compiling definitions
 if not exist "./src/shared/zap" mkdir "./src/shared/zap"
 if not exist "./src/shared/cheeto" mkdir "./src/shared/cheeto"
 "./tools/zap.exe" "./definitions/Definition.zap"
-"./tools/cheeto.exe" "./definitions/Definition.cheeto"
+lune run ../src/CLI/init.luau ./definitions/Definition.cheeto -- --yes
 endlocal
 
 echo Building ROBLOX place
