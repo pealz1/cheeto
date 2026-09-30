@@ -48,9 +48,9 @@ jobs:
         working-directory: docs
         run: npm run build
         env:
-          # Empty when a custom domain is configured for Pages
+          # Served publicly at pealz.cc/cheeto through the cheeto-docs Worker
           NEXT_PUBLIC_BASE_PATH: ${{ github.event_name == 'pull_request' && '/cheeto' || steps.pages.outputs.base_path }}
-          NEXT_PUBLIC_SITE_URL: ${{ steps.pages.outputs.base_url }}
+          NEXT_PUBLIC_SITE_URL: https://pealz.cc/cheeto
 
       - name: Upload site
         if: github.event_name != 'pull_request'
