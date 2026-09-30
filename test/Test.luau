@@ -2932,6 +2932,43 @@ RunClosure("Rate limits can be changed at runtime", function()
 	assert(Seen == 4, `Expected the compiled limit back after clearing the override, got {Seen}.`)
 end)
 
+RunClosure("Map ranges, type aliases and idempotent Fire", function()
+	local Maps, Aliases = {}, {}
+	local ReleaseMap = Client.BoundedMapServer.On(function(Value)
+		table.insert(Maps, Value)
+	end)
+	local ReleaseAlias = Client.AliasServer.On(function(Value)
+		table.insert(Aliases, Value)
+	end)
+	Server.BoundedMapServer.FireAll({ [1] = 2 })
+	assert(not pcall(Server.BoundedMapServer.FireAll, {}), "An empty map passed a 1..3 range.")
+	assert(not pcall(Server.BoundedMapServer.FireAll, { 1, 2, 3, 4 }), "A four-entry map passed a 1..3 range.")
+	Server.AliasServer.FireAll({ Health = 1, Stamina = 2 })
+	Server.StepReplication()
+	task.wait(1 / 30)
+	ReleaseMap()
+	ReleaseAlias()
+	assert(#Maps == 1 and Maps[1][1] == 2, "A ranged map did not arrive intact.")
+	assert(#Aliases == 1 and Aliases[1].Stamina == 2, "A struct alias did not arrive intact.")
+
+	local Seen = 0
+	local Release = Server.IdempotentFire.On(function()
+		Seen += 1
+	end)
+	Client.Capture.Clear()
+	Client.Capture.Start({ Limit = 16 })
+	Client.IdempotentFire.Fire(1)
+	local Sent = CloneBuffer(FindCaptureBuffer(Client.Capture.Entries(), "IdempotentFire", "send", "accepted"))
+	Client.Capture.Stop()
+	Client.StepReplication()
+	task.wait(1 / 30)
+	local ServerReliable = ServerEnvironment.Instances.CHEETO_RELIABLE_REMOTE.OnServerEvent
+	FireSignalSync(ServerReliable, Shared.Player, Sent, {})
+	task.wait(1 / 30)
+	Release()
+	assert(Seen == 1, `A replayed idempotent packet was delivered again ({Seen} deliveries).`)
+end)
+
 RunClosure("Fuzz malformed packets", function()
 	Server.Configure({
 		MaxReliablePacketBytes = 256,

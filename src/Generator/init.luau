@@ -1067,11 +1067,21 @@ function Declarations.Map(Declaration: Parser.Map, Read: Blocks.Block, Write: Bl
 			:End()
 	end
 
+	--> A ranged map is bounded in both directions and its count takes only
+	--> the bytes its maximum needs.
+	local Range = MapValue.Range
+	local LengthBytes = if Range then Prefabs.GetLengthBytes(Range.Max) else 2
 	Read:Line(`{Read:Declare(Variable)} = \{\}`)
 	Write:Line(`local {ElementsVariable} = 0`)
-	Read:Line(`local {ElementsVariable} = ReadLength(2)`)
+	Read:Line(`local {ElementsVariable} = ReadLength({LengthBytes})`)
 	Write:Iterator("_", "_", Variable):Line(`{ElementsVariable} += 1`):End()
-	Write:Line(`WriteLength({ElementsVariable}, 2)`)
+	if Range then
+		local Check =
+			`if {ElementsVariable} < {Range.Min} or {ElementsVariable} > {Range.Max} then error(\`Expected {Range.Min} to {Range.Max} entries, got \{{ElementsVariable}\}\`) end`
+		Write:Line(Check)
+		Read:Line(Check)
+	end
+	Write:Line(`WriteLength({ElementsVariable}, {LengthBytes})`)
 
 	local ReadLoop = Read:Loop("_ = 1", ElementsVariable)
 	local WriteLoop = Write:Iterator(KeyVariable, ElementVariable, Variable)
@@ -1170,7 +1180,9 @@ function Declarations.Event(Declaration: Parser.Event)
 	--> replication step; CoalesceKey shares that slot across endpoints.
 	local LatestKey = Value.CoalesceKey
 		or (if Value.ReliabilityMode == "Latest" then Assigned[Declaration].Name else nil)
-	local Sequenced = Value.ReliabilityMode == "Sequenced"
+	--> Idempotency on a client event stamps every send with a sequence too,
+	--> so a captured packet sent again is dropped even without Predict.
+	local Sequenced = Value.ReliabilityMode == "Sequenced" or (Value.Idempotency == true and Value.From == "Client")
 
 	--> Data body
 	local Types, Values, Arguments, _ = "nil", "Value: nil", "Value", nil
@@ -1547,7 +1559,13 @@ function Declarations.Function(Declaration: Parser.Function)
 	end
 
 	do
-		local DataRead, DataWrite = Generators.Event(Value.Data :: Type, Index, DataIdentifier, "Data")
+		local DataRead, DataWrite = Generators.Event(
+			Value.Data :: Type,
+			Index,
+			DataIdentifier,
+			"Data",
+			if Value.Idempotency then SequenceKey("Reliable", Index) else nil
+		)
 		local ReturnRead, ReturnWrite = Generators.Event(Value.Return :: Type, Index, ReturnIdentifier, "Return")
 
 		if Context == "Client" then
@@ -1582,6 +1600,7 @@ function Declarations.Function(Declaration: Parser.Function)
 		local DecodeError = string.split(DataArguments, ",")[1] or "Value"
 		Block:Line(`local Success, {DataArguments} = pcall({Util.GetPath(DataIdentifier, false, Scope)})`)
 		AddDecodeFailureGuard(Block, Name, "Reliable", DecodeError)
+		AddSequenceGuard(Block, "Reliable", Index, Value.Idempotency == true)
 		AddAfterReceive(Block, Name, "Reliable", Index, `table.pack({DataArguments})`, Value)
 		Block:Compare(Connection, "nil", "Not")
 			:Line(`task.spawn({Connection}, Player, {DataArguments}, InvocationIdentifier)`)

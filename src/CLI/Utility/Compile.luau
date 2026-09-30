@@ -676,11 +676,13 @@ function Utility.Benchmark(Path: string, Options: CompileOptions)
 	local Results = Benchmark.Measure((ParseForUtility(Path, Options)))
 	local Totals = Summarize(Results)
 
-	local BaseEvents = math.max(1, Counts.Event + Counts.Function + Counts.Channel)
-	local EndpointHeadroom = math.max(0, BaseEvents - 80)
+	--> The runtime is about 200 KB of each module; the rest grows with the
+	--> number of endpoints. Generous per-endpoint allowances that still catch a
+	--> generator change which doubles the output.
+	local Endpoints = Counts.Event + Counts.Function + Counts.Channel
 	local Thresholds = {
-		ServerBytes = 700_000 + (EndpointHeadroom * 2_250),
-		ClientBytes = 560_000 + (EndpointHeadroom * 1_500),
+		ServerBytes = 220_000 + Endpoints * 8_000,
+		ClientBytes = 220_000 + Endpoints * 6_000,
 		--> The shared artifact embeds the whole runtime, so it tracks runtime size.
 		TypesBytes = 250_000,
 		GenerateSeconds = 2,

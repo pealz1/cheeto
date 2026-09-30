@@ -1775,7 +1775,9 @@ function Parser.Type(self: Parser, Name: Token, Keyword: Token?, IsDataField: bo
 
 			if Token.Type == "Identifier" then
 				Declaration = self:Declaration(Name)
-				if not IsDeclarationTypeSimiliar(Declaration.Type, Type :: Declarations) then
+				--> `type` names any existing type; the other keywords must name one
+				--> of their own kind.
+				if Value ~= "type" and not IsDeclarationTypeSimiliar(Declaration.Type, Type :: Declarations) then
 					Error.new(
 						Error.AnalyzeReferenceInvalidType,
 						self.Source,
@@ -1955,13 +1957,20 @@ function Parser.Map(self: Parser, Name: Token): Map
 	local Value = ParseElement()
 	self:Consume("CloseBraces")
 
+	--> map {[K]: V}(Min..Max) bounds the number of entries.
+	local RangeToken = self:TryConsume("Range")
+	local Range = if RangeToken then self:NumberRange(RangeToken, ARRAY_BOUNDS, true) else nil
+
 	return {
 		Type = "Map",
 		Name = Name.Value,
 		Value = {
 			Values = { Key, Value },
+			Range = Range,
 		},
-		Tokens = {},
+		Tokens = {
+			Range = RangeToken,
+		},
 	}
 end
 
