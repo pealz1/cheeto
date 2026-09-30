@@ -102,6 +102,10 @@ Studio rejects scripts over 200,000 characters. Each generated module contains t
 
 **Known issue.** `CFrame<A, B>` encodes rotation with `A` and position with `B`, the reverse of what earlier docs described. `CFrame<i16, f16>` therefore produces integer rotations. See [CFrame](/reference/types/cframes).
 
+### Out-of-range numbers wrap on the sender
+
+Values that do not fit their declared number type are written modulo its size: `300` as a `u8` arrives as `44`. Unranged types accept the wrapped value. Declare ranges on numbers that matter, and use [`WriteValidations`](/reference/options/runtime#writevalidations) in development.
+
 ### No size range on maps
 
 `map X = {...}(1..50)` is a syntax error. Maps are limited only by `MaxTableKeys`. Use an array of structs when you need a bound.

@@ -18,7 +18,7 @@ const SPECS: Array<[string, string]> = [
 
 type Cell = { key: string; hex: string; label: string; detail: string; accent?: boolean }
 
-// Frame written by the v2 encoder for DealDamage.Fire({ Target = target, Damage = 25 })
+// Frame written by the encoder for DealDamage.Fire({ Target = target, Damage = 25 })
 const FRAME: Cell[] = [
   { key: 'idx', hex: 'id', label: 'Event index', detail: 'u8, assigned per event at compile time' },
   { key: 'flags', hex: '00', label: 'Flags', detail: 'u8, bit 0 set only when a prediction id follows' },

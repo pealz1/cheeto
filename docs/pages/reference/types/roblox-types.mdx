@@ -43,7 +43,7 @@ struct Appearance {
 ```
 
 <Callout type="warning">
-`Color3` is quantized to 8 bits per channel, the same precision as a hex colour. Channels outside 0–1, such as HDR colours built with `Color3.new(2, 0, 0)`, cannot be sent.
+`Color3` is quantized to 8 bits per channel, the same precision as a hex colour. Channels outside 0–1, such as HDR colours built with `Color3.new(2, 0, 0)`, wrap around and arrive as the wrong colour.
 </Callout>
 
 ## EnumItem

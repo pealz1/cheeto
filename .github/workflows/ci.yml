@@ -54,3 +54,6 @@ jobs:
 
       - name: Compile every schema example in the docs
         run: node docs/scripts/check-examples.mjs
+
+      - name: Check the reference covers the compiler
+        run: node docs/scripts/check-reference.mjs
