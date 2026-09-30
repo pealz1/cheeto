@@ -86,6 +86,7 @@ local Environment = {
 	ColorSequence = roblox.ColorSequence,
 	ColorSequenceKeypoint = roblox.ColorSequenceKeypoint,
 	Color3 = roblox.Color3,
+	CFrame = roblox.CFrame,
 	TweenInfo = TweenInfo,
 	_G = {},
 	task = task,
@@ -241,6 +242,39 @@ Roundtrip("Vector2[4]", "EArrayVector2", {
 	roblox.Vector2.new(3, 3),
 	roblox.Vector2.new(4, 4),
 })
+
+--> CFrame<Position, Rotation>: whole-number position, half-float rotation.
+do
+	stdio.write(`{stdio.color("cyan")}Testing: CFrame<i16, f16>...{stdio.color("reset")}`)
+	local Api = (Cheeto :: any).ECFrameMixed
+	local Value = roblox.CFrame.new(10, 20, -30) * roblox.CFrame.fromOrientation(0.5, 1.25, -0.75)
+	local Result = Api.Read(Api.Write(Value))
+	if Result.Position ~= Value.Position then
+		ErrorPrint(`CFrame<i16, f16> position changed: {Result.Position}`)
+	end
+	local X, Y, Z = Value:ToOrientation()
+	local RX, RY, RZ = Result:ToOrientation()
+	if math.abs(X - RX) > 0.01 or math.abs(Y - RY) > 0.01 or math.abs(Z - RZ) > 0.01 then
+		ErrorPrint(`CFrame<i16, f16> lost its rotation: {RX}, {RY}, {RZ}`)
+	end
+	OkPrint(`Datatype "CFrame<i16, f16>" passed!`)
+end
+
+--> Integers that do not fit raise instead of wrapping (300 used to arrive as 44).
+do
+	stdio.write(`{stdio.color("cyan")}Testing: u8 range...{stdio.color("reset")}`)
+	local Api = (Cheeto :: any).EByte
+	if Api.Read(Api.Write(255)) ~= 255 then
+		ErrorPrint("u8 255 did not roundtrip")
+	end
+	if pcall(Api.Write, 300) then
+		ErrorPrint("u8 accepted 300")
+	end
+	if pcall(Api.Write, -1) then
+		ErrorPrint("u8 accepted -1")
+	end
+	OkPrint(`Datatype "u8 range" passed!`)
+end
 
 stdio.write(`{stdio.color("green")}All datatype roundtrips passed!{stdio.color("reset")}\n`)
 

@@ -612,7 +612,7 @@ function Utility.Benchmark(Path: string, Options: CompileOptions)
 	local EndpointHeadroom = math.max(0, BaseEvents - 80)
 	local Thresholds = {
 		ServerBytes = 700_000 + (EndpointHeadroom * 2_250),
-		ClientBytes = 520_000 + (EndpointHeadroom * 1_500),
+		ClientBytes = 560_000 + (EndpointHeadroom * 1_500),
 		--> The shared artifact embeds the whole runtime, so it tracks runtime size.
 		--> Built-in constraint checks and the unified send path took it past 225 KB.
 		TypesBytes = 250_000,

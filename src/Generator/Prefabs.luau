@@ -190,11 +190,35 @@ local function GeneratePrimitivePrefab(Type: string, Prefab: TypePrefab, AssertG
 	end
 end
 
+local INTEGER_BOUNDS = {
+	u8 = { 0, 255 },
+	u16 = { 0, 65535 },
+	u32 = { 0, 4294967295 },
+	i8 = { -128, 127 },
+	i16 = { -32768, 32767 },
+	i32 = { -2147483648, 2147483647 },
+}
+
 local function GenerateNumberGenerator(Type: string, Size: number): (TypePrefab, { Type: string, Generate: Generate })
 	local Prefix = string.sub(Type, 1, 1)
 	local IsInteger = Prefix == "u" or Prefix == "i"
 	local IsVarintCandidate = IsInteger and Size > BYTE and (string.sub(Type, 2) == "16" or string.sub(Type, 2) == "32")
 	local IsSigned = Prefix == "i"
+	local Bounds = INTEGER_BOUNDS[Type]
+
+	--> buffer.write* wraps silently (300 as a u8 arrives as 44), which turns
+	--> a caller's bug into a wrong value on the other side. Constant writes
+	--> the generator emits itself are known to fit and skip the check.
+	local function AddRangeCheck(Value: string, Block: Block)
+		if Bounds == nil or tonumber(Value) ~= nil then
+			return
+		end
+
+		Block:Line(
+			`if {Value} < {Bounds[1]} or {Value} > {Bounds[2]} then error(\`{Type} must be between {Bounds[1]} and {Bounds[2]}, got \{{Value}\}\`) end`
+		)
+	end
+
 	local Prefab = {
 		Read = function(Variable: string, Block: Block)
 			if IsVarintCandidate then
@@ -209,6 +233,7 @@ local function GenerateNumberGenerator(Type: string, Size: number): (TypePrefab,
 			end
 		end,
 		Write = function(Value: string, Block: Block)
+			AddRangeCheck(Value, Block)
 			if IsVarintCandidate then
 				Block:Line("if UseVarints() then")
 				Block:Line(`{IsSigned and "WriteSignedVarint" or "WriteVarint"}({Value})`, Block.Indent + 1)
@@ -442,26 +467,34 @@ end
 
 --> CFrame
 do
+	--> CFrame<Position, Rotation>. With one component both use it. These were
+	--> applied the other way round, so CFrame<i16, f16> sent whole-number
+	--> rotations and half-precision positions.
+	local function PositionComponents(Components: { string }?): { string }?
+		return if Components then { Components[1] } else nil
+	end
+
+	local function RotationPrefab(Components: { string }?): TypePrefab
+		if Components then
+			return Types[Components[#Components]]
+		end
+		return Types.f32
+	end
+
 	Types.CFrame = {
 		Read = function(Variable: string, Block: Block, _, Components: { string }?)
-			local Prefab: TypePrefab = Types.f32
-			if Components then
-				Prefab = Types[Components[1]]
-			end
+			local Prefab = RotationPrefab(Components)
 
-			Types.vector.Read("Position", Block, nil, Components)
+			Types.vector.Read("Position", Block, nil, PositionComponents(Components))
 			Prefab.Read("rX", Block)
 			Prefab.Read("rY", Block)
 			Prefab.Read("rZ", Block)
 			Block:Line(`{Block:Declare(Variable)} = CFrame.new(Position) * CFrame.fromOrientation(rX, rY, rZ)`)
 		end,
 		Write = function(Value: string, Block: Block, _, Components: { string }?)
-			local Prefab: TypePrefab = Types.f32
-			if Components then
-				Prefab = Types[Components[1]]
-			end
+			local Prefab = RotationPrefab(Components)
 
-			Types.vector.Write(`{Value}.Position`, Block, nil, Components)
+			Types.vector.Write(`{Value}.Position`, Block, nil, PositionComponents(Components))
 			Block:Line(`local rX, rY, rZ = {Value}:ToOrientation()`)
 			Prefab.Write("rX", Block)
 			Prefab.Write("rY", Block)
@@ -487,10 +520,12 @@ do
 			)
 		end,
 		Write = function(Value: string, Block: Block)
+			--> Channels outside 0..1 (Color3.new(2, 0, 0) is legal) clamp instead of
+			--> wrapping to an unrelated colour.
 			Block:Line(`local Color = {Value}`)
-			Types.u8.Write("Color.R * 255", Block)
-			Types.u8.Write("Color.G * 255", Block)
-			Types.u8.Write("Color.B * 255", Block)
+			Types.u8.Write("math.clamp(math.round(Color.R * 255), 0, 255)", Block)
+			Types.u8.Write("math.clamp(math.round(Color.G * 255), 0, 255)", Block)
+			Types.u8.Write("math.clamp(math.round(Color.B * 255), 0, 255)", Block)
 		end,
 	}
 

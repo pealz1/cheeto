@@ -25,3 +25,5 @@ export type ENumberSequence = NumberSequence
 export type EColorSequence = ColorSequence
 export type EOptionalUDim = UDim2?
 export type EArrayVector2 = Vector2[4]
+export type ECFrameMixed = CFrame<i16, f16>
+export type EByte = u8
