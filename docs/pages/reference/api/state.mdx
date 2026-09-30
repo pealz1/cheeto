@@ -1,0 +1,75 @@
+---
+title: "State"
+description: "Tombstones, patch helpers, a simple interpolator and local dirty-tracking channels."
+---
+
+import { Sig } from '../../../components/Reference'
+
+# State
+
+`Network.State` has helpers for working with replicated state. Schema-declared [channels](/reference/api/channel) are separate; these helpers work on plain tables.
+
+## Tombstone
+
+<Sig side="both">{"Tombstone: userdata"}</Sig>
+
+A marker meaning "remove this field". Use it in a channel [`Patch`](/reference/api/channel#patch) to clear an optional field, because a `nil` value in a Luau table is indistinguishable from a missing key.
+
+```lua copy
+Network.PlayerState.Patch(player, { Equipped = Network.State.Tombstone })
+```
+
+## MakePatch
+
+<Sig side="both">{"MakePatch(previous: any, next: any): Patch"}</Sig>
+
+Computes the difference between two tables. Nested tables produce nested patches; changed values become `{ op = "set", value = v }`; removed keys become `{ op = "delete" }`. If either argument is not a table, returns `{ op = "replace", value = next }`.
+
+## ApplyPatch
+
+<Sig side="both">{"ApplyPatch(base: any, patch: Patch): any"}</Sig>
+
+Applies a patch from `MakePatch` and returns a new table. `base` is not modified.
+
+```lua copy
+local patch = Network.State.MakePatch(oldState, newState)
+local rebuilt = Network.State.ApplyPatch(oldState, patch)
+```
+
+These patches are ordinary tables, not Cheeto's channel wire format. Send one through an event with an `unknown` field if you need to.
+
+## Interpolator
+
+<Sig side="both">{"Interpolator(initial: any): Interpolator"}</Sig>
+
+A minimal smoother. `SetTarget(value)` sets a new target; `Step(deltaTime, speed?)` moves toward it (default speed 12 per second) and returns the current value. `Vector3` values are lerped; any other value snaps to the target.
+
+```lua copy
+local smoothing = Network.State.Interpolator(Vector3.zero)
+
+Network.BossPosition.On(function(position)
+    smoothing:SetTarget(position)
+end)
+
+RunService.RenderStepped:Connect(function(deltaTime)
+    boss:PivotTo(CFrame.new(smoothing:Step(deltaTime)))
+end)
+```
+
+## DefineChannel
+
+<Sig side="both">{"DefineChannel(name: string, options: table?): LocalChannel"}</Sig>
+
+Creates a local key-value store that tracks which keys changed. It does not send anything by itself. Errors when [`EnableStateChannels`](/reference/options/runtime#enablestatechannels) is off.
+
+| Method | Behaviour |
+| --- | --- |
+| `channel:Set(key, value)` | Stores the value and marks the key dirty if it changed |
+| `channel:Get(key)` | Reads a value |
+| `channel:Flush()` | Returns the dirty keys and the version, and clears the dirty set |
+
+## Channels
+
+<Sig side="both">{"Channels: {[string]: LocalChannel}"}</Sig>
+
+Every channel created with `DefineChannel`, by name.

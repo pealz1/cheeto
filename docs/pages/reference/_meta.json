@@ -1,0 +1,18 @@
+{
+  "index": "Overview",
+  "-- schema": { "type": "separator", "title": "Schema language" },
+  "syntax": "Syntax",
+  "options": "Options",
+  "declarations": "Declarations",
+  "fields": "Endpoint fields",
+  "types": "Types",
+  "-- api": { "type": "separator", "title": "Generated API" },
+  "api": "Runtime API",
+  "-- data": { "type": "separator", "title": "Data" },
+  "drop-reasons": "Drop reasons",
+  "violation-report": "ViolationReport",
+  "-- tooling": { "type": "separator", "title": "Tooling" },
+  "cli": "Command line",
+  "lockfile": "cheeto.lock format",
+  "limitations": { "title": "Limitations", "href": "/limitations" }
+}

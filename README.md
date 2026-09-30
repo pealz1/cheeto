@@ -1,6 +1,6 @@
 <div align="center">
 
-<a href="https://pealz1.github.io/cheeto">
+<a href="https://pealz.cc/cheeto">
   <img src="docs/public/og.png" alt="Cheeto: typed, buffer-packed and hard-to-abuse networking for Roblox" width="100%">
 </a>
 
@@ -9,20 +9,20 @@
 
 [![CI](https://img.shields.io/github/actions/workflow/status/pealz1/cheeto/ci.yml?branch=main&style=flat-square&label=CI&color=f97316)](https://github.com/pealz1/cheeto/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/pealz1/cheeto?style=flat-square&color=f97316)](https://github.com/pealz1/cheeto/releases/latest)
-[![Docs](https://img.shields.io/badge/docs-pealz1.github.io%2Fcheeto-f97316?style=flat-square)](https://pealz1.github.io/cheeto)
+[![Docs](https://img.shields.io/badge/docs-pealz.cc%2Fcheeto-f97316?style=flat-square)](https://pealz.cc/cheeto)
 [![License](https://img.shields.io/github/license/pealz1/cheeto?style=flat-square&color=f97316)](LICENSE)
 [![Luau](https://img.shields.io/badge/written%20in-Luau-00a2ff?style=flat-square)](https://luau.org)
 
-**[Documentation](https://pealz1.github.io/cheeto)** ·
-**[Quick start](https://pealz1.github.io/cheeto/getting-started/quick-start)** ·
-**[Language reference](https://pealz1.github.io/cheeto/language/options)** ·
+**[Documentation](https://pealz.cc/cheeto)** ·
+**[Quick start](https://pealz.cc/cheeto/getting-started/quick-start)** ·
+**[Reference](https://pealz.cc/cheeto/reference)** ·
 **[Releases](https://github.com/pealz1/cheeto/releases)**
 
 </div>
 
 ---
 
-Cheeto is a compiler for Roblox networking. You describe your events, functions and state in a small schema language, and Cheeto generates the Luau modules that send and receive them: buffer-packed, fully typed on both sides, and guarded by validation, rate limits and replay protection before your code ever runs.
+Cheeto is a compiler for Roblox networking. You describe your events, functions and state in a small schema language, and Cheeto generates the Luau modules that send and receive them: buffer-packed, fully typed on both sides, and guarded by validation, rate limits and your own policies before your code ever runs.
 
 ```cheeto
 option ClientOutput = "Network/Client.luau"
@@ -80,14 +80,14 @@ Checking `Damage` against `0..500`, enforcing the cooldown, running the policy a
 **Hard to abuse**
 - Size caps, decode budgets and payload canonicalization drop malformed data before a listener runs.
 - Per-event policies, auth rules, rate limits, cooldowns and idempotency.
-- Replay protection, honeypot events and a v2 handshake that checks protocol, schema version and schema hash.
+- Honeypot endpoints, kill switches, replay protection for predicted events, and a version handshake.
 - `SecurityPreset = Maximum` adds a client shield, integrity challenges, server-side movement checks, rotating remote names and decoy remotes.
 
 **Built for production**
 - `--doctor`, `--strict` and `--hardening-checklist` catch unsafe configuration before release.
-- `cheeto.lock` pins wire IDs so schema changes never silently break live servers.
-- Packet capture and replay, golden wire snapshots, load simulation, metrics and an inspector.
-- State channels with delta replication, interpolation and prediction.
+- `cheeto.lock` turns every change to the schema's surface into a reviewed diff.
+- Packet capture and replay, metrics and an inspector.
+- State channels with delta replication, and client prediction with server acknowledgement.
 
 **Fits your workflow**
 - A single binary for Windows, macOS and Linux, a pesde package, and a Roblox Studio plugin.
@@ -118,24 +118,25 @@ cheeto network --doctor   # validate without writing files
 cheeto network --ci --yes # run every report and lockfile check
 ```
 
-`cheeto --help` lists every option. The [command line guide](https://pealz1.github.io/cheeto/getting-started/cli) covers them in detail.
+`cheeto --help` lists every option. The [command line reference](https://pealz.cc/cheeto/reference/cli) covers every flag.
 
 ## Security model
 
-No networking library can hide data from the client that receives it, and Cheeto does not pretend to. Instead it keeps authority on the server and makes captured traffic hard to use: every client request is checked against the schema and your policies before a handler runs, replayed and duplicate packets are rejected, and every drop is reported through `Security.OnViolation` with a typed reason you can act on.
+No networking library can hide data from the client that receives it, and Cheeto does not pretend to. Instead it keeps authority on the server: every client request is checked against the schema, your policies and its rate limits before a handler runs, and every drop is reported through `Security.OnViolation` with a typed reason you can act on.
 
-Read [Maximum Security](https://pealz1.github.io/cheeto/guides/maximum-security) for the full model, and [SECURITY.md](SECURITY.md) to report a vulnerability.
+Read the [security model](https://pealz.cc/cheeto/security/overview) and the [limitations](https://pealz.cc/cheeto/limitations), and [SECURITY.md](SECURITY.md) to report a vulnerability.
 
 ## Documentation
 
 | | |
 | --- | --- |
-| [Installation](https://pealz1.github.io/cheeto/getting-started/installation) | Every way to install the compiler and the plugin |
-| [Quick start](https://pealz1.github.io/cheeto/getting-started/quick-start) | Your first schema in five minutes |
-| [Language reference](https://pealz1.github.io/cheeto/language/options) | Options, types, events, functions, scopes and imports |
-| [Production hardening](https://pealz1.github.io/cheeto/guides/production) | Policies, capture and replay, migrations and CI reports |
-| [Protocol v2](https://pealz1.github.io/cheeto/guides/protocol-v2) | Wire format, lockfiles, handles and the runtime API |
-| [Comparison](https://pealz1.github.io/cheeto/guides/comparison) | How Cheeto relates to Zap, Jolt and NetRay |
+| [Installation](https://pealz.cc/cheeto/getting-started/installation) | Every way to install the compiler and the plugin |
+| [Quick start](https://pealz.cc/cheeto/getting-started/quick-start) | Your first schema in five minutes |
+| [Reference](https://pealz.cc/cheeto/reference) | Every option, field, type and generated function |
+| [Security model](https://pealz.cc/cheeto/security/overview) | Policies, honeypots, rate limits and the optional client checks |
+| [Production checklist](https://pealz.cc/cheeto/operations/production-checklist) | What to check before a schema goes live |
+| [Limitations](https://pealz.cc/cheeto/limitations) | What Cheeto does not do, and known issues |
+| [Comparison](https://pealz.cc/cheeto/guides/comparison) | How Cheeto relates to Zap |
 
 ## Repository layout
 

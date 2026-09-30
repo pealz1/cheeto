@@ -1,0 +1,74 @@
+---
+title: "enum"
+description: "Unit enums for a fixed set of names, and tagged enums for variants that carry data."
+---
+
+# enum
+
+Cheeto has two kinds of enum.
+
+## Unit enums
+
+A unit enum is one of a fixed set of names. It is sent as a one-byte index, not as a string, and received as the string. Sending a string that is not one of the names raises `Unexpected enum` on the sender.
+
+```cheeto copy
+enum CharacterStatus = { Idling, Walking, Running, Jumping, Falling }
+```
+
+```lua copy
+Network.StatusChanged.FireAll("Running")
+```
+
+## Tagged enums
+
+A tagged enum is one of several variants, each carrying its own struct. The string after `=` names the field that holds the variant's tag.
+
+```cheeto copy
+enum MouseEvent = "Type" {
+    Move {
+        Delta: vector,
+        Position: vector
+    },
+    Drag {
+        Delta: vector,
+        Position: vector
+    },
+    Click {
+        Button: enum { Left, Right, Middle },
+        Position: vector
+    }
+}
+```
+
+The Luau type is a union keyed on the tag:
+
+```lua copy
+type MouseEvent =
+    | { Type: "Move", Delta: vector, Position: vector }
+    | { Type: "Drag", Delta: vector, Position: vector }
+    | { Type: "Click", Button: "Left" | "Right" | "Middle", Position: vector }
+```
+
+Cheeto has no general union type. A tagged enum is how to send "one of several shapes":
+
+```cheeto copy
+enum Value = "Kind" {
+    Number { Value: f64 },
+    Text { Value: string }
+}
+```
+
+A variant tag cannot also be used as a field name inside that variant.
+
+## Generics
+
+Tagged enums accept type parameters:
+
+```cheeto copy
+enum Result<T> = "Status" {
+    Ok { Value: T },
+    Err { Message: string(0..128) }
+}
+
+enum PurchaseResult = Result<u32>
+```

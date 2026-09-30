@@ -1,0 +1,39 @@
+---
+title: "export"
+description: "Generate standalone Read and Write functions for a type."
+---
+
+import { Callout } from 'nextra/components'
+
+# export
+
+Prefixing a type declaration with `export` adds a `Read` and `Write` pair for it to both generated modules. They serialize a value into a standalone buffer with the same encoding Cheeto uses on the wire, which is useful for DataStore payloads, custom replication, or sending a pre-encoded blob through a `buffer` field.
+
+```cheeto copy
+export struct Snapshot {
+    Tick: u32,
+    Position: vector<i16>,
+    Health: u8
+}
+
+export type Tick = u32
+```
+
+`export` works in front of `type`, `struct`, `enum`, `map` and `set`.
+
+## In Luau
+
+```lua copy
+local encoded: buffer = Network.Snapshot.Write({ Tick = 120, Position = position, Health = 90 })
+local decoded = Network.Snapshot.Read(encoded)
+```
+
+See [Exported type](/reference/api/exports) for the full API.
+
+<Callout type="warning">
+Types that contain `Instance` or `unknown` compile, but do not round-trip: those values travel beside the buffer rather than inside it, so `Read` cannot recover them.
+</Callout>
+
+<Callout type="info">
+The buffer uses the module's current [encoding options](/reference/options/encoding). A buffer written with varints on cannot be read with varints off. Keep those options fixed for anything you store.
+</Callout>

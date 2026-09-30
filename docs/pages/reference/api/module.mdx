@@ -1,0 +1,219 @@
+---
+title: "Network module"
+description: "Members on the root of the table returned by a generated Server or Client module."
+---
+
+import { Callout } from 'nextra/components'
+import { Sig } from '../../../components/Reference'
+
+# Network module
+
+Requiring a generated module returns a frozen table. It holds one entry per declared endpoint (see [Event](/reference/api/event), [Function](/reference/api/function), [Channel](/reference/api/channel) and [Exported type](/reference/api/exports)), plus the members on this page and the namespaces listed at the bottom.
+
+```lua copy
+local Network = require(ReplicatedStorage.Network.Server)
+```
+
+The server module errors when required on a client, and the client module errors when required on the server. Requiring two modules with the same [`RemoteScope`](/reference/options/output#remotescope) on one side also errors.
+
+## Summary
+
+| Member | Side | Purpose |
+| --- | --- | --- |
+| [`StepReplication`](#stepreplication) | Both | Flush queued events now |
+| [`Stats`](#stats) | Both | Copy of all metric counters |
+| [`Report`](#report) | Both | Print and return metrics |
+| [`StartReporter`](#startreporter) | Both | Print metrics on an interval |
+| [`Configure`](#configure) | Both | Change runtime options |
+| [`Use`](#use) | Both | Add a middleware hook |
+| [`UseAuth`](#useauth) | Both | Register an auth rule |
+| [`CancelInvocations`](#cancelinvocations) | Both | Fail every pending `Invoke` |
+| [`SetGroup`](#setgroup), [`AddToGroup`](#addtogroup), [`RemoveFromGroup`](#removefromgroup), [`GetGroupPlayers`](#getgroupplayers) | Both, used on the server | Named player groups |
+| [`SetInterestZone`](#setinterestzone), [`GetInterestZonePlayers`](#getinterestzoneplayers), [`SetInterestPosition`](#setinterestposition), [`GetInterestDistancePlayers`](#getinterestdistanceplayers) | Both, used on the server | Per-channel zone and distance interest |
+
+## StepReplication
+
+<Sig side="both">{"StepReplication(): ()"}</Sig>
+
+Runs one replication step: expires timed-out invokes, runs integrity checks (server), flushes channel state (server), and sends every peer's queued reliable batch.
+
+By default this is connected to `RunService.Heartbeat` and you never call it. With [`ManualReplication`](/reference/options/runtime#manualreplication) on, you must call it yourself, typically once per frame.
+
+```lua copy
+RunService.Heartbeat:Connect(Network.StepReplication)
+```
+
+## Stats
+
+<Sig side="both">{"Stats(): Metrics"}</Sig>
+
+Returns a copy of the module's counters. Each bucket is a table of counts keyed as shown. Errors with `Metrics are disabled` when [`ExposeMetrics`](/reference/options/runtime#exposemetrics) is `false`.
+
+| Key | Keyed by | Counts |
+| --- | --- | --- |
+| `BytesSent`, `BytesReceived` | `"Reliable"` / `"Unreliable"` | Bytes over each remote |
+| `PacketsSent`, `PacketsReceived` | channel | Remote calls |
+| `EventBytesSent`, `EventBytesReceived` | endpoint name | Bytes per endpoint |
+| `DroppedPackets` | [drop reason](/reference/drop-reasons) | Drops |
+| `ValidationFailures` | channel | Malformed and auth-rejected packets |
+| `RateLimitHits` | channel or endpoint | Rate limit drops |
+| `QueueDrops` | channel | `QueueFull` drops |
+| `InvokeTimeouts` | function name | Timed-out invokes |
+| `HookErrors` | hook name | Middleware and rule errors |
+| `MiddlewareRejections` | hook name or channel | Hooks returning `false` |
+| `ClientShieldReports`, `ClientIntegrityReceipts`, `ClientIntegrityFailures`, `CharacterIntegrityActions` | reason or action | Security events |
+| `PendingInvokes` | (number) | Invokes awaiting a reply |
+| `PendingInvokesByName` | function name | Pending invokes per function |
+| `CapturedPackets` | (number) | Entries in the capture buffer |
+
+```lua copy
+local stats = Network.Stats()
+print(stats.DroppedPackets.RateLimit or 0)
+```
+
+## Report
+
+<Sig side="both">{"Report(): Metrics"}</Sig>
+
+Prints every metric bucket to the output, one line per bucket, and returns the same table as [`Stats`](#stats).
+
+## StartReporter
+
+<Sig side="both">{"StartReporter(intervalSeconds: number?): () -> ()"}</Sig>
+
+Calls [`Report`](#report) every `intervalSeconds` (default 5) in a background thread. Returns a function that stops it.
+
+```lua copy
+local stop = Network.StartReporter(10)
+task.delay(60, stop)
+```
+
+## Configure
+
+<Sig side="both">{"Configure(options: {[string]: any}): ()"}</Sig>
+
+Changes runtime options on this module only. Keys are option names from the schema, such as `RateLimitPerSecond` or `EnableHoneypots`.
+
+- An unknown key errors with `Unknown runtime option`.
+- `ProtocolVersion` other than 2, `ProtocolMode` and `AcceptProtocolVersion1` error.
+- `CharacterIntegrityMode` must be `Observe`, `Report`, `Correct` or `Kick` (any case).
+- Options that only affect code generation, such as `MaxQueuedEvents`, per-endpoint limits or function timeouts, are accepted but change nothing.
+
+```lua copy
+Network.Configure({
+    RateLimitPerSecond = 30,
+    RateLimitBurst = 60,
+    EnableHoneypots = true,
+})
+```
+
+<Callout type="warning">
+Configure both the server and client modules when an option affects both sides, and never change [encoding options](/reference/options/encoding) at runtime.
+</Callout>
+
+## Use
+
+<Sig side="both">{"Use(hookName: string, callback: (context) -> boolean?): () -> ()"}</Sig>
+
+Adds a middleware callback. Hooks run in the order they were added. For hooks that can reject, returning exactly `false` stops the packet; any other return value continues. A callback that errors is logged, counted in `HookErrors`, and treated as continue.
+
+Returns a function that removes the callback. An unknown hook name errors. See [Middleware hooks](/reference/api/hooks) for every name and context.
+
+```lua copy
+local remove = Network.Use("BeforeReceive", function(context)
+    return context.Size < 4096
+end)
+```
+
+## UseAuth
+
+<Sig side="both">{"UseAuth(name: string, rule: (context) -> boolean): ()"}</Sig>
+
+Registers, or replaces, the [auth rule](/security/auth-rules) that endpoints name in their `Auth` field. The rule receives `{ Name, Source, Channel, Size }` and must return exactly `true` to allow the event. Errors in the rule deny.
+
+The rules `AlivePlayer` and `ServerOnly` are built in.
+
+```lua copy
+Network.UseAuth("HasCharacter", function(context)
+    local player = context.Source
+    return player.Character ~= nil and player.Character:FindFirstChildOfClass("Humanoid") ~= nil
+end)
+```
+
+## CancelInvocations
+
+<Sig side="both">{"CancelInvocations(reason: string?): ()"}</Sig>
+
+Resumes every pending `Invoke` on this module with an error, using `reason` as the message (default `Invoke was cancelled.`). Use it when tearing down a client state that should abandon outstanding requests.
+
+## SetGroup
+
+<Sig side="both">{"SetGroup(name: string, players: {Player}): ()"}</Sig>
+
+Replaces the members of a named group. Groups are the audience for [`FireGroup`](/reference/api/event#firegroup) and channel `SetGroup`, `PatchGroup` and `FlushGroup`. Players are removed from every group automatically when they leave.
+
+## AddToGroup
+
+<Sig side="both">{"AddToGroup(name: string, player: Player): ()"}</Sig>
+
+Adds one player to a group, creating the group if needed.
+
+## RemoveFromGroup
+
+<Sig side="both">{"RemoveFromGroup(name: string, player: Player): ()"}</Sig>
+
+Removes one player from a group.
+
+## GetGroupPlayers
+
+<Sig side="both">{"GetGroupPlayers(name: string): {Player}"}</Sig>
+
+Returns the group's members as an array. An unknown group returns an empty array.
+
+```lua copy
+Network.SetGroup("Admins", { owner })
+Network.AddToGroup("Admins", moderator)
+Network.AuditLog.FireGroup("Admins", "Server restarted")
+```
+
+## SetInterestZone
+
+<Sig side="both">{"SetInterestZone(channelName: string, player: Player, zone: string?): ()"}</Sig>
+
+Records which zone a player is in for one channel, or clears it with `nil`. Used by the channel `SetZone`, `PatchZone` and `FlushZone` variants. Channel endpoints also expose this as `Channel.SetInterestZone(player, zone)`.
+
+## GetInterestZonePlayers
+
+<Sig side="both">{"GetInterestZonePlayers(channelName: string, zone: string): {Player}"}</Sig>
+
+Players currently in `zone` for that channel.
+
+## SetInterestPosition
+
+<Sig side="both">{"SetInterestPosition(channelName: string, player: Player, position: Vector3?): ()"}</Sig>
+
+Records a player's position for distance-based interest on one channel, or clears it. The runtime does not read character positions itself; update this from your own loop.
+
+## GetInterestDistancePlayers
+
+<Sig side="both">{"GetInterestDistancePlayers(channelName: string, origin: Vector3, radius: number): {Player}"}</Sig>
+
+Players whose recorded position for that channel is within `radius` studs of `origin`.
+
+## Namespaces
+
+| Namespace | Purpose |
+| --- | --- |
+| [`Security`](/reference/api/security) | Policies, violations, kill switches, shield and integrity controls |
+| [`Transport`](/reference/api/transport) | Queue and flush state, network stats, drop reason list |
+| [`Protocol`](/reference/api/protocol) | Handshake results |
+| [`Handles`](/reference/api/handles) | Server-issued object handles and capabilities |
+| [`Replication`](/reference/api/replication) | Party, match, team, cell and owner audiences; cross-server adapters |
+| [`Prediction`](/reference/api/prediction) | Pending predictions, ack and rollback |
+| [`State`](/reference/api/state) | Patch helpers, interpolation, local state channels |
+| [`Codecs`](/reference/api/codecs) | Number, vector and angle quantization |
+| [`Connection`](/reference/api/connection) | Route and lifecycle wrapper for controllers |
+| [`Capture`](/reference/api/capture) | Packet capture and replay |
+| [`Inspector`](/reference/api/inspector) | One-call diagnostic snapshot |
+| [`Schema`](/reference/api/schema) | Version info and payload migrations |
+| [`Diagnostics`](/reference/api/diagnostics) | Listener counts |

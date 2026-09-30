@@ -1,0 +1,76 @@
+---
+title: "Capture"
+description: "Record sent, received and dropped events, and replay them."
+---
+
+import { Callout } from 'nextra/components'
+import { Sig } from '../../../components/Reference'
+
+# Capture
+
+`Network.Capture` records what the module sends, receives and drops. See [Capture and replay](/operations/capture-and-replay) for workflows.
+
+Capturing is off until [`Start`](#start) is called, [`EnablePacketCapture`](/reference/options/diagnostics#enablepacketcapture) is on, or the [Inspector](/reference/api/inspector) is enabled.
+
+## Start
+
+<Sig side="both">{"Start(options: { Limit: number?, Redactions: string | {string}? }?): ()"}</Sig>
+
+Starts recording. `Limit` sets how many entries to keep (default [`CaptureLimit`](/reference/options/diagnostics#capturelimit)); `Redactions` replaces the redacted field names, as a comma-separated string or an array.
+
+## Stop
+
+<Sig side="both">{"Stop(): ()"}</Sig>
+
+Stops recording started with `Start`. Entries are kept.
+
+## Clear
+
+<Sig side="both">{"Clear(): ()"}</Sig>
+
+Deletes every recorded entry.
+
+## Entries
+
+<Sig side="both">{"Entries(): {CaptureEntry}"}</Sig>
+
+A copy of the recorded entries, oldest first. Each entry has:
+
+| Field | Meaning |
+| --- | --- |
+| `Name` | Endpoint name, `$handshake`, or `nil` for packet-level drops |
+| `Direction` | `"send"` or `"receive"` |
+| `Source` / `Target` | The peer, as a string |
+| `UserId` | Sender's user id, for received events |
+| `Channel` | `"Reliable"` or `"Unreliable"` |
+| `Status` | `"accepted"` or `"dropped"` |
+| `Reason` | Drop reason, for dropped entries |
+| `Size` | Bytes |
+| `PayloadSummary` | Readable summary of the values, with redacted fields shown as `[redacted]` |
+| `Buffer`, `Instances` | Copy of the raw bytes and instances, when kept |
+| `Redaction` | `{ Raw: boolean, Fields: {[string]: true} }` |
+| `Time`, `ProtocolVersion`, `SchemaVersion`, `SchemaHash` | Metadata |
+
+Raw buffers are not kept when the profile is not `Development` and [`NoRawCaptureInProduction`](/reference/options/diagnostics#norawcaptureinproduction) is on.
+
+## Replay
+
+<Sig side="both">{"Replay(entries: {CaptureEntry}, handlers: {[string]: (entry) -> ()}?): { Accepted: number, Dropped: number, Replayed: number }"}</Sig>
+
+Walks the entries and, for every accepted entry whose `Name` has a handler, calls the handler with the entry. Nothing is decoded or sent; this is for re-running your own logic against recorded traffic. Returns counts.
+
+## ReplayRaw
+
+<Sig side="both">{"ReplayRaw(entries: {CaptureEntry}, sourceOverride: any?): { Accepted, Dropped, Replayed, MissingRaw }"}</Sig>
+
+Feeds each entry's raw bytes back through this module's real receive path, exactly as if they had arrived over the remote: guards, decoding, validation and listeners all run. Entries without raw bytes are counted in `MissingRaw`.
+
+<Callout type="warning">
+On the server, pass a real `Player` as `sourceOverride`: recorded sources are strings, and policies and listeners expect a player. Filter the entries to `Direction == "receive"` first, or your own sends are replayed as if they came from that player. Only use this in Studio or a private test server.
+</Callout>
+
+## Redact
+
+<Sig side="both">{"Redact(fields: string | {string} | nil): ()"}</Sig>
+
+Replaces the list of redacted field names. `nil` or `""` clears it.

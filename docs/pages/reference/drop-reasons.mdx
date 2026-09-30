@@ -1,0 +1,78 @@
+---
+title: "Drop reasons"
+description: "Every reason Cheeto drops a packet or event, what triggers it, and where it happens."
+---
+
+import { Callout } from 'nextra/components'
+
+# Drop reasons
+
+When the runtime drops something it records a reason. The reason appears in [`Security.OnViolation`](/reference/api/security#onviolation) reports, the [`Drop`](/reference/api/hooks#drop) hook, capture entries, and `Stats().DroppedPackets`. The full list is available at runtime as [`Transport.Errors`](/reference/api/transport#errors).
+
+Drops never throw into your code. A dropped event is skipped and the rest of its packet is still processed, unless the reason says the whole packet is dropped.
+
+## Packet-level
+
+These discard an entire remote call before any event in it is read.
+
+| Reason | Trigger |
+| --- | --- |
+| `InvalidBuffer` | The remote was fired with something other than a buffer. Only a hand-crafted remote call does this. |
+| `InvalidInstances` | The second remote argument was not a table |
+| `MaxPacketBytes` | The call was larger than [`MaxReliablePacketBytes`](/reference/options/limits#maxreliablepacketbytes) or [`MaxUnreliablePacketBytes`](/reference/options/limits#maxunreliablepacketbytes). Also used on the sender for an outgoing batch or unreliable event over the cap |
+| `RateLimit` | The sender exceeded the per-remote-call [`RateLimitPerSecond`](/reference/options/limits#ratelimitpersecond) |
+| `MiddlewareRejected` | A packet-level [`BeforeReceive`](/reference/api/hooks#beforereceive) hook returned `false` |
+| `FragmentOverflow` | A new fragmented packet would exceed [`MaxInFlightFragments`](/reference/options/limits#maxinflightfragments) |
+| `FragmentTimeout` | A fragmented packet was not completed within [`FragmentTimeoutSeconds`](/reference/options/limits#fragmenttimeoutseconds) |
+
+## Event-level
+
+These discard one event. They are listed in the order the receive path checks them; see [The receive pipeline](/concepts/receive-pipeline).
+
+| Reason | Trigger |
+| --- | --- |
+| `MalformedPacket` | A frame header or payload could not be read, a value failed its type or range check, or a required Instance arrived as `nil` |
+| `MaxPacketBytes` | The packet was larger than the endpoint's own [`MaxPacketBytes`](/reference/fields#maxpacketbytes) |
+| `Honeypot` | The endpoint is marked [`Honeypot`](/reference/fields#honeypot) |
+| `RateLimit` | The sender exceeded the endpoint's [`RateLimitPerSecond`](/reference/fields#ratelimitpersecond) |
+| `MiddlewareRejected` | A per-event `BeforeReceive` hook returned `false` |
+| `AuthRejected` | The [`Auth`](/reference/fields#auth) rule returned something other than `true`, errored, or is not registered |
+| `KillSwitch` | The endpoint or its policy group is [killed](/reference/api/security#kill) |
+| `PolicyRejected` | A [cooldown](/reference/fields#cooldownseconds) is active, the policy denied, errored or is not registered, or [`RequirePolicies`](/reference/options/security#requirepolicies) is on and the endpoint has no `Policy` |
+| *custom* | A policy returned `false, "your-reason"` |
+| `ReplayDuplicate` | A predicted event reused a sequence number, or failed [`Idempotency`](/reference/fields#idempotency) |
+| `ReplayStale` | A predicted event's sequence number was too far behind ([`ReplayWindowSize`](/reference/options/limits#replaywindowsize)) |
+| `Canonicalization` | The decoded payload had a non-finite number, an impossible vector or CFrame, a table too deep or too large, a sparse array, an unsupported key type, or a string over [`MaxPayloadStringBytes`](/reference/options/limits#maxpayloadstringbytes) |
+| `DecodeBudget` | Checking the payload took more than [`MaxDecodeOperations`](/reference/options/limits#maxdecodeoperations) steps |
+| `ConstraintRejected` | A [`Validate`](/reference/api/hooks#validate) hook returned `false` |
+| `QueueFull` | No listener was connected and the endpoint's queue reached [`MaxQueuedEvents`](/reference/fields#maxqueuedevents) |
+
+## Send-side
+
+| Reason | Trigger |
+| --- | --- |
+| `MiddlewareRejected` | A [`BeforeSend`](/reference/api/hooks#beforesend) hook returned `false` |
+| `KillSwitch` | The endpoint is killed |
+| `Backpressure` | A `Cosmetic` or `Background` event was shed because the peer's queue exceeded [`MaxQueuedBytes`](/reference/options/limits#maxqueuedbytes) |
+
+## Handshake
+
+| Reason | Trigger |
+| --- | --- |
+| `MalformedHandshake` | The handshake frame could not be read |
+| `IncompatibleProtocol` | The peer's protocol, schema version or schema hash did not match. Only the handshake frame is dropped; see [Limitations](/limitations#the-handshake-does-not-block-mismatched-peers) |
+
+## Security reports
+
+These are not packet drops. They appear as `Reason` in violation reports from the shield and integrity systems.
+
+| Reason | Source |
+| --- | --- |
+| `ClientShield`, `ExploitEnvironment`, `MetamethodHook`, `InfiniteYield`, `SaveInstance`, `DexExplorer`, `RemoteSpy` | [Client shield](/security/client-shield) probes |
+| `RemoteDecoy` | A [decoy remote](/security/remote-hardening) was fired |
+| `IntegrityReceiptMissing`, `IntegrityReceiptInvalid`, `IntegrityEvaluatorFailed` | [Client integrity](/security/client-integrity) |
+| `HorizontalDisplacement`, `VerticalDisplacement`, `WalkSpeedMutation`, `CollidableTraversal`, `NonFiniteMovement` | [Character integrity](/security/character-integrity), joined with `+` when several apply |
+
+<Callout type="info">
+`ClientIntegrity` and `CharacterIntegrity` are also defined in `Transport.Errors` as category names. Reports use the specific reasons above.
+</Callout>

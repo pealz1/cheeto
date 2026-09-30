@@ -1,0 +1,259 @@
+---
+title: "Security"
+description: "Policies, violation reporting, kill switches, abuse scores, and the client shield, client integrity and character integrity controls."
+---
+
+import { Callout } from 'nextra/components'
+import { Sig } from '../../../components/Reference'
+
+# Security
+
+`Network.Security` holds the runtime side of Cheeto's protections. For how the pieces fit together, start at the [Security model](/security/overview).
+
+## Summary
+
+| Member | Side | Purpose |
+| --- | --- | --- |
+| [`OnViolation`](#onviolation) | Both | Subscribe to every drop and security report |
+| [`RegisterPolicy`](#registerpolicy) | Both | Define or replace a named policy |
+| [`RegisterPolicyGroup`](#registerpolicygroup) | Both | Name a list of policies |
+| [`CheckIdempotency`](#checkidempotency) | Both | One-time key check for your own code |
+| [`Kill`](#kill), [`Unkill`](#unkill) | Both | Disable an endpoint live |
+| [`KillPolicyGroup`](#killpolicygroup), [`UnkillPolicyGroup`](#unkillpolicygroup) | Both | Disable every endpoint in a policy group |
+| [`AbuseScores`](#abusescores) | Both | Violation counts per sender |
+| [`ReportClientShield`](#reportclientshield) | Both | Record a detection against a player |
+| [`ClientShield`](#clientshield) | Both | Recent shield reports |
+| [`StartClientShield`](#startclientshield) | Client | Start the shield probes manually |
+| [`ClientIntegrity`](#clientintegrity) | Both | Integrity challenge state |
+| [`ChallengeIntegrity`](#challengeintegrity) | Server | Send a challenge now |
+| [`GrantIntegrityGrace`](#grantintegritygrace) | Server | Pause challenges for a player |
+| [`OnIntegritySample`](#onintegritysample) | Client | Add a check to every receipt |
+| [`CharacterIntegrity`](#characterintegrity) | Server | Movement scoring state |
+| [`ObserveCharacter`](#observecharacter) | Server | Add your own movement evidence |
+| [`GrantMovementGrace`](#grantmovementgrace) | Server | Pause movement scoring for a player |
+| [`ReconcileCharacter`](#reconcilecharacter) | Server | Accept the current position as safe |
+| [`TeleportCharacter`](#teleportcharacter) | Server | Move a character without tripping checks |
+| [`EvaluateMovement`](#evaluatemovement) | Both | The pure movement classifier |
+
+## OnViolation
+
+<Sig side="both">{"OnViolation(callback: (report: ViolationReport) -> ()): () -> ()"}</Sig>
+
+Calls `callback` for every dropped packet or event and every shield, integrity and movement report, with a [`ViolationReport`](/reference/violation-report). Returns a function that unsubscribes. Equivalent to `Use("Violation", callback)`, so it only fires while [`EnableMiddleware`](/reference/options/runtime#enablemiddleware) is on.
+
+```lua copy
+Network.Security.OnViolation(function(report)
+    if report.Reason ~= "RateLimit" then
+        warn("[net]", report.Reason, report.Player, report.Event, report.Action)
+    end
+end)
+```
+
+## RegisterPolicy
+
+<Sig side="both">{"RegisterPolicy(name: string, rule: (context: PolicyContext) -> (boolean, string?)): ()"}</Sig>
+
+Defines the [policy](/security/policies) that endpoints name in their `Policy` field, replacing any previous rule with that name, including the built-in placeholders.
+
+The rule runs **before the payload is decoded**, so it cannot see the data. It receives:
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `Source` | `Player` or `"Server"` | The sender |
+| `Name` | string | Endpoint name |
+| `Channel` | string | `"Reliable"` or `"Unreliable"` |
+| `Policy` | string | This policy's name |
+| `PolicyGroup` | string? | The endpoint's policy group |
+| `Constraints` | table | The endpoint's [constraint fields](/reference/fields#constraints) |
+| `UserId` | number? | The sender's `UserId` |
+| `Size` | number | Size of the received packet |
+
+Return `true` to allow. Return `false`, or `false` and a reason string, to drop; the reason becomes the drop reason reported to `OnViolation` (default `PolicyRejected`). A rule that errors denies.
+
+```lua copy
+Network.Security.RegisterPolicy("admin", function(context)
+    local level = context.Source:GetAttribute("AdminLevel")
+    if typeof(level) ~= "number" or level < 100 then
+        return false, "not-admin"
+    end
+    return true
+end)
+```
+
+<Callout type="error">
+The built-in policies `damage`, `currency`, `trade`, `inventory`, `teleport`, `admin`, `crafting`, `marketplace` and `moderation` allow any connected player. Register a real rule for each one your schema uses.
+</Callout>
+
+## RegisterPolicyGroup
+
+<Sig side="both">{"RegisterPolicyGroup(name: string, policies: {string}): ()"}</Sig>
+
+Defines a policy group: an endpoint with `PolicyGroup: "name"` must also pass every policy in `policies`. The list is copied, so changing your table afterwards has no effect. A policy named in the group that is not registered denies.
+
+```lua copy
+Network.Security.RegisterPolicyGroup("economy", { "not-trading-locked", "profile-loaded" })
+```
+
+## CheckIdempotency
+
+<Sig side="both">{"CheckIdempotency(source: any, key: string, ttlSeconds: number?): boolean"}</Sig>
+
+Returns `true` the first time a `key` is seen for `source` within `ttlSeconds` (default 120), and `false` for repeats. The runtime uses this for [`Idempotency`](/reference/fields#idempotency); you can call it from your own handlers with keys you choose, such as a purchase receipt id.
+
+```lua copy
+Network.Purchase.On(function(player, receiptId)
+    if not Network.Security.CheckIdempotency(player, receiptId, 600) then
+        return
+    end
+    Economy.Grant(player, receiptId)
+end)
+```
+
+## Kill
+
+<Sig side="both">{"Kill(endpointName: string, reason: string?): ()"}</Sig>
+
+Disables an endpoint on this module. Sends on it and events received on it are dropped with `KillSwitch`. Use it to switch off an endpoint that is being abused without shutting the server down. Client `Invoke` calls are not blocked on the client; kill the function on the server.
+
+```lua copy
+Network.Security.Kill("TradeRequest", "exploit under investigation")
+```
+
+## Unkill
+
+<Sig side="both">{"Unkill(endpointName: string): ()"}</Sig>
+
+Re-enables an endpoint.
+
+## KillPolicyGroup
+
+<Sig side="both">{"KillPolicyGroup(groupName: string, reason: string?): ()"}</Sig>
+
+Drops every received event on endpoints whose `PolicyGroup` is `groupName`, with `KillSwitch`.
+
+## UnkillPolicyGroup
+
+<Sig side="both">{"UnkillPolicyGroup(groupName: string): ()"}</Sig>
+
+Re-enables a policy group.
+
+## AbuseScores
+
+<Sig side="both">{"AbuseScores(source: any?): {[string]: number}"}</Sig>
+
+Every drop and report adds to a per-sender counter, keyed by endpoint name (or channel, for packet-level drops) and by shield reason. With a player, returns that player's counters; without, returns a table of every sender's counters keyed by `tostring(sender)`. Counters are cleared when the player leaves.
+
+```lua copy
+local scores = Network.Security.AbuseScores(player)
+print(scores.DealDamage, scores.Honeypot)
+```
+
+## ReportClientShield
+
+<Sig side="both">{"ReportClientShield(source: Player, reason: string, detail: string?, score: number?, immediateKick: boolean?): number"}</Sig>
+
+Records a detection against a player through the same path the [client shield](/security/client-shield) uses: adds `score` (default 1) to the player's count for `reason`, reports it to `OnViolation`, and kicks when [`ClientShieldKick`](/reference/options/client-shield#clientshieldkick) is on and the report is immediate, strict mode is on, or the threshold is reached. Returns the player's score for that reason. Use it to route your own server-side detections into one pipeline.
+
+## ClientShield
+
+<Sig side="both">{"ClientShield(): ClientShieldSnapshot"}</Sig>
+
+Returns `{ Reports, Enabled, Strict, Kick, ScoreThreshold }`. `Reports` holds the most recent 256 recorded reports, each `{ Source, UserId, Reason, Detail, Score, Weight, Action, Time }`.
+
+## StartClientShield
+
+<Sig side="client">{"StartClientShield(): ()"}</Sig>
+
+Starts the shield's probe loop. The client module calls this when it loads, so you only need it if you enabled [`EnableClientShield`](/reference/options/client-shield#enableclientshield) at runtime. Does nothing when the shield is disabled or already running.
+
+## ClientIntegrity
+
+<Sig side="both">{"ClientIntegrity(player: Player?): ClientIntegritySnapshot"}</Sig>
+
+With a player (server), returns that player's challenge state:
+
+`{ UserId, Score, PendingChallenge, PendingDeadline, NextChallengeAt, GraceUntil, LastReceiptAt, LastCompletion, LastSweep, ChallengesIssued, ValidReceipts, ConsecutiveFailures, ConsecutiveMisses, LastReason, LastAction }`
+
+Without a player, returns `{ Enabled, Peers, Evidence, Local }`, where `Local` describes this machine's own responder (useful on the client).
+
+## ChallengeIntegrity
+
+<Sig side="server">{"ChallengeIntegrity(player: Player): number?"}</Sig>
+
+Sends a [client integrity](/security/client-integrity) challenge to `player` immediately, replacing any pending one, and returns its id. Returns `nil` when integrity is disabled, the player has left, or the player is in a grace period.
+
+## GrantIntegrityGrace
+
+<Sig side="server">{"GrantIntegrityGrace(player: Player, seconds: number?, reason: string?): ()"}</Sig>
+
+Stops challenging `player` for `seconds` (default [`ClientIntegrityJoinGraceSeconds`](/reference/options/client-integrity#clientintegrityjoingraceseconds)) and discards any pending challenge. Use it around long loads, such as teleports within the place or large map streaming.
+
+```lua copy
+Network.Security.GrantIntegrityGrace(player, 15, "loading-dungeon")
+```
+
+## OnIntegritySample
+
+<Sig side="client">{"OnIntegritySample(sampler: (context) -> (boolean | { Healthy: boolean } | nil)): () -> ()"}</Sig>
+
+Adds a check that runs for every integrity challenge. The context is `{ ChallengeId, Nonce, Completion, Sweep, ProtocolVersion, SchemaVersion, ReceivedAt }`. The receipt reports unhealthy if any sampler errors, returns `false`, or returns a table whose `Healthy` is not `true`. `nil` and `true` count as healthy. Returns a function that removes the sampler.
+
+```lua copy
+local remove = Network.Security.OnIntegritySample(function()
+    return Controllers.Combat:IsBound()
+end)
+```
+
+## CharacterIntegrity
+
+<Sig side="server">{"CharacterIntegrity(player: Player?): CharacterIntegritySnapshot"}</Sig>
+
+With a player, returns `{ UserId, Score, ConsecutiveBreaches, GraceUntil, LastSampleAt, LastReason, LastAction, Reasons, History }`. Without, returns `{ Enabled, Mode, Kick, Players, Evidence }`. `Reasons` maps each reason to its current decaying score; `History` holds the player's recent evidence entries.
+
+## ObserveCharacter
+
+<Sig side="server">{"ObserveCharacter(player: Player, reason: string, weight: number?, detail: string?): (number, string)"}</Sig>
+
+Adds your own evidence to a player's movement score, for detections the built-in sampler does not make, and applies the configured [mode](/reference/options/character-integrity#characterintegritymode). Returns the new score and the action taken: `"observe"`, `"report"`, `"correct"` or `"kick"`.
+
+## GrantMovementGrace
+
+<Sig side="server">{"GrantMovementGrace(player: Player, seconds: number?, reason: string?): ()"}</Sig>
+
+Stops scoring `player`'s movement for `seconds` (default [`CharacterIntegrityTeleportGraceSeconds`](/reference/options/character-integrity#characterintegrityteleportgraceseconds)) and resets the breach count. Call it before any intended fast movement: launch pads, dashes, vehicles, cutscenes, knockback.
+
+## ReconcileCharacter
+
+<Sig side="server">{"ReconcileCharacter(player: Player, resetScore: boolean?): boolean"}</Sig>
+
+Accepts the character's current position as the new safe position, for after you moved it yourself. With `resetScore`, also clears the score. Returns `false` if the player has no character with a `HumanoidRootPart` and `Humanoid`.
+
+## TeleportCharacter
+
+<Sig side="server">{"TeleportCharacter(player: Player, target: CFrame, graceSeconds: number?): boolean"}</Sig>
+
+Grants movement grace, moves the character with `PivotTo`, zeroes its velocity, and reconciles. Use it for every server-initiated teleport. Returns `false` if the target is not a CFrame or there is no character.
+
+```lua copy
+Network.Security.TeleportCharacter(player, spawn.CFrame + Vector3.yAxis * 3)
+```
+
+## EvaluateMovement
+
+<Sig side="both">{"EvaluateMovement(sample: MovementSample): MovementEvaluation"}</Sig>
+
+The classifier the character sampler uses, exposed so you can test limits deterministically. It reads the current [character integrity options](/reference/options/character-integrity).
+
+Input: `{ DeltaTime, HorizontalDistance, VerticalDistance, WalkSpeed?, HorizontalVelocity?, VerticalVelocity?, Ping?, Seated?, PathBlocked? }`
+
+Output: `{ Suspicious, Resync, Reasons, Weight, AllowedHorizontal, AllowedVertical }`, where `Reasons` can contain `HorizontalDisplacement`, `VerticalDisplacement`, `WalkSpeedMutation`, `CollidableTraversal` or `NonFiniteMovement`, and `Weight` is 0 to 16.
+
+```lua copy
+local result = Network.Security.EvaluateMovement({
+    DeltaTime = 0.25,
+    HorizontalDistance = 40,
+    VerticalDistance = 0,
+    WalkSpeed = 16,
+})
+print(result.Suspicious, table.concat(result.Reasons, ","))
+```

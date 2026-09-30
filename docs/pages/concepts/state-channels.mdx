@@ -1,0 +1,74 @@
+---
+title: "State channels"
+description: "Replicate server-owned state as snapshots and deltas instead of events."
+---
+
+import { Callout } from 'nextra/components'
+
+# State channels
+
+Many things clients need are **state**, not events: a player's health, a match's scoreboard, a door's open or closed flag. Sending an event for every change works, but a client that joins late, or misses an update, never catches up. A [`channel`](/reference/declarations/channel) solves this: the server holds the value, sends it to clients in full when needed and as small deltas otherwise, and clients can always read the latest value.
+
+## Snapshots and deltas
+
+```cheeto copy
+channel Scoreboard {
+    Scope: Global,
+    TickRate: 10,
+    Data: struct {
+        Red: u16,
+        Blue: u16,
+        TimeLeft: u16
+    }
+}
+```
+
+```lua copy filename="Server.server.luau"
+Network.Scoreboard.Set({ Red = 0, Blue = 0, TimeLeft = 600 })  -- full snapshot to everyone
+
+Network.Scoreboard.Patch({ Red = 1 })       -- only Red is sent
+Network.Scoreboard.Patch({ TimeLeft = 599 }) -- merged with the pending patch
+```
+
+- `Set` stores the whole value and schedules a **full snapshot**.
+- `Patch` merges fields into the stored value and marks only those fields dirty. The next flush sends a **delta**: a bitmask saying which fields changed, then just those fields.
+- Several patches before a flush are merged, so only the latest value of each field is sent.
+
+Flushing happens automatically in the replication step, at most [`TickRate`](/reference/fields#tickrate) times per second. [`KeyframeRate`](/reference/fields#keyframerate) forces periodic full snapshots. `Flush*` sends immediately.
+
+Deltas need a struct `Data`. For any other type, every flush sends the full value.
+
+## Per-player state
+
+With `Scope: Player` (the default), the server stores a separate value per player, and `Set`/`Patch` take the player first:
+
+```lua copy
+Network.PlayerState.Set(player, { Health = 100, Stamina = 100 })
+Network.PlayerState.Patch(player, { Stamina = 80 })
+```
+
+The targeted variants (`SetAll`, `SetList`, `SetGroup`, `SetZone`, `SetDistance` and their `Patch` and `Flush` versions) work for every channel regardless of `Scope`. See [Channel endpoint](/reference/api/channel).
+
+## Reading on the client
+
+```lua copy filename="Client.client.luau"
+local function render(board)
+    Ui.Score.Text = `{board.Red} - {board.Blue}`
+end
+
+local current = Network.Scoreboard.Get()
+if current then
+    render(current)
+end
+Network.Scoreboard.On(render)
+```
+
+`On` fires after every snapshot or delta, with the full current value, a version counter, and the patch for deltas.
+
+<Callout type="info">
+`On` does not replay the value that arrived before you connected. Read `Get()` first, as above, or use [`Connection:OnState`](/reference/api/connection#onstate) with `fireImmediately`.
+</Callout>
+
+## When to use an event instead
+
+Use events for things that happen (a hit, a message, a purchase) and channels for things that are (health, score, settings). A channel only ever delivers the latest value, so intermediate values between two flushes are never seen.

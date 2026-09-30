@@ -1,6 +1,6 @@
 {
+  "introduction": "Introduction",
   "installation": "Installation",
-  "quick-start": "Quick Start",
-  "cli": "Command Line",
-  "studio-plugin": "Studio Plugin"
+  "quick-start": "Quick start",
+  "studio-plugin": "Studio plugin"
 }

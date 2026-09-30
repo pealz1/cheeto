@@ -1,0 +1,61 @@
+---
+title: "Honeypots"
+description: "Bait endpoints that no legitimate code ever calls, so any traffic on them identifies an exploiter."
+---
+
+import { Callout } from 'nextra/components'
+
+# Honeypots
+
+A honeypot is an endpoint your game never uses. It exists only to be found. Because nothing legitimate ever sends to it, any traffic that arrives is proof that someone is crafting packets by hand, and you can act on that with near-zero risk of a false positive.
+
+```cheeto copy
+event AdminGiveCurrency {
+    From: Client,
+    Type: Reliable,
+    Call: SingleAsync,
+    Honeypot: true,
+    Data: (Instance(Player), u32)
+}
+```
+
+## How it works
+
+1. The endpoint is compiled into the modules like any other, so it appears in the generated client module with a tempting name and a `Fire` method.
+2. Endpoint names never travel over the wire; frames only carry a one-byte endpoint number. So the only way to find this endpoint is to read the generated client module, which is exactly what someone writing an exploit does.
+3. When a packet for it arrives, the server drops it **before rate limiting and before decoding**, with reason `Honeypot`, and reports it through [`Security.OnViolation`](/reference/api/security#onviolation) like every drop.
+
+The check comes before the rate limit on purpose: an exploiter spamming the bait is fully reported instead of being silenced by a limit.
+
+## Acting on it
+
+```lua copy
+Network.Security.OnViolation(function(report)
+    if report.Reason == Network.Transport.Errors.Honeypot and typeof(report.Player) == "Instance" then
+        Moderation.Flag(report.Player, "honeypot:" .. report.Event)
+        report.Player:Kick()
+    end
+end)
+```
+
+Flag, log, ban or silently shadow-ban: the decision is yours. The runtime only reports.
+
+## Choosing bait
+
+- Name it after something an exploiter wants: `AdminGiveCurrency`, `SetWalkSpeed`, `DevSpawnItem`, `ForceWin`.
+- Give it a plausible payload so it looks real.
+- Declare it as you would a real endpoint. The honeypot check runs before auth and policy, so neither ever runs for it, but [`--strict`](/reference/cli#--strict) still expects a `Policy` on every client-sent endpoint, so add one if you use strict builds.
+- Have a few, spread through the schema.
+
+<Callout type="error">
+**Never call a honeypot from game code**, including debug tools, admin panels or tests that run on live servers. One legitimate call would flag a real player. Reviewing honeypot names in the schema is enough to keep them out of use.
+</Callout>
+
+## Turning them off
+
+[`EnableHoneypots`](/reference/options/security#enablehoneypots) is on by default. Set it to `false`, in the schema or live with `Network.Configure({ EnableHoneypots = false })`, to stop dropping and reporting. While it is off, honeypot endpoints are processed like any other endpoint, so do not connect listeners to them.
+
+## Limits
+
+- Honeypots catch people who read the client module and try endpoints. They do not catch an exploiter who only replays the game's own traffic.
+- Anyone who reads this documentation knows the technique. Pick names that fit your game rather than the examples above.

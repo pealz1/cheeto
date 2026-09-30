@@ -1,0 +1,31 @@
+---
+title: "CFrame"
+description: "Position and rotation, with configurable encoding."
+---
+
+import { Callout } from 'nextra/components'
+
+# CFrame
+
+```cheeto copy
+type Pose = CFrame
+type CompactPose = CFrame<f16>
+```
+
+A `CFrame` is written as its position (three numbers) followed by its orientation as the Euler angles from `CFrame:ToOrientation()` (three numbers). By default all six are `f32`, 24 bytes in total.
+
+## Encoding
+
+`CFrame<T>` uses `T` for all six numbers. `CFrame<A, B>` uses **`B` for the position and `A` for the rotation**:
+
+| Declaration | Position | Rotation |
+| --- | --- | --- |
+| `CFrame` | `f32` | `f32` |
+| `CFrame<f16>` | `f16` | `f16` |
+| `CFrame<f32, i16>` | `i16` | `f32` |
+
+<Callout type="error">
+The two-parameter form is applied rotation first. Earlier versions of these docs described it the other way round, so `CFrame<i16, f16>` gives an `f16` position and an **integer rotation**, which throws away all rotation except whole radians. Put the integer type second if you want an integer position. See [Limitations](/limitations#cframe-encoding-order).
+</Callout>
+
+The received CFrame is rebuilt with `CFrame.new(position) * CFrame.fromOrientation(x, y, z)`. Positions more than 10⁹ studs from the origin, and non-finite values, are dropped with `Canonicalization`.

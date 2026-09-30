@@ -1,0 +1,60 @@
+---
+title: "Reference"
+description: "Every schema option, declaration, field and type, and every function the generated modules expose."
+---
+
+import { Sig, Spec } from '../../components/Reference'
+
+# Reference
+
+This section is the exact contract. Each page covers one thing and lists every member with where it runs, its parameters, what it returns, how it behaves and an example. For explanations of *why* things work the way they do, see the [Docs](/getting-started/introduction).
+
+## Schema language
+
+What you write in a `.cheeto` file.
+
+| Page | What it covers |
+| --- | --- |
+| [Syntax](/reference/syntax) | File layout, comments, identifiers, ranges, generics |
+| [Options](/reference/options/overview) | Every `option` line, grouped by what it controls, with defaults per security profile |
+| [Declarations](/reference/declarations/event) | `event`, `function`, `channel`, `type`, `struct`, `enum`, `map`, `set`, `scope`, `import`, `export` |
+| [Endpoint fields](/reference/fields) | Every field an `event`, `function` or `channel` block accepts |
+| [Types](/reference/types/numbers) | Numbers, strings, vectors, instances, 30+ Roblox datatypes, optionals and arrays |
+
+## Generated API
+
+What the generated `Server` and `Client` modules return.
+
+| Page | What it covers |
+| --- | --- |
+| [Network module](/reference/api/module) | Root members: `Stats`, `Configure`, `Use`, `UseAuth`, groups, interest, `StepReplication` |
+| [Event endpoint](/reference/api/event) | `Fire`, `FireAll`, `FireList`, `FireExcept`, `FireGroup`, `Predict`, `On`, `Iter` |
+| [Function endpoint](/reference/api/function) | `Invoke`, `On` |
+| [Channel endpoint](/reference/api/channel) | `Set*`, `Patch*`, `Flush*`, `Get`, `Clear`, `On`, `Version` |
+| [Exported type](/reference/api/exports) | `Read`, `Write` for `export`ed types |
+| [Middleware hooks](/reference/api/hooks) | Every hook name accepted by `Use` and the context it receives |
+| [Security](/reference/api/security) ... [Diagnostics](/reference/api/diagnostics) | One page per namespace on the module |
+
+## Data and tooling
+
+| Page | What it covers |
+| --- | --- |
+| [Drop reasons](/reference/drop-reasons) | Every reason a packet can be dropped, and what triggers it |
+| [ViolationReport](/reference/violation-report) | The table passed to `Security.OnViolation` |
+| [Command line](/reference/cli) | Every flag of the `cheeto` compiler |
+| [cheeto.lock format](/reference/lockfile) | What the lockfile records |
+| [Limitations](/limitations) | Known limits and things that are accepted but have no effect |
+
+## Reading the entries
+
+Every member starts with a signature strip:
+
+<Sig side="server">{"Fire(player: Player, ...data): ()"}</Sig>
+
+The badge says where the member exists. **Server** members are only on the module returned by `ServerOutput`, **Client** members only on `ClientOutput`, and **Server + Client** members on both. **Yields** means the call can suspend the current thread.
+
+Options and fields start with a fact table instead:
+
+<Spec type={<code>number</code>} default={<><code>0</code> (disabled)</>} on="event, function" />
+
+In examples, `Network` is the module you required, for instance `require(ReplicatedStorage.Network.Server)`.

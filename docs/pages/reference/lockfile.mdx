@@ -1,0 +1,54 @@
+---
+title: "cheeto.lock format"
+description: "What the lockfile records, and what it does and does not guarantee."
+---
+
+import { Callout } from 'nextra/components'
+
+# cheeto.lock format
+
+`cheeto --write-lock` writes `cheeto.lock` next to the schema. `cheeto --check-lock` fails when the file no longer matches the schema. Together they make every change to the schema's surface show up as a reviewed diff.
+
+```json
+{
+	"protocol": 2,
+	"schemaVersion": 7,
+	"minimumSchemaVersion": 7,
+	"schemaHash": "schema-7",
+	"compatibility": "strict-v2-schema-hash",
+	"options": {
+		"securityProfile": "Production",
+		"requirePolicies": true,
+		"maxReliablePacketBytes": 65536,
+		"maxUnreliablePacketBytes": 900
+	},
+	"wireIds": {
+		"DealDamage": { "id": 1, "kind": "Event", "deprecated": false, "reserved": false },
+		"GetInventory": { "id": 2, "kind": "Function", "deprecated": false, "reserved": false }
+	},
+	"typeHashes": {
+		"Hit": "Struct:Hit"
+	}
+}
+```
+
+| Field | Contents |
+| --- | --- |
+| `protocol` | Always `2` |
+| `schemaVersion`, `minimumSchemaVersion` | From the options |
+| `schemaHash` | `schema-<Version>` |
+| `options` | Security profile, `RequirePolicies`, and the two packet caps as written in the schema (defaults shown when unset) |
+| `wireIds` | Every event, function and channel with its `WireId`, `ReservedId` or `DeprecatedId`, or its position in the schema when none is set |
+| `typeHashes` | Every declared type as `Kind:Name` |
+
+## What it catches
+
+`--check-lock` fails when an endpoint is added, removed, renamed or reordered, when a type is added, removed or renamed, and when the version, profile, `RequirePolicies` or packet caps change.
+
+<Callout type="warning">
+It does **not** notice a change to what a type or endpoint contains: changing `Damage: u16` to `Damage: u32` leaves the lockfile identical, although it changes the wire format. `typeHashes` records names, not contents. Increase `Version` for any change to data layout, and review schema diffs directly.
+</Callout>
+
+<Callout type="warning">
+The lockfile records `WireId`s, but the generated code numbers endpoints by position regardless. See [Limitations](/limitations#wire-ids).
+</Callout>

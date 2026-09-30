@@ -1,77 +1,61 @@
+---
+title: "Comparison"
+description: "How Cheeto compares with Zap, the closest schema-compiled networking library."
+---
+
 import { Callout } from 'nextra/components'
 
-# Networking Library Comparison
+# Comparison with Zap
 
-How Cheeto compares to other Roblox networking libraries — [Zap](https://github.com/red-blox/zap),
-[Jolt](https://github.com/ToriumSlurs/Jolt), and [NetRay](https://devforum.roblox.com/t/netray-high-performance-roblox-networking-library/3592849).
+[Zap](https://zap.redblox.dev) is the library closest to Cheeto: both compile a schema into typed Luau modules that pack data into buffers. If you know Zap, most of Cheeto's language will look familiar.
 
 <Callout type="info">
-    This page is a factual capability map, not marketing. Where Cheeto uses a
-    different mechanism to achieve the same goal, that is called out rather than
-    claimed as a gap.
+This page compares documented features, as of this release. Where Zap's documentation does not cover something, the table says so instead of guessing.
 </Callout>
 
-## Feature matrix
+## Shared ground
 
-| Capability | Zap | Jolt | NetRay | Cheeto |
-|------------|-----|------|--------|-------|
-| Buffer packing / zero-allocation | ✓ | ✓ | ✓ | ✓ |
-| Compression | — | ✓ | ✓ (LZW) | ✓ (varints + bit-packing) |
-| Reliable messaging | ✓ | ✓ | ✓ | ✓ |
-| Unreliable messaging | ✓ | ✓ | ✓ | ✓ |
-| Round-trip invoke / RemoteFunction | — | ✓ | ✓ | ✓ (functions) |
-| Strict typing + autocomplete | ✓ | ✓ | ✓ | ✓ (+ TypeScript defs) |
-| Received-data validation | ✓ | ✓ | ✓ | ✓ |
-| Middleware (intercept / block) | — | — | ✓ | ✓ (hooks) |
-| Rate limiting + burst | — | — | ✓ | ✓ |
-| Priority / weighted queue | — | — | ✓ | ✓ (`Priority`, `CoalesceKey`, `ReliabilityMode`) |
-| Automatic event batching | ✓ | ✓ | ✓ | ✓ |
-| Metrics / debug visibility | — | — | ✓ | ✓ (`Stats`, `Report`, doctor / load-sim modes) |
-| Datatypes | broad | 17 | broad | **30** |
-| Delta replication / channels | — | — | — | **✓ (Cheeto only)** |
-| Client-side prediction | — | — | — | **✓ (Cheeto only)** |
-| Reliable fragmentation (large packets) | — | — | — | **✓ (Cheeto only)** |
-| Capability handshake / schema versioning | — | — | — | **✓ (Cheeto only)** |
+Both libraries have:
 
-## Datatypes
+- a schema language with events (`from`, `type`, `call`, `data`) and functions;
+- reliable and unreliable events, with the same five call styles (`SingleSync`, `SingleAsync`, `ManySync`, `ManyAsync`, `Polling`);
+- buffer serialization, batching of reliable events per frame, and a manual replication mode;
+- Luau types, TypeScript definitions, output casing options, remote scoping and microprofiler labels;
+- write-side type checks as an option;
+- Future and Promise support for functions.
 
-Jolt advertises support for these 17 datatypes:
+## Where they differ
 
-`nil`, `boolean`, `buffer`, `number`, `string`, `table`, `Instance`, `Vector3`,
-`Vector2`, `CFrame`, `Color3`, `BrickColor`, `Region3`, `EnumItem`, `UDim`,
-`UDim2`, `TweenInfo`.
+| | Zap | Cheeto |
+| --- | --- | --- |
+| Option style | `snake_case` in the schema | `PascalCase` |
+| Function yield style | One global `yield_type` | Per function, with `Yield` |
+| Rate limits and cooldowns | Not documented | Per remote call and per endpoint |
+| Auth rules and policies before decoding | Not documented | Yes |
+| Middleware hooks | Not documented | 13 hooks, including post-decode `Validate` |
+| Honeypot endpoints | Not documented | Yes |
+| Kill switches | Not documented | Per endpoint and per policy group |
+| Payload budgets (depth, keys, string length, NaN) | Not documented | Yes |
+| Server-side movement checks, client tripwires, liveness challenges | Not documented | Optional |
+| State channels with delta patches | Not documented | Yes |
+| Client prediction with server acknowledgement | Not documented | Yes |
+| Reliable fragmentation of large batches | Not documented | Yes |
+| Version handshake and lockfile | Not documented | Yes (see [limitations](/limitations#the-handshake-does-not-block-mismatched-peers)) |
+| Packet capture and replay | Tooling integration for external inspectors | Built-in capture, replay and inspector |
+| Metrics | Not documented | Built-in counters |
+| Option to remove `FireAll` | `disable_fire_all` | No |
+| Configurable remote folder | `remote_folder` | Rotation folder only |
+| Studio plugin | Not documented | Yes |
 
-Cheeto supports all of them and more — see [Types](/language/types). In addition to
-Jolt's set, Cheeto also packs `Vector2int16`, `Vector3int16`, `Rect`, `Ray`,
-`NumberRange`, `NumberSequence`, `ColorSequence`, `PhysicalProperties`, `Font`,
-`Axes`, `Faces`, `DateTime`, and per-field numeric encodings (e.g. `Vector2<i16>`).
+## Choosing
 
-## Where Cheeto differs by design
+Zap is smaller and does one thing: fast, typed serialization. If you already validate and rate-limit in your own code and want the leanest output, it is a good choice.
 
-These are deliberate design choices, not missing features:
+Cheeto generates more code (each module includes a runtime of about 135 KB) in exchange for the protections and tooling above. It suits games where clients are actively attacked and you want those defences declared in the schema rather than rebuilt per endpoint.
 
-- **Compression.** NetRay applies LZW before sending and picks compressed vs
-  uncompressed per message. Cheeto instead packs against the schema — integers use
-  varints, booleans bit-pack, and every field is written at its declared width. For
-  typed data this is smaller *and* faster than running a general-purpose compressor
-  over an already-tight buffer, so Cheeto does not add a second compression pass.
+## Moving from Zap
 
-- **Data shape.** NetRay can send native tables / JSON and dynamically choose an
-  encoding. Cheeto always packs against a declared type; arbitrary or self-referential
-  tables go through the `unknown` type, which falls back to Roblox's serializer. This
-  trades a little flexibility for a lot of size, speed, and validation.
-
-- **Async style.** NetRay exposes Promise-based requests; Jolt and Cheeto use yielding
-  invokes (`Yield: Coroutine`) that return values directly. Both are equivalent; a
-  Promise wrapper can be layered on top if preferred.
-
-- **Event handles.** Jolt's `ReferenceBridge` is one environment-agnostic handle.
-  Cheeto generates separate typed `Client` and `Server` modules instead, so each side
-  only sees the calls it can actually make.
-
-## Summary
-
-Cheeto implements the full union of features advertised by Zap, Jolt, and NetRay, and
-adds delta-replicated channels, prediction, fragmentation, and a capability handshake
-on top. The one area where another library previously listed more — Jolt's datatype
-breadth — is now covered and exceeded.
+- Rename options to PascalCase: `server_output` becomes `ServerOutput`, `casing` becomes `Casing`.
+- `funct` blocks become `function` blocks, with a `Yield` field instead of the global `yield_type`.
+- Field names can stay lowercase: Cheeto accepts `from`, `type`, `call` and `data` as well as the capitalised forms.
+- Add a `Policy` and a cooldown or rate limit to every client-sent endpoint. See the [Security model](/security/overview).

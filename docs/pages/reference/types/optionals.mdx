@@ -1,0 +1,29 @@
+---
+title: "Optionals"
+description: "Allow a value to be nil."
+---
+
+# Optionals
+
+Append `?` to allow `nil`:
+
+```cheeto copy
+type Nickname = string(3..20)?
+type Target = Instance(Model)?
+
+struct Profile {
+    Name: string(1..32),
+    Title: string(0..32)?
+}
+```
+
+An optional costs one presence bit, packed with other booleans when [`UseBitPacking`](/reference/options/encoding#usebitpacking) is on, plus the value when present.
+
+`?` applies to everything to its left, and array brackets after it make an array of optionals:
+
+| Declaration | Meaning |
+| --- | --- |
+| `u8[..10]?` | An array of `u8`, or `nil` |
+| `u8?[..10]` | An array whose elements are `u8` or `nil` |
+
+`unknown` cannot be made optional; it already accepts `nil`.

@@ -1,0 +1,73 @@
+---
+title: "Client shield options"
+description: "Options for the client-side exploit tripwires and how their reports turn into kicks."
+---
+
+import { Callout } from 'nextra/components'
+import { Spec } from '../../../components/Reference'
+
+# Client shield options
+
+The [client shield](/security/client-shield) runs detection probes on each client and reports hits to the server over Cheeto's own frames. These options control whether it runs and what the server does with its reports.
+
+| Option | Type | Default | Under `Maximum` |
+| --- | --- | --- | --- |
+| [`EnableClientShield`](#enableclientshield) | boolean | `false` | `true` |
+| [`ClientShieldStrict`](#clientshieldstrict) | boolean | `false` | `true` |
+| [`ClientShieldKick`](#clientshieldkick) | boolean | `false` | `true` |
+| [`ClientShieldKickMessage`](#clientshieldkickmessage) | string | `"Security check failed."` | same |
+| [`ClientShieldProbeIntervalSeconds`](#clientshieldprobeintervalseconds) | number | `1.25` | same |
+| [`ClientShieldReportCooldownSeconds`](#clientshieldreportcooldownseconds) | number | `2` | same |
+| [`ClientShieldScoreThreshold`](#clientshieldscorethreshold) | number | `10` | same |
+
+## `EnableClientShield`
+
+<Spec type="boolean" default={<><code>false</code> (<code>true</code> under <code>Maximum</code>)</>} />
+
+When `true`, the client module starts the probe loop as soon as it is required. The server processes shield reports whether or not this is set on the server.
+
+## `ClientShieldStrict`
+
+<Spec type="boolean" default={<><code>false</code> (<code>true</code> under <code>Maximum</code>)</>} />
+
+With [`ClientShieldKick`](#clientshieldkick) on, strict mode kicks on the **first** report of any kind instead of waiting for [`ClientShieldScoreThreshold`](#clientshieldscorethreshold).
+
+## `ClientShieldKick`
+
+<Spec type="boolean" default={<><code>false</code> (<code>true</code> under <code>Maximum</code>)</>} />
+
+Allows the server to kick. It gates three things: client-shield reports, [decoy remote](/security/remote-hardening#decoys) hits, and [client integrity](/security/client-integrity) failures. With it off, all three are still recorded and reported through `Security.OnViolation` with action `report`.
+
+A player is kicked when this is on and any of these holds:
+
+- the report was flagged as immediate (decoy remotes, the TextChat tripwire, the save-instance safe-mode error);
+- [`ClientShieldStrict`](#clientshieldstrict) is on;
+- the player's score for that report's reason reached [`ClientShieldScoreThreshold`](#clientshieldscorethreshold).
+
+<Callout type="warning">
+A false positive removes a real player. Ship with `ClientShieldKick = false`, watch `Security.OnViolation` on live servers, and turn kicks on once reports look clean.
+</Callout>
+
+## `ClientShieldKickMessage`
+
+<Spec type="string" default={<code>"Security check failed."</code>} />
+
+The message passed to `Player:Kick` for shield, decoy and integrity kicks.
+
+## `ClientShieldProbeIntervalSeconds`
+
+<Spec type="number (seconds)" default={<code>1.25</code>} />
+
+Time between probe sweeps on the client. Values below `0.5` are treated as `0.5`.
+
+## `ClientShieldReportCooldownSeconds`
+
+<Spec type="number (seconds)" default={<code>2</code>} />
+
+Per player and per reason, repeated reports inside this window still add to the score but are not recorded or passed to `OnViolation` again. Kicks are not throttled. The same cooldown throttles client integrity evidence.
+
+## `ClientShieldScoreThreshold`
+
+<Spec type="number" default={<code>10</code>} />
+
+Per-reason score at which a non-strict shield kicks. Each report adds its weight, at least 1, to the player's score for that reason.

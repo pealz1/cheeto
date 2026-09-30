@@ -1,0 +1,169 @@
+---
+title: "Character integrity options"
+description: "Options for server-side movement sampling, scoring, correction and kicks."
+---
+
+import { Callout } from 'nextra/components'
+import { Spec } from '../../../components/Reference'
+
+# Character integrity options
+
+[Character integrity](/security/character-integrity) samples each character's `HumanoidRootPart` on the server and scores movement that the configured limits cannot explain. The allowance per sample is:
+
+```text
+nominal    = max(MaxHorizontalSpeed, WalkSpeed × SpeedMultiplier)
+allowedH   = nominal × dt
+           + min(assembly horizontal speed, 2 × nominal) × dt × 0.5
+           + DistanceSlack
+           + ping (0–2 s) × nominal × PingAllowance
+allowedV   = the same with MaxVerticalSpeed and vertical speed
+```
+
+| Option | Type | Default |
+| --- | --- | --- |
+| [`EnableCharacterIntegrity`](#enablecharacterintegrity) | boolean | `false` (`true` under `Maximum`) |
+| [`CharacterIntegrityMode`](#characterintegritymode) | identifier | `Observe` (`Correct` under `Maximum`) |
+| [`CharacterIntegrityKick`](#characterintegritykick) | boolean | `false` |
+| [`CharacterIntegritySampleIntervalSeconds`](#characterintegritysampleintervalseconds) | number | `0.25` |
+| [`CharacterIntegrityJoinGraceSeconds`](#characterintegrityjoingraceseconds) | number | `5` |
+| [`CharacterIntegrityTeleportGraceSeconds`](#characterintegrityteleportgraceseconds) | number | `2` |
+| [`CharacterIntegrityMaxStepSeconds`](#characterintegritymaxstepseconds) | number | `1.5` |
+| [`CharacterIntegrityMaxHorizontalSpeed`](#characterintegritymaxhorizontalspeed) | number | `64` |
+| [`CharacterIntegrityMaxVerticalSpeed`](#characterintegritymaxverticalspeed) | number | `120` |
+| [`CharacterIntegritySpeedMultiplier`](#characterintegrityspeedmultiplier) | number | `1.75` |
+| [`CharacterIntegrityDistanceSlack`](#characterintegritydistanceslack) | number | `12` |
+| [`CharacterIntegrityPingAllowance`](#characterintegritypingallowance) | number | `1.5` |
+| [`CharacterIntegrityScoreDecayPerSecond`](#characterintegrityscoredecaypersecond) | number | `2` |
+| [`CharacterIntegrityCorrectionScore`](#characterintegritycorrectionscore) | number | `12` |
+| [`CharacterIntegrityKickScore`](#characterintegritykickscore) | number | `40` |
+| [`CharacterIntegrityMaxConsecutiveBreaches`](#characterintegritymaxconsecutivebreaches) | number | `8` |
+| [`CharacterIntegrityCorrectionCooldownSeconds`](#characterintegritycorrectioncooldownseconds) | number | `1` |
+| [`CharacterIntegrityReportCooldownSeconds`](#characterintegrityreportcooldownseconds) | number | `1` |
+| [`CharacterIntegrityHistoryLimit`](#characterintegrityhistorylimit) | number | `32` |
+
+## `EnableCharacterIntegrity`
+
+<Spec type="boolean" default={<><code>false</code> (<code>true</code> under <code>Maximum</code>)</>} />
+
+Turns sampling on. Sampling runs in the server's flush step, so with [`ManualReplication`](/reference/options/runtime#manualreplication) it only runs when you call `StepReplication`.
+
+## `CharacterIntegrityMode`
+
+<Spec type="identifier" default={<><code>Observe</code> (<code>Correct</code> under <code>Maximum</code>)</>} values={<><code>Observe</code>, <code>Report</code>, <code>Correct</code>, <code>Kick</code></>} />
+
+What happens when a sample is suspicious:
+
+| Mode | Records evidence | `OnViolation` | Moves the character back | Kicks |
+| --- | --- | --- | --- | --- |
+| `Observe` | Yes | No | No | No |
+| `Report` | Yes | Yes | No | No |
+| `Correct` | Yes | Yes | Once the score reaches `CorrectionScore` | No |
+| `Kick` | Yes | Yes | Yes, as `Correct` | When `CharacterIntegrityKick` is on, the score reaches `KickScore` and there have been `MaxConsecutiveBreaches` breaches in a row |
+
+Any other value is a compile error. The mode can be changed at runtime with `Configure`.
+
+## `CharacterIntegrityKick`
+
+<Spec type="boolean" default={<code>false</code>} />
+
+Second switch required for kicks in `Kick` mode, so a mode change alone cannot start kicking players. Stays `false` under `Maximum`.
+
+## `CharacterIntegritySampleIntervalSeconds`
+
+<Spec type="number (seconds)" default={<code>0.25</code>} />
+
+Time between samples of one character. Minimum `0.05`.
+
+## `CharacterIntegrityJoinGraceSeconds`
+
+<Spec type="number (seconds)" default={<code>5</code>} />
+
+No scoring for this long after a player starts being tracked or gets a new character.
+
+## `CharacterIntegrityTeleportGraceSeconds`
+
+<Spec type="number (seconds)" default={<code>2</code>} />
+
+No scoring for this long after [`Security.TeleportCharacter`](/reference/api/security#teleportcharacter) or an automatic correction. Also the default duration of [`Security.GrantMovementGrace`](/reference/api/security#grantmovementgrace).
+
+## `CharacterIntegrityMaxStepSeconds`
+
+<Spec type="number (seconds)" default={<code>1.5</code>} />
+
+If more time than this passed between two samples, for example during a server hitch, the sample is not scored and tracking resynchronizes from the current position. Minimum `0.1`.
+
+## `CharacterIntegrityMaxHorizontalSpeed`
+
+<Spec type="number (studs/s)" default={<code>64</code>} />
+
+Baseline horizontal speed the allowance is built from, before the `WalkSpeed` multiplier. A `Humanoid.WalkSpeed` above `MaxHorizontalSpeed × SpeedMultiplier` is itself reported as `WalkSpeedMutation`.
+
+## `CharacterIntegrityMaxVerticalSpeed`
+
+<Spec type="number (studs/s)" default={<code>120</code>} />
+
+Baseline vertical speed for the vertical allowance. Raise it for games with high jumps, launch pads or long falls.
+
+## `CharacterIntegritySpeedMultiplier`
+
+<Spec type="number" default={<code>1.75</code>} />
+
+Multiplied with the current `WalkSpeed` to allow games that change `WalkSpeed` legitimately. Minimum `1`.
+
+## `CharacterIntegrityDistanceSlack`
+
+<Spec type="number (studs)" default={<code>12</code>} />
+
+Flat distance added to every sample's allowance, to absorb physics jitter and small corrections.
+
+## `CharacterIntegrityPingAllowance`
+
+<Spec type="number" default={<code>1.5</code>} />
+
+Scales how much extra distance a player's ping earns. Ping is read from `Player:GetNetworkPing()` and clamped to 0–2 seconds.
+
+## `CharacterIntegrityScoreDecayPerSecond`
+
+<Spec type="number" default={<code>2</code>} />
+
+How fast the movement score falls back toward 0.
+
+## `CharacterIntegrityCorrectionScore`
+
+<Spec type="number" default={<code>12</code>} />
+
+Score at which `Correct` and `Kick` modes move the character back to its last server-observed safe position.
+
+## `CharacterIntegrityKickScore`
+
+<Spec type="number" default={<code>40</code>} />
+
+Score required for a kick in `Kick` mode.
+
+## `CharacterIntegrityMaxConsecutiveBreaches`
+
+<Spec type="number" default={<code>8</code>} />
+
+Suspicious samples in a row required for a kick in `Kick` mode. Any clean sample resets the count.
+
+## `CharacterIntegrityCorrectionCooldownSeconds`
+
+<Spec type="number (seconds)" default={<code>1</code>} />
+
+Minimum time between two corrections of the same player.
+
+## `CharacterIntegrityReportCooldownSeconds`
+
+<Spec type="number (seconds)" default={<code>1</code>} />
+
+Per player and per reason, evidence inside this window still adds to the score but is not recorded or reported again. Kicks are never throttled.
+
+## `CharacterIntegrityHistoryLimit`
+
+<Spec type="number" default={<code>32</code>} />
+
+Evidence entries kept per player. The server-wide evidence list keeps eight times this many.
+
+<Callout type="info">
+Tune movement limits in `Observe` mode first, using `Security.CharacterIntegrity()` snapshots from real sessions. See [Character integrity](/security/character-integrity).
+</Callout>

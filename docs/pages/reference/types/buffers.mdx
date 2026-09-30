@@ -1,0 +1,18 @@
+---
+title: "buffer"
+description: "Raw bytes for custom serialization."
+---
+
+# buffer
+
+A `buffer` carries raw bytes you serialized yourself, while still being batched and validated like everything else.
+
+```cheeto copy
+type Blob = buffer
+type Chunk = buffer(..900)
+type Hash = buffer(32)
+```
+
+The length prefix works like [`string`](/reference/types/strings): a range bounds the byte length, and an exact range removes the prefix. Unbounded buffers are limited to 65,535 bytes.
+
+Pair it with [`export`](/reference/declarations/export) to send a value you encoded with a Cheeto type's `Write` function.

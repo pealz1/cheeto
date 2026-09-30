@@ -1,0 +1,56 @@
+---
+title: "Batching and flushing"
+description: "When reliable traffic actually leaves, how big batches are split, and how to take control of the timing."
+---
+
+import { Callout } from 'nextra/components'
+
+# Batching and flushing
+
+## Reliable traffic is batched
+
+A reliable `Fire` does not call the remote. It appends a frame to an outgoing buffer for that peer: one buffer per player on the server, one on the client. Once per frame, the **replication step** sends each non-empty buffer as a single remote call. Twenty events to one player in one frame cost one remote call, and every reliable event to a peer arrives in the order it was fired.
+
+Broadcasts (`FireAll`, `FireList`, `FireExcept`, `FireGroup`) encode the data once and copy the bytes into each recipient's buffer.
+
+## The replication step
+
+By default the step runs on `RunService.Heartbeat`. On each run it:
+
+1. expires [invokes](/concepts/functions-and-invokes) that passed their timeout;
+2. on the server, issues [integrity challenges](/security/client-integrity) and samples [characters](/security/character-integrity);
+3. on the server, flushes pending [channel](/concepts/state-channels) state into the buffers;
+4. sends each peer's buffer, if the flush rule allows.
+
+The flush rule sends a peer's buffer when any of these holds:
+
+- at least 1/60 of a second has passed since that peer's last flush;
+- the buffer has reached [`MaxBurstBytes`](/reference/options/limits#maxburstbytes);
+- the peer's tracked queue is at least half of [`MaxQueuedBytes`](/reference/options/limits#maxqueuedbytes).
+
+At the usual 60 Hz heartbeat, that means every frame.
+
+## Taking control
+
+With [`ManualReplication`](/reference/options/runtime#manualreplication) the step is not connected, and you call [`StepReplication`](/reference/api/module#stepreplication) yourself. Use it to flush after your simulation step, or at a lower rate for a game that does not need per-frame traffic.
+
+```lua copy
+RunService.PostSimulation:Connect(function()
+    Simulation.Step()
+    Network.StepReplication()
+end)
+```
+
+<Callout type="warning">
+Timeouts, integrity challenges, character checks and channel flushes all run inside the step. If you stop calling it, they stop too.
+</Callout>
+
+## Unreliable traffic is not batched
+
+Each unreliable `Fire` is sent immediately as its own `UnreliableRemoteEvent` call, capped by [`MaxUnreliablePacketBytes`](/reference/options/limits#maxunreliablepacketbytes). This keeps unreliable data as fresh as possible, but it means a hundred unreliable events cost a hundred remote calls. If you send many small unreliable updates, combine them into one event carrying an array.
+
+## Fragmentation
+
+Roblox limits how much one remote call can carry. When a reliable batch is larger than [`ReliableFragmentBytes`](/reference/options/limits#reliablefragmentbytes) (48 KB by default), it is split into fragments sent as separate calls and reassembled on arrival. Reliable delivery keeps them in order.
+
+A batch larger than [`MaxReliablePacketBytes`](/reference/options/limits#maxreliablepacketbytes) is not fragmented; it is dropped whole on the sender with `MaxPacketBytes`. Keep individual events well below that cap, and use a [channel](/concepts/state-channels) or several events for large state.

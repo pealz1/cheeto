@@ -1,0 +1,32 @@
+---
+title: "Instance"
+description: "Send references to Roblox instances, optionally restricted to a class."
+---
+
+import { Callout } from 'nextra/components'
+
+# Instance
+
+```cheeto copy
+type AnyInstance = Instance
+type Target = Instance(Player)
+type Part = Instance(BasePart)?
+```
+
+Instances cannot go into a buffer. Cheeto sends them in a list beside the buffer, as the second argument of the remote call, and Roblox replicates the references. They cost nothing in the buffer itself.
+
+## Class
+
+`Instance(ClassName)` checks the received value with `IsA`, so subclasses are accepted: `Instance(BasePart)` accepts a `Part` or a `MeshPart`. A value of the wrong class drops the event with `MalformedPacket`.
+
+## When an instance arrives as nil
+
+An instance can be `nil` on the receiving side even though it existed on the sender: it may not have streamed in yet, exist only on the server, or have been destroyed in between. A non-optional `Instance` that arrives as `nil` fails validation, and the event is dropped with `MalformedPacket`. Other events in the same packet are unaffected.
+
+<Callout type="warning">
+Mark any instance that might be missing on the receiver as optional: `Instance(Model)?`. Streaming-enabled places especially.
+</Callout>
+
+## Security
+
+A client can send any instance it can see. Never treat a received instance as proof of ownership or permission. For objects a client acts on, such as build pieces, inventory items or trade sessions, send a server-issued [handle](/security/handles-and-capabilities) instead and resolve it on the server.

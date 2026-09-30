@@ -1,0 +1,51 @@
+---
+title: "How Cheeto works"
+description: "From schema to generated modules to remote calls, and what each piece is responsible for."
+---
+
+import { Callout } from 'nextra/components'
+
+# How Cheeto works
+
+## The compiler
+
+The `cheeto` compiler reads a schema, checks it, and writes:
+
+| Output | Option | Contents |
+| --- | --- | --- |
+| Server module | [`ServerOutput`](/reference/options/output#serveroutput) | Senders for server-origin endpoints, listeners for client-origin ones, channel writers, and the server runtime |
+| Client module | [`ClientOutput`](/reference/options/output#clientoutput) | The mirror image, plus the client runtime |
+| Types module | [`TypesOutput`](/reference/options/output#typesoutput) | Shared Luau types, optional |
+| `.d.ts` files | [`Typescript`](/reference/options/output#typescript) | roblox-ts declarations, optional |
+| Shared runtime | [`RuntimeOutput`](/reference/options/output#runtimeoutput) | The runtime as its own module, optional |
+
+The modules are ordinary ModuleScripts with no dependencies other than the Future or Promise library if you use them. Commit the schema and regenerate the modules; do not edit generated code.
+
+## Two remotes
+
+When the server module is first required, it creates two instances in ReplicatedStorage: a `RemoteEvent` for reliable traffic and an `UnreliableRemoteEvent` for unreliable traffic. Every endpoint in the schema shares them. Each message carries a one-byte endpoint number so the receiver knows which endpoint it belongs to. Endpoint names never go over the wire.
+
+The client module waits for those two remotes and connects to them. With [remote name rotation](/security/remote-hardening) on, they live in a folder and get random names.
+
+## Sending
+
+When you call `Fire`:
+
+1. The endpoint's [`BeforeSend`](/reference/api/hooks#beforesend) hooks and [kill switch](/reference/api/security#kill) are checked.
+2. The data is written into a buffer as a **frame**: a small header followed by the payload, packed according to the schema.
+3. **Reliable** frames are appended to that peer's outgoing batch. Once per frame (on `Heartbeat`), the runtime sends each peer's batch as one remote call, splitting it into fragments if it is very large. See [Batching and flushing](/concepts/batching-and-flushing).
+4. **Unreliable** frames are sent immediately, one remote call each.
+
+Instances cannot be written into a buffer, so they travel as a list in the remote call's second argument.
+
+## Receiving
+
+When a remote call arrives, the runtime checks the whole packet (size, rate, type of arguments), then reads it frame by frame. Each frame passes a sequence of checks (rate limits, auth, policy, decoding, validation) before its listener runs. A frame that fails any check is dropped and reported, and the runtime moves to the next frame. Nothing throws into your code. See [The receive pipeline](/concepts/receive-pipeline).
+
+## What runs where
+
+The runtime inside each module holds all the state: outgoing batches, listener tables, rate-limit buckets, capture buffers, security scores. Two modules never share state, even with a shared runtime module. Configure and register rules on the module that does the receiving: policies on the server module, samplers on the client module.
+
+<Callout type="info">
+Each side's module must be compiled from the same schema. There is no negotiation between different schemas; see [Schema versioning](/concepts/schema-versioning).
+</Callout>

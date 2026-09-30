@@ -1,0 +1,85 @@
+---
+title: "Client integrity options"
+description: "Options for server-issued liveness challenges and how failed receipts are scored."
+---
+
+import { Spec } from '../../../components/Reference'
+
+# Client integrity options
+
+[Client integrity](/security/client-integrity) has the server send each client a one-time challenge; the client runs its checks and answers with a receipt. Missing, late, invalid or unhealthy receipts add evidence to a decaying score.
+
+| Option | Type | Default |
+| --- | --- | --- |
+| [`EnableClientIntegrity`](#enableclientintegrity) | boolean | `false` (`true` under `Maximum`) |
+| [`ClientIntegrityChallengeIntervalSeconds`](#clientintegritychallengeintervalseconds) | number | `4` |
+| [`ClientIntegrityReceiptTimeoutSeconds`](#clientintegrityreceipttimeoutseconds) | number | `8` |
+| [`ClientIntegrityJoinGraceSeconds`](#clientintegrityjoingraceseconds) | number | `20` |
+| [`ClientIntegrityScoreDecayPerSecond`](#clientintegrityscoredecaypersecond) | number | `0.5` |
+| [`ClientIntegrityCleanReceiptDecay`](#clientintegritycleanreceiptdecay) | number | `2` |
+| [`ClientIntegrityMissWeight`](#clientintegritymissweight) | number | `4` |
+| [`ClientIntegrityInvalidWeight`](#clientintegrityinvalidweight) | number | `6` |
+| [`ClientIntegrityScoreThreshold`](#clientintegrityscorethreshold) | number | `16` |
+| [`ClientIntegrityMaxConsecutiveFailures`](#clientintegritymaxconsecutivefailures) | number | `4` |
+
+A player is kicked only when **all** of these hold: [`ClientShieldKick`](/reference/options/client-shield#clientshieldkick) is on, the score is at least [`ClientIntegrityScoreThreshold`](#clientintegrityscorethreshold), and there have been at least [`ClientIntegrityMaxConsecutiveFailures`](#clientintegritymaxconsecutivefailures) failures in a row. A single miss never kicks.
+
+## `EnableClientIntegrity`
+
+<Spec type="boolean" default={<><code>false</code> (<code>true</code> under <code>Maximum</code>)</>} />
+
+Turns the challenge loop on. Challenges are issued from the server's flush step, so with [`ManualReplication`](/reference/options/runtime#manualreplication) they only run when you call `StepReplication`.
+
+## `ClientIntegrityChallengeIntervalSeconds`
+
+<Spec type="number (seconds)" default={<code>4</code>} />
+
+Time between challenges to one player. Minimum `0.5`. Only one challenge per player is outstanding at a time.
+
+## `ClientIntegrityReceiptTimeoutSeconds`
+
+<Spec type="number (seconds)" default={<code>8</code>} />
+
+How long a client has to answer. A challenge not answered in time is recorded as `IntegrityReceiptMissing` with weight [`ClientIntegrityMissWeight`](#clientintegritymissweight). Minimum `0.5`.
+
+## `ClientIntegrityJoinGraceSeconds`
+
+<Spec type="number (seconds)" default={<code>20</code>} />
+
+No challenges are sent for this long after the server first tracks a player, so loading does not count against them. Also the default duration of [`Security.GrantIntegrityGrace`](/reference/api/security#grantintegritygrace).
+
+## `ClientIntegrityScoreDecayPerSecond`
+
+<Spec type="number" default={<code>0.5</code>} />
+
+How much a player's integrity score drops per second. The score never goes below 0 or above 1000.
+
+## `ClientIntegrityCleanReceiptDecay`
+
+<Spec type="number" default={<code>2</code>} />
+
+Subtracted from the score for each valid, healthy receipt. Also resets the consecutive-failure count.
+
+## `ClientIntegrityMissWeight`
+
+<Spec type="number" default={<code>4</code>} />
+
+Score added when a receipt does not arrive before the deadline.
+
+## `ClientIntegrityInvalidWeight`
+
+<Spec type="number" default={<code>6</code>} />
+
+Score added when a receipt is invalid (`IntegrityReceiptInvalid`: wrong challenge, expired, replayed completion counter, no samplers, bad checksum) or when a valid receipt reports a failed check (`IntegrityEvaluatorFailed`).
+
+## `ClientIntegrityScoreThreshold`
+
+<Spec type="number" default={<code>16</code>} />
+
+Minimum score before a kick is possible.
+
+## `ClientIntegrityMaxConsecutiveFailures`
+
+<Spec type="number" default={<code>4</code>} />
+
+Minimum number of failures in a row before a kick is possible. Values below 1 are treated as 1.

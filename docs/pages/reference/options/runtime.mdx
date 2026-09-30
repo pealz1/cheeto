@@ -1,0 +1,105 @@
+---
+title: "Runtime features"
+description: "Options that switch generated behaviour on or off, such as polling, manual replication, validation and metrics."
+---
+
+import { Callout } from 'nextra/components'
+import { Spec } from '../../../components/Reference'
+
+# Runtime features
+
+| Option | Type | Default | Changeable at runtime |
+| --- | --- | --- | --- |
+| [`UsePolling`](#usepolling) | boolean | `false` | No |
+| [`ManualReplication`](#manualreplication) | boolean | `false` | No |
+| [`SyncValidation`](#syncvalidation) | boolean | `true` | No |
+| [`WriteValidations`](#writevalidations) | boolean | `false` | No |
+| [`ExposeMetrics`](#exposemetrics) | boolean | `true` | Yes |
+| [`EnableMiddleware`](#enablemiddleware) | boolean | `true` | Yes |
+| [`EnablePrediction`](#enableprediction) | boolean | `true` | Partly |
+| [`EnableStateChannels`](#enablestatechannels) | boolean | `true` | Yes |
+| [`EnableReplicationAdapters`](#enablereplicationadapters) | boolean | `true` | Yes |
+| [`EnableMicroProfiler`](#enablemicroprofiler) | boolean | `true` | Yes |
+| [`UseEmptyInstanceOptimization`](#useemptyinstanceoptimization) | boolean | `true` | Yes |
+
+## `UsePolling`
+
+<Spec type="boolean" default={<code>false</code>} />
+
+Generates every event with the polling API on its receiving side, as if each declared `Call: Polling`. Received events are queued and read with [`Iter`](/reference/api/event#iter) instead of delivered to `On` listeners.
+
+```cheeto copy
+option UsePolling = true
+```
+
+## `ManualReplication`
+
+<Spec type="boolean" default={<code>false</code>} />
+
+By default the module connects its flush step to `RunService.Heartbeat`, so queued reliable events are sent once per frame. With `ManualReplication = true` nothing is connected and you call [`StepReplication`](/reference/api/module#stepreplication) yourself. The flush step also expires timed-out invokes and runs the integrity samplers, so it must be called regularly.
+
+```cheeto copy
+option ManualReplication = true
+```
+
+```lua copy
+RunService.PostSimulation:Connect(Network.StepReplication)
+```
+
+## `SyncValidation`
+
+<Spec type="boolean" default={<code>true</code>} />
+
+For events with `Call: SingleSync` or `ManySync`, warns when a listener yields: `Yielded in a Sync call. Event "X" uses a Sync call, consider using an Async call instead.` The check only reports; it never closes the yielded thread.
+
+<Callout type="warning">
+Because the default is `true`, [`--strict`](/reference/cli#--strict) and [`--hardening-checklist`](/reference/cli#--hardening-checklist) fail until you set `option SyncValidation = false` explicitly.
+</Callout>
+
+## `WriteValidations`
+
+<Spec type="boolean" default={<code>false</code>} />
+
+Type-checks values on the sending side before they are serialized: primitives, instance classes and the shape of arrays, maps, sets and structs. A mismatch raises an error at the `Fire` or `Invoke` call site instead of producing a malformed packet. Useful while developing; it costs time on every send, and `--strict` rejects it.
+
+## `ExposeMetrics`
+
+<Spec type="boolean" default={<code>true</code>} />
+
+When `false`, [`Stats`](/reference/api/module#stats), [`Report`](/reference/api/module#report) and the [Inspector](/reference/api/inspector) error with `Metrics are disabled`. Counters are still collected internally.
+
+## `EnableMiddleware`
+
+<Spec type="boolean" default={<code>true</code>} />
+
+When `false`, no [middleware hook](/reference/api/hooks) runs, including `Validate`, `Violation` and `Telemetry`. `Security.OnViolation` callbacks are hooks, so they stop firing too. Auth rules and policies are not hooks and keep working.
+
+## `EnablePrediction`
+
+<Spec type="boolean" default={<code>true</code>} />
+
+At compile time, `false` stops `Predict` from being generated on client-origin events unless the event sets `Predict: true`. At runtime, `false` makes [`Prediction.Begin`](/reference/api/prediction#begin) and any generated `Predict` error with `Prediction helpers are disabled`.
+
+## `EnableStateChannels`
+
+<Spec type="boolean" default={<code>true</code>} />
+
+Gates the local [`State.DefineChannel`](/reference/api/state#definechannel) helper, which errors when this is `false`. Schema-declared [`channel`](/reference/declarations/channel) endpoints are not affected.
+
+## `EnableReplicationAdapters`
+
+<Spec type="boolean" default={<code>true</code>} />
+
+When `false`, [`Replication.MessagingService`](/reference/api/replication#messagingservice) and [`Replication.MemoryStore`](/reference/api/replication#memorystore) error instead of returning an adapter.
+
+## `EnableMicroProfiler`
+
+<Spec type="boolean" default={<code>true</code>} />
+
+Wraps decoding and flushing in `debug.profilebegin` labels (`Cheeto.Decode.Reliable`, `Cheeto.Decode.Unreliable`, `Cheeto.Flush.Server`, `Cheeto.Flush.Client`) so they show up in the MicroProfiler.
+
+## `UseEmptyInstanceOptimization`
+
+<Spec type="boolean" default={<code>true</code>} />
+
+When a packet carries no Instances, sends `nil` instead of an empty table as the second remote argument, saving a few bytes per packet.

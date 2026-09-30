@@ -1,0 +1,48 @@
+---
+title: "Remote hardening options"
+description: "Randomized RemoteEvent names and decoy remotes."
+---
+
+import { Callout } from 'nextra/components'
+import { Spec } from '../../../components/Reference'
+
+# Remote hardening options
+
+See [Remote names and decoys](/security/remote-hardening) for what these protect against and what they do not.
+
+| Option | Type | Default |
+| --- | --- | --- |
+| [`EnableRemoteNameRotation`](#enableremotenamerotation) | boolean | `false` (`true` under `Maximum`) |
+| [`RemoteNameRotationSeconds`](#remotenamerotationseconds) | number | `45` |
+| [`EnableRemoteDecoys`](#enableremotedecoys) | boolean | `false` (`true` under `Maximum`) |
+| [`RemoteDecoyCount`](#remotedecoycount) | number | `0` (`8` under `Maximum`) |
+
+These are read when the modules load. Changing them with `Configure` afterwards has no effect on remotes that already exist.
+
+## `EnableRemoteNameRotation`
+
+<Spec type="boolean" default={<><code>false</code> (<code>true</code> under <code>Maximum</code>)</>} />
+
+The server creates its two RemoteEvents inside a folder named `<scope>CHEETO_REMOTE_ROOT` in ReplicatedStorage, gives them random names such as `_CHEETO_R_3f9a...`, and publishes the current names as the folder's `ReliableName` and `UnreliableName` attributes. Clients look the remotes up through those attributes and rebind when they change. Without rotation the remotes are `CHEETO_RELIABLE_REMOTE` and `CHEETO_UNRELIABLE_REMOTE` directly in ReplicatedStorage.
+
+Both the server and the client must be compiled with the same value.
+
+## `RemoteNameRotationSeconds`
+
+<Spec type="number (seconds)" default={<code>45</code>} />
+
+How often the server renames the remotes while rotation is on. `0` keeps the initial random names without renaming.
+
+## `EnableRemoteDecoys`
+
+<Spec type="boolean" default={<><code>false</code> (<code>true</code> under <code>Maximum</code>)</>} />
+
+Creates extra RemoteEvents next to the real ones. Game code never fires them, so a `FireServer` on any decoy is reported as `RemoteDecoy` with weight 100 and kicks the player when [`ClientShieldKick`](/reference/options/client-shield#clientshieldkick) is on.
+
+Decoys are created in the rotation folder when rotation is on, or directly in ReplicatedStorage when it is off. Their names follow the pattern `_CHEETO_D<n>_<random>`.
+
+## `RemoteDecoyCount`
+
+<Spec type="number" default={<><code>0</code> (<code>8</code> under <code>Maximum</code>)</>} />
+
+How many decoy remotes to create.

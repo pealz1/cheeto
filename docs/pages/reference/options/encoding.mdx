@@ -1,0 +1,61 @@
+---
+title: "Wire encoding"
+description: "Options that change how values are packed into buffers."
+---
+
+import { Callout } from 'nextra/components'
+import { Spec } from '../../../components/Reference'
+
+# Wire encoding
+
+These options change the bytes on the wire. Both sides read them from their own `RuntimeConfig`, so they must match on the server and the client.
+
+<Callout type="error">
+Do not change the encoding options with `Configure` on only one side. A server writing varints to a client that expects fixed-width integers misreads every packet after the first differing field, and the packets are dropped as `MalformedPacket`.
+</Callout>
+
+| Option | Type | Default |
+| --- | --- | --- |
+| [`UseVarints`](#usevarints) | boolean | `true` |
+| [`UseBitPacking`](#usebitpacking) | boolean | `true` |
+| [`UseStringDictionaries`](#usestringdictionaries) | boolean | `false` |
+| [`UseBufferPooling`](#usebufferpooling) | boolean | `true` |
+| [`BufferPoolLimit`](#bufferpoollimit) | number | `64` |
+
+## `UseVarints`
+
+<Spec type="boolean" default={<code>true</code>} />
+
+Writes 16-bit and 32-bit integers (`u16`, `u32`, `i16`, `i32`) and all length prefixes as LEB128 variable-length integers: 7 bits per byte, with the high bit marking that another byte follows. Signed integers are zig-zag encoded first, so small negative numbers stay small. `u8` and `i8` are always one byte.
+
+| Value | `u16` fixed | `u16` varint |
+| --- | --- | --- |
+| `25` | `19 00` | `19` |
+| `300` | `2C 01` | `AC 02` |
+| `40000` | `40 9C` | `C0 B8 02` |
+
+Varints win whenever values are usually small, which is typical for counts, ids and damage. A `u32` near its maximum costs 5 bytes instead of 4.
+
+## `UseBitPacking`
+
+<Spec type="boolean" default={<code>true</code>} />
+
+Packs booleans and the presence flags of optionals into single bits, eight per byte. With it off each takes a full byte.
+
+## `UseStringDictionaries`
+
+<Spec type="boolean" default={<code>false</code>} />
+
+Interns strings within one outgoing batch: the first occurrence is written in full and later occurrences of the same string in that batch are written as a small id. The dictionary resets after every flush. It helps when a batch repeats the same strings, such as item names in a list, and costs one extra byte per string otherwise.
+
+## `UseBufferPooling`
+
+<Spec type="boolean" default={<code>true</code>} />
+
+Reuses send buffers between flushes instead of allocating new ones, in power-of-two size buckets starting at 64 bytes. Lowers garbage collection pressure on busy servers.
+
+## `BufferPoolLimit`
+
+<Spec type="number" default={<code>64</code>} />
+
+How many buffers each size bucket keeps for reuse. Buffers released beyond this are left to the garbage collector.

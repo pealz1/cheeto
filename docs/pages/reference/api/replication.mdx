@@ -1,0 +1,109 @@
+---
+title: "Replication"
+description: "Party, match, team, cell and owner audiences, routing graphs, and cross-server adapters."
+---
+
+import { Sig } from '../../../components/Reference'
+
+# Replication
+
+`Network.Replication` keeps audience memberships beyond groups, and wraps MessagingService and MemoryStoreService for cross-server traffic. See [Audiences and routing](/concepts/interest-and-routing).
+
+Memberships are cleared automatically when a player leaves.
+
+## SetParty
+
+<Sig side="both">{"SetParty(partyName: string, player: Player, enabled: boolean?): ()"}</Sig>
+
+Adds `player` to a party, or removes them with `enabled = false`.
+
+## SetMatch
+
+<Sig side="both">{"SetMatch(matchName: string, player: Player, enabled: boolean?): ()"}</Sig>
+
+Adds or removes a player from a match.
+
+## SetTeam
+
+<Sig side="both">{"SetTeam(teamName: string, player: Player, enabled: boolean?): ()"}</Sig>
+
+Adds or removes a player from a team. This is Cheeto's own membership; it does not read or change `Player.Team`.
+
+## SetStreamedCell
+
+<Sig side="both">{"SetStreamedCell(cellName: string, player: Player, enabled: boolean?): ()"}</Sig>
+
+Adds or removes a player from a streaming cell, for games that divide the world into regions.
+
+## SetObjectOwner
+
+<Sig side="both">{"SetObjectOwner(object: any, player: Player, enabled: boolean?): ()"}</Sig>
+
+Records `player` as an owner of `object`. An object can have several owners.
+
+## GetInterestPlayers
+
+<Sig side="both">{"GetInterestPlayers(scope: string, key: any): {Player}"}</Sig>
+
+The players in an audience. `scope` is `"Group"`, `"Party"`, `"Match"`, `"Team"`, `"Cell"`, `"Owner"` or `"Zone"`; `key` is the group, party, match, team or cell name, or the object for `"Owner"`. Players who left are excluded.
+
+```lua copy
+for _, player in Network.Replication.GetInterestPlayers("Party", partyId) do
+    Network.PartyChat.Fire(player, message)
+end
+```
+
+## Graph
+
+<Sig side="both">{"Graph(): ReplicationGraph"}</Sig>
+
+Creates a routing graph: a private set of observer lists that override the shared memberships for specific keys.
+
+| Method | Purpose |
+| --- | --- |
+| `graph:Observe(scope, key, player)` | Add an observer for `scope`/`key` |
+| `graph:Unobserve(scope, key, player)` | Remove one |
+| `graph:Players(scope, key)` | Observers for that key, or the shared membership from `GetInterestPlayers` if the graph has none |
+| `graph:Route(scope, key, send)` | Call `send(player)` for each of `Players(scope, key)` |
+
+```lua copy
+local spectators = Network.Replication.Graph()
+spectators:Observe("Match", matchId, spectator)
+
+spectators:Route("Match", matchId, function(player)
+    Network.MatchState.SetPlayer(player, snapshot)
+end)
+```
+
+## MessagingService
+
+<Sig side="both">{"MessagingService(topic: string, service: MessagingService?): MessagingAdapter"}</Sig>
+
+Wraps `MessagingService` for one topic. Messages are tables `{ Channel, Payload, SchemaVersion, ProtocolVersion }`, so receivers can reject payloads from servers running a different schema. Use it on the server; the services are not available to clients. Errors when [`EnableReplicationAdapters`](/reference/options/runtime#enablereplicationadapters) is off.
+
+| Method | Publishes to channel |
+| --- | --- |
+| `Publish(channel, payload)` | `channel` |
+| `PublishGroup(groupName, payload)` | `group:<groupName>` |
+| `PublishZone(channelName, zoneName, payload)` | `zone:<channelName>:<zoneName>` |
+| `PublishMatch(matchServerId, payload)` | `match:<matchServerId>` |
+| `Subscribe(handler)` | Calls `handler(message)` for each message |
+
+Payloads are not encoded with the schema; MessagingService's own size limits and serialization rules apply.
+
+## MemoryStore
+
+<Sig side="both">{"MemoryStore(name: string, service: MemoryStoreService?): MemoryStoreAdapter"}</Sig>
+
+Wraps one MemoryStore sorted map. Values are stored as `{ Payload, SchemaVersion, ProtocolVersion }`.
+
+| Method | Key |
+| --- | --- |
+| `Set(scope, key, payload, expirationSeconds?)` | `<scope>:<key>`, default expiry 60 s |
+| `Get(scope, key)` | `<scope>:<key>` |
+| `Remove(scope, key)` | `<scope>:<key>` |
+| `SetGroup(groupName, key, payload, expirationSeconds?)` | `group:<groupName>:<key>` |
+| `SetZone(channelName, zoneName, key, payload, expirationSeconds?)` | `zone:<channelName>:<zoneName>:<key>` |
+| `SetMatch(matchServerId, key, payload, expirationSeconds?)` | `match:<matchServerId>:<key>` |
+
+All methods yield and can error like the underlying service calls. Wrap them in `pcall`.

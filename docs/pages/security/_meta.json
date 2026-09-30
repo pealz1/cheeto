@@ -1,0 +1,19 @@
+{
+  "overview": "Security model",
+  "maximum-security": "Profiles and presets",
+  "auth-rules": "Auth rules",
+  "policies": "Policies",
+  "constraints": "Constraints and Validate",
+  "rate-limits-and-cooldowns": "Rate limits and cooldowns",
+  "replay-and-idempotency": "Replay and idempotency",
+  "honeypots": "Honeypots",
+  "kill-switches": "Kill switches",
+  "payload-validation": "Payload validation",
+  "handles-and-capabilities": "Handles and capabilities",
+  "remote-hardening": "Remote names and decoys",
+  "client-shield": "Client shield",
+  "client-integrity": "Client integrity",
+  "character-integrity": "Character integrity",
+  "violations": "Violations and abuse scores",
+  "security-toolkit": "Standalone toolkit"
+}

@@ -1,0 +1,67 @@
+---
+title: "Rate limits and cooldowns"
+description: "Bounding how often a sender can call an endpoint, and how much a packet can cost."
+---
+
+import { Callout } from 'nextra/components'
+
+# Rate limits and cooldowns
+
+## Three tools
+
+| Tool | Limits | Scope | Checked |
+| --- | --- | --- | --- |
+| Per-remote rate limit | Remote calls per second | All traffic from one sender on one remote | Before reading any frame |
+| Per-endpoint rate limit | Events per second | One sender, one endpoint | Before auth and policy |
+| Cooldown | Minimum gap between accepted calls | One sender, one endpoint | Before policy |
+
+### Per-remote rate limit
+
+The [`RateLimitPerSecond`](/reference/options/limits#ratelimitpersecond) and [`RateLimitBurst`](/reference/options/limits#ratelimitburst) values from the security profile (off in `Development`, 120/s in `Production`, 60/s in `Competitive`) limit remote calls per sender. Because reliable traffic is batched into one call per frame, a normal client makes about 60 reliable calls a second, well under the Production limit. A flood of hand-crafted calls is cut off before any of it is decoded.
+
+### Per-endpoint rate limit
+
+Setting `RateLimitPerSecond` on an endpoint, or writing the option in the schema, adds a token bucket to that endpoint. The bucket starts full at `RateLimitBurst` tokens and refills at `RateLimitPerSecond`. Each event takes one token; with none left the event is dropped with `RateLimit` and the rest of the packet continues.
+
+```cheeto copy
+event Swing {
+    From: Client,
+    Type: Reliable,
+    Call: SingleAsync,
+    Policy: "combat",
+    RateLimitPerSecond: 8,
+    RateLimitBurst: 12
+}
+```
+
+### Cooldown
+
+[`CooldownSeconds`](/reference/fields#cooldownseconds) accepts at most one call per window from each sender. Unlike a rate limit, it allows no burst, which makes it right for one-shot actions: purchases, abilities, votes.
+
+```cheeto copy
+event ClaimDailyReward {
+    From: Client,
+    Type: Reliable,
+    Call: SingleAsync,
+    Policy: "rewards",
+    CooldownSeconds: 5
+}
+```
+
+<Callout type="warning">
+Set a cooldown looser than the client's own retry interval. If the client re-sends every 2 seconds, a 1-second cooldown is fine and a 3-second one silently drops real retries.
+</Callout>
+
+## Choosing limits
+
+Base limits on what a legitimate player can physically do, with headroom for lag bursts: a weapon that fires 10 times per second might get `RateLimitPerSecond: 12, RateLimitBurst: 20`. Watch `Stats().RateLimitHits` on live servers. If real players hit a limit, it is too tight.
+
+## Bounding work
+
+Rate limits bound how often; these bound how much each packet can cost:
+
+- [`MaxReliablePacketBytes`](/reference/options/limits#maxreliablepacketbytes) and [`MaxUnreliablePacketBytes`](/reference/options/limits#maxunreliablepacketbytes) cap each remote call.
+- [`MaxInFlightFragments`](/reference/options/limits#maxinflightfragments) and [`FragmentTimeoutSeconds`](/reference/options/limits#fragmenttimeoutseconds) cap memory used by half-sent fragmented packets.
+- [Payload checks](/security/payload-validation) cap depth, table size, string length and total work per payload.
+
+Drops from all of these land in [`OnViolation`](/security/violations) and in the sender's [abuse score](/reference/api/security#abusescores).

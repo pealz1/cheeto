@@ -1,0 +1,37 @@
+---
+title: "Remote names and decoys"
+description: "Randomized RemoteEvent names and decoy remotes, and exactly what they do and do not stop."
+---
+
+import { Callout } from 'nextra/components'
+
+# Remote names and decoys
+
+Many exploit scripts and tools work by finding RemoteEvents by name and firing them. Two options make that harder.
+
+## Name rotation
+
+With [`EnableRemoteNameRotation`](/reference/options/remote-hardening#enableremotenamerotation), the server creates its two remotes in a folder called `CHEETO_REMOTE_ROOT` (prefixed with your [`RemoteScope`](/reference/options/output#remotescope)) with random names such as `_CHEETO_R_9f3a17c2e8b44d01af`, and renames them every [`RemoteNameRotationSeconds`](/reference/options/remote-hardening#remotenamerotationseconds). The current names are published as attributes on the folder; the client module follows them and reconnects automatically.
+
+This breaks scripts that hard-code remote names, and tools that cache a path.
+
+## Decoys
+
+With [`EnableRemoteDecoys`](/reference/options/remote-hardening#enableremotedecoys), the server also creates [`RemoteDecoyCount`](/reference/options/remote-hardening#remotedecoycount) extra RemoteEvents next to the real ones. Nothing in your game fires them. When one is fired, the sender is reported with reason `RemoteDecoy` and a weight of 100, and kicked if [`ClientShieldKick`](/reference/options/client-shield#clientshieldkick) is on.
+
+This catches remote spies with "fire all" features, fuzzers, and scripts that fire every remote they find.
+
+## What they do not stop
+
+<Callout type="warning">
+Both are obstacles for generic tools, not for someone targeting your game:
+
+- The real remote names are published as attributes that any client can read, which is how the legitimate client module finds them.
+- Decoy names use a `D` where real ones use `R` or `U`.
+- Rotation renames the same instances. A tool holding a reference to the remote keeps working.
+- Anyone who reads the generated client module can use it to send packets directly.
+</Callout>
+
+Treat rotation and decoys as noise reduction: they filter out low-effort attacks so your logs show the targeted ones. Real protection comes from [policies](/security/policies), [validation](/security/payload-validation) and server authority.
+
+Both are enabled by [`SecurityPreset = Maximum`](/security/maximum-security).

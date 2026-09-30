@@ -1,0 +1,63 @@
+---
+title: "Replay and idempotency"
+description: "Rejecting duplicate and replayed packets, and what it takes for that to work."
+---
+
+import { Callout } from 'nextra/components'
+
+# Replay and idempotency
+
+A replay attack resends a packet the attacker captured earlier, for example a valid `ClaimReward` request, hoping the server processes it twice. Cheeto can detect duplicates, but **only for packets that carry a sequence number**.
+
+## Where sequence numbers come from
+
+A packet carries a sequence number only when it was sent with [`Predict`](/reference/api/event#predict); the prediction id is the sequence number. Events sent with `Fire`, and function calls, have none.
+
+| Protection | Needs | Drop reason |
+| --- | --- | --- |
+| Duplicate sequence number | `Predict` | `ReplayDuplicate` |
+| Sequence far behind the newest ([`ReplayWindowSize`](/reference/options/limits#replaywindowsize)) | `Predict` | `ReplayStale` |
+| [`Idempotency: true`](/reference/fields#idempotency), same sequence within 120 s | `Predict` | `ReplayDuplicate` |
+
+<Callout type="warning">
+On an endpoint whose clients use `Fire`, `ReplayWindowSize`, `ReplayStaleSeconds` and `Idempotency` do nothing at all. An exploiter replaying such a request is indistinguishable from a player clicking twice.
+</Callout>
+
+## Protecting unsequenced actions
+
+For events sent with `Fire` and for functions, use one of these instead:
+
+- **A cooldown.** [`CooldownSeconds`](/reference/fields#cooldownseconds) is enforced by the runtime before decoding and needs nothing from the client.
+- **A server-side key.** Put an id the server issued, such as an offer id, trade id or [handle](/security/handles-and-capabilities), in the request, and reject ids the server has already consumed. [`Security.CheckIdempotency`](/reference/api/security#checkidempotency) does the bookkeeping:
+
+```lua copy
+Network.AcceptOffer.On(function(player, offerId)
+    if not Network.Security.CheckIdempotency(player, `offer:{offerId}`, 600) then
+        return
+    end
+    Offers.Accept(player, offerId)
+end)
+```
+
+- **Server state.** Most duplicate-effect bugs are really state bugs: grant a reward only if it has not been granted, not only if the request is new.
+
+## Using Predict for replay protection
+
+For endpoints where prediction fits the gameplay (placing, crafting, using an item), sending with `Predict` gets you replay protection and idempotency for free:
+
+```cheeto copy
+event UseItem {
+    From: Client,
+    Type: Reliable,
+    Call: SingleAsync,
+    Policy: "inventory",
+    Idempotency: true,
+    Data: u16
+}
+```
+
+```lua copy
+Network.UseItem.Predict(itemId)
+```
+
+See [Limitations](/limitations#prediction-ids-wrap) for a known issue with very long sessions.

@@ -1,0 +1,39 @@
+---
+title: "import"
+description: "Split a schema across several files."
+---
+
+import { Callout } from 'nextra/components'
+
+# import
+
+`import` includes another schema file. Its declarations are placed in a [scope](/reference/declarations/scope) named after the file, or after the name given with `as`.
+
+```cheeto nocheck
+import "./Shared"
+import "./Economy/Items" as Items
+
+struct Loadout {
+    Primary: Shared.Weapon,
+    Items: Items.ItemId[..8]
+}
+```
+
+- The path is relative to the importing file. The `.cheeto` extension is optional.
+- `as` accepts a name or a string: `as Items` and `as "Items"` are the same.
+- Importing two files that end up with the same scope name is a compile error.
+- Only the root file's `option` lines apply. Options in imported files are ignored.
+- `cheeto --watch` also recompiles when any imported file changes.
+
+<Callout type="info">
+In the [Studio plugin](/getting-started/studio-plugin), the path names another saved schema instead of a file. Schemas are stored as StringValues under `ServerStorage.CHEETO_CONFIGURATION_FILES`, and dots separate folders: `import "Shared"` loads the schema saved as `Shared`, and the scope is named after the last segment.
+</Callout>
+
+## In Luau
+
+Imported declarations are used exactly like scoped ones:
+
+```lua copy
+Network.Items.Purchase.Fire(itemId)
+local weapon: Network.Shared_Weapon
+```

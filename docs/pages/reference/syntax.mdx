@@ -1,0 +1,124 @@
+---
+title: "Syntax"
+description: "How a .cheeto file is laid out, and the lexical rules shared by every declaration."
+---
+
+import { Callout } from 'nextra/components'
+
+# Syntax
+
+A schema is a plain-text file with the `.cheeto` extension. The compiler also accepts `.txt`. It has two parts, in this order:
+
+1. **Options**, one `option Name = Value` per line. Options must come first; an `option` after the first declaration is a parse error.
+2. **Declarations**: `import`, `scope`, `type`, `struct`, `enum`, `map`, `set`, `event`, `function` and `channel`, in any order.
+
+```cheeto copy filename="network.cheeto"
+-- Options come first
+option ClientOutput = "Network/Client.luau"
+option ServerOutput = "Network/Server.luau"
+
+-- Then declarations
+import "./Shared"
+
+struct Hit {
+    Target: Instance(Player),
+    Damage: u16(0..500)
+}
+
+event DealDamage {
+    From: Client,
+    Type: Reliable,
+    Call: SingleAsync,
+    Policy: "damage",
+    Data: Hit
+}
+```
+
+## Comments
+
+Comments use Luau syntax.
+
+```cheeto
+-- A line comment
+--[[ A block comment ]]
+--[==[ A block comment that may contain ]] ]==]
+```
+
+## Identifiers
+
+Names start with a letter or underscore and continue with letters, digits or underscores: `DealDamage`, `_internal`, `Hit2`. Names are case-sensitive. Referring to something inside a scope or import uses a dot: `Shared.Hit`.
+
+These words are reserved and cannot be used as names: `event`, `function`, `channel`, `type`, `struct`, `enum`, `map`, `set`, `scope`, `option`, `export`, `import`, `as`, `true`, `false`, and every primitive type name such as `u8` or `string`.
+
+## Values
+
+| Kind | Written as | Used by |
+| --- | --- | --- |
+| String | `"Network/Client.luau"` or `'...'` | Output paths, `Policy`, `Auth`, library paths |
+| Number | `20`, `0.25`, `-5` | Limits, rates, ranges |
+| Boolean | `true`, `false` | Toggles |
+| Identifier | `Reliable`, `Pascal`, `Maximum` | Enumerated values such as `Type`, `Casing`, `SecurityPreset` |
+
+## Declaration blocks
+
+`event`, `function`, `channel` and `struct` use a brace block of `Field: Value` pairs separated by commas. A trailing comma is allowed.
+
+```cheeto
+event Announce {
+    From: Server,
+    Type: Reliable,
+    Call: ManyAsync,
+    Data: string(0..128),
+}
+```
+
+`type`, `map` and `enum` (unit form) use `=`:
+
+```cheeto
+type Health = u8(0..100)
+map Scores = { [string]: u32 }
+enum Team = { Red, Blue }
+```
+
+## Ranges
+
+A range in parentheses bounds a number's value, or the length of a string, buffer or map, or the magnitude of a vector. In square brackets it bounds an array's length. See [Ranges](/reference/types/ranges).
+
+```cheeto
+u8(0..100)       -- value between 0 and 100
+string(3..20)    -- 3 to 20 bytes long
+Item[..50]       -- at most 50 elements
+```
+
+## Type modifiers
+
+Modifiers are written after the type. A class or encoding comes first, then a range, then any sequence of `[]` and `?`, which apply from left to right.
+
+```cheeto
+Instance(Player)      -- class
+vector<i16>(0..512)   -- encoding, then range
+u8[1..10]?            -- an optional array of u8
+u8?[1..10]            -- an array of optional u8
+```
+
+## Generics
+
+`struct`, `map` and tagged `enum` declarations can take type parameters in angle brackets:
+
+```cheeto
+struct Page<T> {
+    Items: T[..50],
+    Cursor: u32?
+}
+
+event PlayerList {
+    From: Server,
+    Type: Reliable,
+    Call: ManyAsync,
+    Data: Page<Instance(Player)>
+}
+```
+
+<Callout type="info">
+Generic parameters are resolved at compile time. The generated Luau contains one concrete serializer per use.
+</Callout>

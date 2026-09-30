@@ -1,0 +1,12 @@
+---
+title: "boolean"
+description: "true or false, packed into single bits."
+---
+
+# boolean
+
+```cheeto copy
+type Success = boolean
+```
+
+With [`UseBitPacking`](/reference/options/encoding#usebitpacking) on (the default), booleans take one bit each and share bytes with other booleans and optional flags in the same event. With it off, each takes a byte.

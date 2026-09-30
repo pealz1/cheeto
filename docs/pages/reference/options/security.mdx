@@ -1,0 +1,108 @@
+---
+title: "Security options"
+description: "SecurityProfile, SecurityPreset, RequirePolicies, StrictProduction and EnableHoneypots."
+---
+
+import { Callout } from 'nextra/components'
+import { Spec } from '../../../components/Reference'
+
+# Security options
+
+| Option | Type | Default |
+| --- | --- | --- |
+| [`SecurityProfile`](#securityprofile) | identifier | `Development` (`Competitive` under `Maximum`) |
+| [`SecurityPreset`](#securitypreset) | identifier | none |
+| [`RequirePolicies`](#requirepolicies) | boolean | `false` (`true` under `Maximum`) |
+| [`StrictProduction`](#strictproduction) | boolean | `false` |
+| [`EnableHoneypots`](#enablehoneypots) | boolean | `true` |
+
+The shield, integrity and remote-hardening options have their own pages: [Client shield](/reference/options/client-shield), [Client integrity](/reference/options/client-integrity), [Character integrity](/reference/options/character-integrity), [Remote hardening](/reference/options/remote-hardening).
+
+## `SecurityProfile`
+
+<Spec type="identifier" default={<><code>Development</code>, or <code>Competitive</code> when <code>SecurityPreset = Maximum</code></>} values={<><code>Development</code>, <code>Production</code>, <code>Competitive</code></>} />
+
+Chooses the default [transport limits](/reference/options/limits). Any limit you set explicitly overrides the profile.
+
+| Limit | Development | Production | Competitive |
+| --- | --- | --- | --- |
+| `MaxPacketBytes` | 1,048,576 | 262,144 | 65,536 |
+| `MaxUnreliablePacketBytes` | 1,000 | 1,000 | 900 |
+| `RateLimitPerSecond` / `RateLimitBurst` | off | 120 / 240 | 60 / 120 |
+| `MaxQueuedBytes` | 262,144 | 131,072 | 65,536 |
+| `MaxBurstBytes` | 65,536 | 32,768 | 16,384 |
+| `MaxPendingInvokes` | 256 | 64 | 32 |
+
+The profile also matters elsewhere:
+
+- With any profile other than `Development`, captures drop raw buffers when [`NoRawCaptureInProduction`](/reference/options/diagnostics#norawcaptureinproduction) is on.
+- [`--strict`](/reference/cli#--strict) and [`--hardening-checklist`](/reference/cli#--hardening-checklist) require `Production` or `Competitive`.
+- [`--doctor`](/reference/cli#--doctor) warns when rate limiting is off outside `Development`.
+
+An unrecognised value is accepted and uses the `Development` limits.
+
+```cheeto copy
+option SecurityProfile = Production
+```
+
+## `SecurityPreset`
+
+<Spec type="identifier" default="none" values={<><code>Maximum</code></>} />
+
+`Maximum` switches every protection on in one line by changing these defaults. Anything you set explicitly still wins.
+
+| Option | Default | Under `Maximum` |
+| --- | --- | --- |
+| `SecurityProfile` | `Development` | `Competitive` |
+| `RequirePolicies` | `false` | `true` |
+| `EnableClientShield` | `false` | `true` |
+| `ClientShieldStrict` | `false` | `true` |
+| `ClientShieldKick` | `false` | `true` |
+| `EnableClientIntegrity` | `false` | `true` |
+| `EnableCharacterIntegrity` | `false` | `true` |
+| `CharacterIntegrityMode` | `Observe` | `Correct` |
+| `EnableRemoteNameRotation` | `false` | `true` |
+| `EnableRemoteDecoys` | `false` | `true` |
+| `RemoteDecoyCount` | `0` | `8` |
+
+`CharacterIntegrityKick` stays `false` under `Maximum`. Any other value of `SecurityPreset` behaves as no preset.
+
+```cheeto copy
+option SecurityPreset = Maximum
+```
+
+<Callout type="warning">
+`ClientShieldStrict` and `ClientShieldKick` under `Maximum` mean a single client-shield detection kicks the player. Read [Client shield](/security/client-shield) and roll out with kicks off first.
+</Callout>
+
+## `RequirePolicies`
+
+<Spec type="boolean" default={<><code>false</code> (<code>true</code> under <code>Maximum</code>)</>} />
+
+Makes every endpoint the server receives from clients require a [`Policy`](/reference/fields#policy). A client-sent event or function call on an endpoint without one is dropped with `PolicyRejected`.
+
+<Callout type="warning">
+At runtime only a `Policy` field satisfies this check. An endpoint that declares only `Auth` or only `PolicyGroup` is dropped on every call while `RequirePolicies` is on, even though `--doctor` and `--strict` accept those fields. Give every client-sent endpoint a `Policy`. See [Limitations](/limitations#requirepolicies).
+</Callout>
+
+```cheeto copy
+option RequirePolicies = true
+```
+
+## `StrictProduction`
+
+<Spec type="boolean" default={<code>false</code>} />
+
+Runs the [`--strict`](/reference/cli#--strict) checks every time the schema is compiled and stops compilation if any fail. Use it in the schema you ship so a production build cannot be produced with unsafe settings.
+
+```cheeto copy
+option StrictProduction = true
+option SecurityProfile = Production
+option SyncValidation = false
+```
+
+## `EnableHoneypots`
+
+<Spec type="boolean" default={<code>true</code>} />
+
+Master switch for [honeypot endpoints](/security/honeypots). When `false`, traffic on endpoints marked `Honeypot: true` is no longer dropped and goes through the normal checks like any other endpoint. Can be changed at runtime with `Configure({ EnableHoneypots = false })`.

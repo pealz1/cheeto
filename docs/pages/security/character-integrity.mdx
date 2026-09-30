@@ -1,0 +1,74 @@
+---
+title: "Character integrity"
+description: "Server-side movement checks that score impossible movement and can pull characters back."
+---
+
+import { Callout } from 'nextra/components'
+
+# Character integrity
+
+Character integrity watches how each character moves, entirely on the server, and scores movement the configured limits cannot explain: teleports, speed hacks, fly hacks, walking through walls. It never trusts a position the client reports; it samples the replicated `HumanoidRootPart`.
+
+Turn it on with [`EnableCharacterIntegrity`](/reference/options/character-integrity#enablecharacterintegrity), or with [`SecurityPreset = Maximum`](/security/maximum-security) (which uses `Correct` mode).
+
+## Sampling
+
+Every [`CharacterIntegritySampleIntervalSeconds`](/reference/options/character-integrity#characterintegritysampleintervalseconds) (0.25 s), for each player, the server compares the root part's position with the previous sample. It allows for:
+
+- the configured speed, or the humanoid's `WalkSpeed` times a multiplier, whichever is higher;
+- the assembly's current velocity (for knockback and physics);
+- a flat slack distance;
+- the player's ping.
+
+Sitting players are skipped. Gaps longer than [`CharacterIntegrityMaxStepSeconds`](/reference/options/character-integrity#characterintegritymaxstepseconds) (server hitches) resynchronize instead of scoring. New characters and joins get a grace period.
+
+| Reason | Meaning |
+| --- | --- |
+| `HorizontalDisplacement` | Moved further horizontally than allowed |
+| `VerticalDisplacement` | Moved further vertically than allowed |
+| `WalkSpeedMutation` | `WalkSpeed` is above the configured maximum times the multiplier |
+| `CollidableTraversal` | A raycast along the movement hit a collidable part |
+| `NonFiniteMovement` | Position or velocity contained NaN or infinity |
+
+Several reasons in one sample are joined with `+`, for example `HorizontalDisplacement+CollidableTraversal`.
+
+## Modes
+
+[`CharacterIntegrityMode`](/reference/options/character-integrity#characterintegritymode) decides what happens:
+
+| Mode | Effect |
+| --- | --- |
+| `Observe` | Record evidence only; nothing reported |
+| `Report` | Also report to `OnViolation` |
+| `Correct` | Also move the character back to its last safe position when the score reaches the correction score |
+| `Kick` | Also kick, but only with `CharacterIntegrityKick = true`, a high enough score and enough breaches in a row |
+
+The score decays over time, so brief glitches fade.
+
+## Working with your game's movement
+
+Anything your game does to move characters fast must tell the checker, or it will be flagged:
+
+```lua copy
+-- Server-initiated teleports: use this instead of PivotTo
+Network.Security.TeleportCharacter(player, destination)
+
+-- Launch pads, dashes, knockback, vehicles, cutscenes
+Network.Security.GrantMovementGrace(player, 3, "launch-pad")
+
+-- After moving a character yourself
+Network.Security.ReconcileCharacter(player)
+```
+
+Raise [`CharacterIntegrityMaxHorizontalSpeed`](/reference/options/character-integrity#characterintegritymaxhorizontalspeed) and [`CharacterIntegrityMaxVerticalSpeed`](/reference/options/character-integrity#characterintegritymaxverticalspeed) for games with fast movement, and use [`Security.EvaluateMovement`](/reference/api/security#evaluatemovement) to test your limits against real numbers.
+
+## Rolling out
+
+1. Run in `Observe` and read [`Security.CharacterIntegrity()`](/reference/api/security#characterintegrity) snapshots from real sessions.
+2. Fix sources of false positives with grace calls and limits.
+3. Move to `Report`, then `Correct`.
+4. Only then consider `Kick` with `CharacterIntegrityKick = true`.
+
+<Callout type="warning">
+Network ownership means the client controls its character's physics. Character integrity bounds how far that control can go; it does not make movement authoritative. Games that need authoritative movement must simulate it on the server.
+</Callout>

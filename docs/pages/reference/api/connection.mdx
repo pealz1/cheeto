@@ -1,0 +1,107 @@
+---
+title: "Connection"
+description: "Group endpoints and channels behind route names, inject them into controllers, and tear subscriptions down together."
+---
+
+import { Callout } from 'nextra/components'
+import { Sig } from '../../../components/Reference'
+
+# Connection
+
+`Network.Connection.new` creates an object that maps friendly route names to generated endpoints and channels, tracks every subscription made through it, and releases them all on `Disconnect`. Every message still goes through the generated endpoint, so encoding, validation and policies are unchanged. See [Controller connections](/guides/controller-connections) for a walkthrough.
+
+## new
+
+<Sig side="both">{"Connection.new(config: { Routes: {[string]: Endpoint}?, State: {[string]: Channel}?, Target: Player? }?): Connection"}</Sig>
+
+`Routes` maps names to event or function endpoints (or plain functions). `State` maps names to channel endpoints (`States` is accepted as an alias). `Target` is a player that server-side sends and state writes are addressed to automatically.
+
+```lua copy
+local connection = Network.Connection.new({
+    Routes = { Action = Network.UIAction, Message = Network.UIMessage },
+    State = { UI = Network.UI },
+})
+```
+
+## Methods
+
+Every method errors with `Connection is disconnected.` after [`Disconnect`](#disconnect), and with `Connection route "X" is not bound.` for an unknown name.
+
+### Bind
+
+<Sig side="both">{"connection:Bind(name: string, endpoint: Endpoint | function): Connection"}</Sig>
+
+Adds or replaces a route. Returns the connection, so calls chain.
+
+### BindState
+
+<Sig side="both">{"connection:BindState(name: string, channel: Channel): Connection"}</Sig>
+
+Adds or replaces a state channel. Returns the connection.
+
+### SetTarget
+
+<Sig side="both">{"connection:SetTarget(target: Player?): Connection"}</Sig>
+
+Changes the target player. Returns the connection.
+
+### Send
+
+<Sig side="both">{"connection:Send(name: string, ...data): ...any"}</Sig>
+
+Calls the route's `Fire` (or `Invoke`, or the function itself). With a target, the target is passed as the first argument. Returns whatever the endpoint returns, so for a function route it yields for the reply. Errors if the route cannot send on this side.
+
+### On
+
+<Sig side="both">{"connection:On(name: string, listener: (...) -> ()): () -> ()"}</Sig>
+
+Connects to the route's `On` and tracks the subscription. Returns a disconnect function. A target does **not** filter incoming events; server listeners still receive every sender.
+
+### Once
+
+<Sig side="both">{"connection:Once(name: string, listener: ((...) -> ())?): () -> ()"}</Sig>
+
+Like `On`, but disconnects after the first event.
+
+### GetState
+
+<Sig side="both">{"connection:GetState(name: string): any"}</Sig>
+
+Reads the channel's current value: the client's latest value, or on the server the value stored for the target (or the global value without one).
+
+### OnState
+
+<Sig side="client">{"connection:OnState(name: string, listener: (value, version, patch) -> (), fireImmediately: boolean?): () -> ()"}</Sig>
+
+Subscribes to a channel's changes. With `fireImmediately`, the listener is also called right away with the current value.
+
+### SetState, PatchState, ClearState, FlushState
+
+<Sig side="server">{"connection:SetState(name: string, ...): ()"}</Sig>
+<Sig side="server">{"connection:PatchState(name: string, ...): ()"}</Sig>
+<Sig side="server">{"connection:ClearState(name: string, ...): ()"}</Sig>
+<Sig side="server">{"connection:FlushState(name: string, ...): ()"}</Sig>
+
+Write to a bound channel through its `Set`, `Patch`, `Clear` or `Flush`. With a target, the target is prepended, and `FlushState` uses `FlushPlayer`. Without one, pass the player yourself, and `FlushState` flushes everyone. Clients cannot write channels, so these error on the client.
+
+```lua copy
+local connection = Network.Connection.new({ Target = player, State = { UI = Network.UI } })
+connection:SetState("UI", { Visible = true, Title = "Welcome" })
+connection:PatchState("UI", { Title = "Ready" })
+```
+
+### IsConnected
+
+<Sig side="both">{"connection:IsConnected(): boolean"}</Sig>
+
+`false` after `Disconnect`.
+
+### Disconnect
+
+<Sig side="both">{"connection:Disconnect(): ()"}</Sig>
+
+Releases every subscription made through `On`, `Once` and `OnState`, and makes further calls error. Calling it twice is safe. `Destroy` is an alias.
+
+<Callout type="info">
+Subscriptions you create directly on endpoints, without the connection, are not tracked.
+</Callout>

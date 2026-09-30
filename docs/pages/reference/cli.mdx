@@ -1,0 +1,168 @@
+---
+title: "Command line"
+description: "Every flag of the cheeto compiler, what it checks, and what it prints."
+---
+
+import { Callout } from 'nextra/components'
+import { Sig } from '../../components/Reference'
+
+# Command line
+
+```sh
+cheeto <schema> [flags]
+```
+
+`<schema>` is the path to a schema file. The extension can be left out: `cheeto network` finds `network`, `network.cheeto` or `network.txt`, in that order. Output paths inside the schema are relative to the schema file.
+
+Flags can go in any order. Only one **mode** runs per invocation; if you pass several, the first in the [summary](#summary) order wins. `--ci` runs a fixed set of modes together.
+
+## Summary
+
+| Flag | Kind | Writes files | Fails the process when |
+| --- | --- | --- | --- |
+| *(none)* | Mode: compile | Yes | The schema is invalid |
+| [`--doctor`](#--doctor) | Mode | No | Never (reports only) |
+| [`--strict`](#--strict) | Mode | No | Any production check fails |
+| [`--benchmark`](#--benchmark) | Mode | No | Generated size or an estimate exceeds its threshold |
+| [`--load-sim`](#--load-sim) | Mode | No | Never |
+| [`--capture-replay`](#--capture-replay) | Mode | No | Never |
+| [`--golden-snapshots`](#--golden-snapshots) | Mode | No | Never |
+| [`--compatibility`](#--compatibility) | Mode | No | Never |
+| [`--schema-docs`](#--schema-docs) | Mode | No | Never |
+| [`--write-lock`](#--write-lock) | Mode | `cheeto.lock` | The schema is invalid |
+| [`--check-lock`](#--check-lock) | Mode | No | `cheeto.lock` is missing or differs |
+| [`--hardening-checklist`](#--hardening-checklist) | Mode | No | Any release check fails |
+| [`--ci`](#--ci) | Mode | No | Any included mode fails |
+| [`-w`, `--watch`](#--watch) | Mode | Yes | |
+| [`-y`, `--yes`](#--yes) | Modifier | | |
+| [`-q`, `--quiet`](#--quiet) | Modifier | | |
+| [`-c`, `--compact`](#--compact) | Modifier | | |
+| [`-h`, `--help`](#--help) | Info | | |
+| [`-v`, `--version`](#--version) | Info | | |
+
+Every mode parses the schema first, so a syntax error fails all of them.
+
+## Compiling
+
+<Sig side="cli">{"cheeto network.cheeto"}</Sig>
+
+Writes the client and server modules, plus the types module, TypeScript definitions and shared runtime when those options are set. Prompts before creating a missing output directory unless `--yes` is given. If the schema sets [`StrictProduction`](/reference/options/security#strictproduction), the `--strict` checks run first.
+
+## `--doctor`
+
+<Sig side="cli">{"cheeto network --doctor"}</Sig>
+
+Checks the schema for risky settings without writing anything, and prints each finding as a warning with its file, line and column. It always exits successfully. It reports:
+
+- reliable packet cap above 1 MiB;
+- rate limiting off outside the `Development` profile;
+- missing `ClientOutput` or `ServerOutput`;
+- client-origin events and functions with none of `Auth`, `Policy` or `PolicyGroup`;
+- the removed options `ProtocolMode` and `AcceptProtocolVersion1`, and any `ProtocolVersion` below 2.
+
+## `--strict`
+
+<Sig side="cli">{"cheeto network --strict"}</Sig>
+
+Runs the doctor checks as errors, plus these, and exits with an error if any fail:
+
+- `SecurityProfile` is `Production` or `Competitive`;
+- reliable and unreliable size caps are set and above 0;
+- `RateLimitPerSecond` is set and above 0;
+- `InvokeTimeoutSeconds` is set and above 0;
+- `SyncValidation` and `WriteValidations` are off;
+- output paths are relative and contain no `..`.
+
+<Callout type="warning">
+`SyncValidation` defaults to `true`, so strict mode fails until you write `option SyncValidation = false`.
+</Callout>
+
+## `--hardening-checklist`
+
+<Sig side="cli">{"cheeto network --hardening-checklist"}</Sig>
+
+The release gate: everything `--strict` checks, plus `RequirePolicies = true`, and `NoRawCaptureInProduction` not set to `false`. Exits with an error if any fail.
+
+## `--benchmark`
+
+<Sig side="cli">{"cheeto network --benchmark"}</Sig>
+
+Generates the modules in memory and prints their sizes and generation time, then fails if the server module is over about 700 KB, the client module over about 520 KB, the types module over 225 KB, or generation took over 2 seconds. The thresholds grow for schemas with more than 80 endpoints.
+
+<Callout type="warning">
+It also prints `sim200` figures for packet bytes, encode and decode time. Those are **estimates computed from the endpoint count**, not measurements of the generated code. For real encode and decode timings, run the in-Studio harness in `benchmark/`.
+</Callout>
+
+## `--load-sim`
+
+<Sig side="cli">{"cheeto network --load-sim"}</Sig>
+
+Prints a CSV of estimated traffic for 10, 50, 100 and 200 clients: encode and decode time, bytes, drops, validation failures, rate-limit hits, pending invokes, queue depth and state flush time. Like the benchmark's `sim200` line, these are formula estimates from the endpoint count and your limits, useful for comparing schema changes, not as measurements.
+
+## `--capture-replay`
+
+<Sig side="cli">{"cheeto network --capture-replay"}</Sig>
+
+Prints the schema's event, function and channel counts and the capture and replay APIs the generated modules expose. It does not run a capture.
+
+## `--golden-snapshots`
+
+<Sig side="cli">{"cheeto network --golden-snapshots"}</Sig>
+
+Prints the schema version, the protocol, a `wireHash` built from the generated module sizes and declaration counts, and the sorted names of every event, function and channel. Commit the output and diff it in review to notice surface changes.
+
+## `--compatibility`
+
+<Sig side="cli">{"cheeto network --compatibility"}</Sig>
+
+Prints a table of which peer versions the handshake accepts: a peer on an old protocol, a peer below `MinimumSchemaVersion`, a peer with a different hash, and a matching peer.
+
+## `--schema-docs`
+
+<Sig side="cli">{"cheeto network --schema-docs"}</Sig>
+
+Prints a Markdown summary: schema version, protocol, capture redactions, and the names of every event, function and channel.
+
+## `--write-lock`
+
+<Sig side="cli">{"cheeto network --write-lock"}</Sig>
+
+Writes [`cheeto.lock`](/reference/lockfile) next to the schema. Run it deliberately when you mean to change the schema's surface, and commit the result.
+
+## `--check-lock`
+
+<Sig side="cli">{"cheeto network --check-lock"}</Sig>
+
+Regenerates the lockfile in memory and fails if `cheeto.lock` is missing or differs. Use it in CI so a schema change cannot land without an updated lockfile.
+
+## `--ci`
+
+<Sig side="cli">{"cheeto network --ci --yes"}</Sig>
+
+Runs `--doctor`, `--benchmark`, `--load-sim`, `--capture-replay`, `--golden-snapshots`, `--compatibility`, `--schema-docs` and `--check-lock` in sequence, stopping at the first failure. It does not include `--strict` or `--hardening-checklist`; run those as separate steps.
+
+## `--watch`
+
+<Sig side="cli">{"cheeto network --watch"}</Sig>
+
+Compiles, then recompiles whenever the schema or any file it imports (directly or indirectly) changes. Runs quietly and answers prompts with yes.
+
+## `--yes`
+
+Answers every prompt with yes, for scripts and CI. Currently the only prompt is creating a missing output directory.
+
+## `--quiet`
+
+Silences normal output. Errors still print.
+
+## `--compact`
+
+Prints a short one-line form of each error first, followed by the full message.
+
+## `--help`
+
+Prints usage and every flag.
+
+## `--version`
+
+Prints the compiler version and exits.

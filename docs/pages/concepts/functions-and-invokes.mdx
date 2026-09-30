@@ -1,0 +1,59 @@
+---
+title: "Functions and invokes"
+description: "How request and reply work, and how to keep invokes from hanging."
+---
+
+import { Callout } from 'nextra/components'
+
+# Functions and invokes
+
+A [`function`](/reference/declarations/function) is a request a client makes and the server answers. The server never invokes clients, so a client can never hang a server thread.
+
+## The round trip
+
+1. The client calls `Invoke`. The request is written into the client's reliable batch with a one-byte invocation id, and the calling thread yields (or a Future or Promise is returned).
+2. At the next replication step the batch is sent.
+3. The server receives the request, runs it through the [receive pipeline](/concepts/receive-pipeline), and calls the function's `On` handler in a new thread.
+4. The handler's return values, or an error flag if it errored, are written into that player's batch and sent at the server's next step.
+5. The client matches the reply to the invocation id and resumes the caller.
+
+A round trip therefore takes at least one frame on each side plus the network latency.
+
+## Failures
+
+| What happened | The client sees |
+| --- | --- |
+| The handler errored | `Invoke` raises `There was an exception while processing "Name".` |
+| No reply within [`InvokeTimeoutSeconds`](/reference/fields#invoketimeoutseconds) | `Invoke` raises `Invoke timed out after N seconds.` |
+| The server dropped the request (policy, auth, cooldown, rate limit, kill switch, honeypot) | **Nothing.** No reply is sent |
+| Too many invokes pending | `Invoke` raises immediately |
+| [`CancelInvocations`](/reference/api/module#cancelinvocations) was called | `Invoke` raises with the given reason |
+
+<Callout type="error">
+A dropped request is never answered. Without a timeout, the calling thread waits forever. Set `InvokeTimeoutSeconds` on every function that has access control, and set the option explicitly: the security profile's default timeout is not applied to generated invokes ([Limitations](/limitations#invoke-timeouts)).
+</Callout>
+
+```cheeto copy
+option InvokeTimeoutSeconds = 10
+
+function GetShopStock {
+    Yield: Coroutine,
+    Policy: "shop",
+    CooldownSeconds: 1,
+    Return: u16[..64]
+}
+```
+
+## Choosing a yield style
+
+| `Yield` | Use when |
+| --- | --- |
+| `Coroutine` | You call from a thread that may yield, and want the value directly |
+| `Future` | You use red-blox's Future library |
+| `Promise` | You use evaera's Promise library and want chaining and cancellation |
+
+## Limits
+
+- At most [`MaxPendingInvokes`](/reference/fields#maxpendinginvokes) outstanding per function and per module.
+- At most 255 outstanding per module, because invocation ids are one byte.
+- Replies are discarded if the player leaves before the handler returns.

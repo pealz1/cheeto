@@ -1,0 +1,60 @@
+---
+title: "Prediction"
+description: "Track client predictions and resolve them with server acknowledgements."
+---
+
+import { Callout } from 'nextra/components'
+import { Sig } from '../../../components/Reference'
+
+# Prediction
+
+`Network.Prediction` tracks predictions started with an event's [`Predict`](/reference/api/event#predict) method. See [Prediction](/concepts/prediction) for the full flow.
+
+All members error with `Prediction helpers are disabled` when [`EnablePrediction`](/reference/options/runtime#enableprediction) is off.
+
+## Begin
+
+<Sig side="both">{"Begin(name: string, payload: any): number"}</Sig>
+
+Starts a prediction without sending anything and returns its id. `Predict` calls this for you; call it directly only to track predictions for actions that are not a single event. Ids count up to 65,535 and then wrap. Runs the [`Predict`](/reference/api/hooks#predict) hook.
+
+## Ack
+
+<Sig side="both">{"Ack(id: number): Prediction?"}</Sig>
+
+Marks a prediction confirmed, removes it from [`Pending`](#pending), runs the [`Ack`](/reference/api/hooks#ack) hook and returns it. Returns `nil` for an unknown id. The client calls this automatically when the server accepts a predicted event.
+
+## Rollback
+
+<Sig side="both">{"Rollback(id: number, reason: string?): Prediction?"}</Sig>
+
+Marks a prediction rejected, removes it, runs the [`Rollback`](/reference/api/hooks#rollback) hook and returns it. The client calls this automatically when the server fails to decode a predicted event.
+
+## Pending
+
+<Sig side="both">{"Pending: {[number]: { Name: string, Payload: any, Started: number }}"}</Sig>
+
+The live table of unresolved predictions by id. `Payload` is the packed arguments.
+
+<Callout type="warning">
+The server only replies to predicted events it decodes. Events dropped earlier, by a policy, cooldown or rate limit, stay pending forever. Roll back predictions older than a timeout yourself:
+
+```lua copy
+RunService.Heartbeat:Connect(function()
+    local now = os.clock()
+    for id, prediction in Network.Prediction.Pending do
+        if now - prediction.Started > 2 then
+            Network.Prediction.Rollback(id, "timeout")
+        end
+    end
+end)
+```
+</Callout>
+
+Handle results with hooks:
+
+```lua copy
+Network.Use("Rollback", function(context)
+    Blocks.UndoLocal(context.Id)
+end)
+```

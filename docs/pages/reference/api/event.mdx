@@ -1,0 +1,131 @@
+---
+title: "Event endpoint"
+description: "Methods generated for every event: Fire, FireAll, FireList, FireExcept, FireGroup, Predict, On and Iter."
+---
+
+import { Callout } from 'nextra/components'
+import { Sig } from '../../../components/Reference'
+
+# Event endpoint
+
+Every [`event`](/reference/declarations/event) becomes a table on the module, `Network.<EventName>`. Which methods it has depends on the side and on `From`. Method names follow [`Casing`](/reference/options/output#casing); this page uses `Pascal`.
+
+In the signatures, `...data` stands for the event's `Data`: one value, several values for a type pack, or nothing.
+
+| Method | Exists on | When |
+| --- | --- | --- |
+| [`Fire`](#fire) | sending side | always |
+| [`FireAll`](#fireall), [`FireList`](#firelist), [`FireExcept`](#fireexcept), [`FireGroup`](#firegroup) | server | `From: Server` |
+| [`Predict`](#predict) | client | `From: Client`, unless prediction is disabled |
+| [`On`](#on) | receiving side | `Call` is not `Polling` |
+| [`Iter`](#iter) | receiving side | `Call: Polling` or `Poll: true` |
+| [`Next`](#next) | receiving side | deprecated alias of `Iter` |
+
+## Fire
+
+<Sig side="server">{"Fire(player: Player, ...data): ()"}</Sig>
+<Sig side="client">{"Fire(...data): ()"}</Sig>
+
+Sends the event to one player (server) or to the server (client).
+
+- **Reliable** events are appended to that peer's batch and sent at the next replication step, in order with every other reliable event to the same peer.
+- **Unreliable** events are sent immediately as one `UnreliableRemoteEvent` call. One that encodes larger than [`MaxUnreliablePacketBytes`](/reference/options/limits#maxunreliablepacketbytes) is dropped on the sender.
+
+A send is silently dropped when the endpoint is [killed](/reference/api/security#kill), a [`BeforeSend`](/reference/api/hooks#beforesend) hook returns `false`, or [backpressure](/reference/fields#priority) sheds it. A value that cannot be serialized, such as a string where a number is declared, raises an error at the call site.
+
+```lua copy
+Network.Announce.Fire(player, "Welcome back")
+```
+
+## FireAll
+
+<Sig side="server">{"FireAll(...data): ()"}</Sig>
+
+Sends to every player in the server. The value is encoded once and copied into each player's batch; an unreliable event uses a single `FireAllClients`.
+
+## FireList
+
+<Sig side="server">{"FireList(players: {Player}, ...data): ()"}</Sig>
+
+Sends to each player in the list.
+
+## FireExcept
+
+<Sig side="server">{"FireExcept(except: Player, ...data): ()"}</Sig>
+
+Sends to every player except one, typically the player whose action caused the event.
+
+```lua copy
+Network.PlayerEmoted.FireExcept(player, player, "wave")
+```
+
+## FireGroup
+
+<Sig side="server">{"FireGroup(groupName: string, ...data): ()"}</Sig>
+
+Sends to every member of a group set with [`SetGroup`](/reference/api/module#setgroup) or [`AddToGroup`](/reference/api/module#addtogroup). An unknown group sends to nobody.
+
+## Predict
+
+<Sig side="client">{"Predict(...data): number"}</Sig>
+
+Sends the event like `Fire`, but also starts a [prediction](/concepts/prediction) and returns its id. The packet carries the id as a sequence number, which enables [replay protection](/reference/options/limits#replaywindowsize) and [`Idempotency`](/reference/fields#idempotency) for it.
+
+When the server decodes the event successfully it replies with an acknowledgement, and the client calls [`Prediction.Ack`](/reference/api/prediction#ack) for you. If decoding fails it replies with a rejection and the client calls [`Prediction.Rollback`](/reference/api/prediction#rollback) with the reason.
+
+<Callout type="warning">
+An event dropped before decoding (by a policy, auth rule, cooldown, rate limit or kill switch) gets **no** reply, so its prediction stays in [`Prediction.Pending`](/reference/api/prediction#pending) until you roll it back. Expire old pending predictions yourself.
+</Callout>
+
+Errors when prediction is disabled with [`EnablePrediction`](/reference/options/runtime#enableprediction).
+
+```lua copy
+local id = Network.PlaceBlock.Predict(position)
+Blocks.PlaceLocally(position, id)
+```
+
+## On
+
+<Sig side="server">{"On(listener: (player: Player, ...data) -> ()): () -> ()"}</Sig>
+<Sig side="client">{"On(listener: (...data) -> ()): () -> ()"}</Sig>
+
+Connects a listener and returns a function that disconnects it.
+
+| `Call` | Behaviour |
+| --- | --- |
+| `SingleSync`, `SingleAsync` | One listener. Calling `On` again replaces the previous one |
+| `ManySync`, `ManyAsync` | Any number of listeners |
+| `*Sync` | Listener runs inline and must not yield |
+| `*Async` | Listener runs in a new thread |
+
+Reliable events that arrived before any listener was connected are queued (up to [`MaxQueuedEvents`](/reference/fields#maxqueuedevents)) and delivered to the first listener as soon as it connects.
+
+Each connect and disconnect runs the [`Listener`](/reference/api/hooks#listener) hook, and [`Diagnostics.Listeners`](/reference/api/diagnostics#listeners) counts them.
+
+```lua copy
+local disconnect = Network.ChatMessage.On(function(player, text)
+    Chat.Post(player, text)
+end)
+```
+
+## Iter
+
+<Sig side="both">{"Iter(): () -> (number, ...)"}</Sig>
+
+For polling events. Returns an iterator that removes and yields every queued event, in arrival order, as `(index, [player,] ...data)`. The server side includes the sending player. Events that arrive while you iterate are included.
+
+```lua copy
+RunService.Heartbeat:Connect(function()
+    for index, player, input in Network.Input.Iter() do
+        Simulation.Apply(player, input)
+    end
+end)
+```
+
+Received polling events wait in a queue bounded by [`MaxQueuedEvents`](/reference/fields#maxqueuedevents). If nothing reads the queue, new events are dropped with `QueueFull` once it is full.
+
+## Next
+
+<Sig side="both" deprecated>{"Next(): () -> (number, ...)"}</Sig>
+
+Identical to [`Iter`](#iter). Kept for compatibility; use `Iter`.

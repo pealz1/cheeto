@@ -1,0 +1,59 @@
+---
+title: "Large schemas"
+description: "Splitting a big network surface across files and modules, and staying under Studio's script size limit."
+---
+
+import { Callout } from 'nextra/components'
+
+# Large schemas
+
+## Splitting the source
+
+Use [`import`](/reference/declarations/import) to split one schema across files. Each file becomes a scope, and everything still compiles into one pair of modules.
+
+```cheeto nocheck
+option ClientOutput = "Network/Client.luau"
+option ServerOutput = "Network/Server.luau"
+
+import "./Combat"
+import "./Economy"
+import "./Social"
+```
+
+```lua copy
+Network.Combat.Hit.Fire(target)
+Network.Economy.Purchase.Invoke(itemId)
+```
+
+## Studio's 200,000-character limit
+
+Studio refuses to save a script longer than 200,000 characters. A generated module is the runtime (about 135 KB) plus roughly 1 to 3 KB per endpoint, so a module with many endpoints can hit the limit. Two options help.
+
+### Share the runtime
+
+[`RuntimeOutput`](/reference/options/output#runtimeoutput) writes the runtime once as its own module, and the generated modules require it instead of containing it:
+
+```cheeto copy
+option ClientOutput = "Network/Client.luau"
+option ServerOutput = "Network/Server.luau"
+option RuntimeOutput = "Network/Runtime.luau"
+option RuntimeRequire = "script.Parent.Runtime"
+
+event Ping {
+    From: Server,
+    Type: Reliable,
+    Call: ManyAsync
+}
+```
+
+This writes `Runtime.luau` and `RuntimeClient.luau`. The generated modules then contain only your endpoints.
+
+### Split into several schemas
+
+For very large surfaces, compile several schemas, each with its own outputs and its own [`RemoteScope`](/reference/options/output#remotescope), all pointing at one shared runtime. Each schema gets its own pair of remotes and its own state.
+
+<Callout type="warning">
+Policies, auth rules, kill switches, groups and configuration are per module. When you split into several schemas, register rules and connect `OnViolation` on every server module, not just one.
+</Callout>
+
+Check generated sizes in your build, so a module that grows past the limit fails CI instead of failing to install in Studio. [`--benchmark`](/reference/cli#--benchmark) fails when a module passes its size threshold.

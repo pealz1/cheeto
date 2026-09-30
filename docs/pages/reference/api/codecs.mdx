@@ -1,0 +1,62 @@
+---
+title: "Codecs"
+description: "Quantization helpers for numbers, vectors and angles."
+---
+
+import { Sig } from '../../../components/Reference'
+
+# Codecs
+
+`Network.Codecs` converts values to integers at a chosen precision so they fit small integer fields. Pair them with integer schema types. For most cases, declaring the encoding in the schema (`vector<i16>`, `f16`) is simpler.
+
+## QuantizeNumber
+
+<Sig side="both">{"QuantizeNumber(value: number, scale: number, min: number?, max: number?): number"}</Sig>
+
+Clamps `value` to `min`..`max` (if given), multiplies by `scale` and rounds. With `scale = 100`, `12.345` becomes `1235`.
+
+## DequantizeNumber
+
+<Sig side="both">{"DequantizeNumber(value: number, scale: number): number"}</Sig>
+
+Divides by `scale`.
+
+## QuantizeVector3
+
+<Sig side="both">{"QuantizeVector3(value: Vector3, scale: number): {number}"}</Sig>
+
+Returns `{ x, y, z }`, each quantized with `scale`.
+
+## DequantizeVector3
+
+<Sig side="both">{"DequantizeVector3(value: {number}, scale: number): Vector3"}</Sig>
+
+Rebuilds a `Vector3` from `{ x, y, z }`.
+
+## QuantizeAngle
+
+<Sig side="both">{"QuantizeAngle(radians: number, steps: number?): number"}</Sig>
+
+Wraps `radians` to one turn and maps it onto `0`..`steps` (default 65,535, which fits a `u16`).
+
+## DequantizeAngle
+
+<Sig side="both">{"DequantizeAngle(value: number, steps: number?): number"}</Sig>
+
+Maps back to radians in `0`..`2π`.
+
+```cheeto copy
+event Aim {
+    From: Client,
+    Type: Unreliable,
+    Call: SingleAsync,
+    Policy: "aim",
+    Data: (u16, u16)
+}
+```
+
+```lua copy
+local yaw = Network.Codecs.QuantizeAngle(camera.yaw)
+local pitch = Network.Codecs.QuantizeAngle(camera.pitch)
+Network.Aim.Fire(yaw, pitch)
+```

@@ -1,0 +1,83 @@
+---
+title: "channel"
+description: "Server-owned replicated state with snapshots, delta patches and scoped audiences."
+---
+
+import { Callout } from 'nextra/components'
+
+# channel
+
+A `channel` is a piece of state the server owns and replicates to clients. Instead of firing an event for every change, the server sets or patches the value and the runtime sends only what changed, on a schedule. Clients read the latest value at any time and can subscribe to changes.
+
+```cheeto copy
+channel PlayerState {
+    Scope: Player,
+    TickRate: 20,
+    Delta: true,
+    Data: struct {
+        Health: u8,
+        Stamina: u8,
+        Equipped: string(0..32)?
+    }
+}
+```
+
+## Fields
+
+`Data` is required. Everything else is optional.
+
+| Field | Default | Purpose |
+| --- | --- | --- |
+| [`Data`](/reference/fields#data) | required | The state's type. Use a `struct` to get delta patches |
+| [`Scope`](/reference/fields#scope) | `Player` | What the shorthand `Set` and `Patch` target |
+| [`Type`](/reference/fields#type) | `Reliable` | `Unreliable` sends each flush as its own unreliable call |
+| [`TickRate`](/reference/fields#tickrate) | every flush | Maximum automatic flushes per second |
+| [`Delta`](/reference/fields#delta) | `true` for structs | Send changed fields only |
+| [`KeyframeRate`](/reference/fields#keyframerate) | none | Force a full snapshot this often |
+| [`Interest`](/reference/fields#interest), [`InterestRadius`](/reference/fields#interestradius) | `None`, `0` | Zone or distance targeting |
+| [`Priority`](/reference/fields#priority) | `Gameplay` | Shedding under backpressure |
+| [`MaxPacketBytes`](/reference/fields#maxpacketbytes), [`MaxQueuedEvents`](/reference/fields#maxqueuedevents) | | Limits on the receiving client |
+| [`WireId`](/reference/fields#wireid), [`ReservedId`](/reference/fields#reservedid), [`DeprecatedId`](/reference/fields#deprecatedid) | | Lockfile identity |
+
+<Callout type="warning">
+Channels are received by clients, so do not set `Auth`, `Policy` or rate-limit fields on them unless you also register those rules on the client. See the [receive-side note](/reference/fields).
+</Callout>
+
+## Generated API
+
+| Server module | Client module |
+| --- | --- |
+| `Set`, `SetPlayer`, `SetAll`, `SetList`, `SetGroup`, `SetZone`, `SetDistance` | `On(listener)` |
+| `Patch`, `PatchPlayer`, `PatchAll`, `PatchList`, `PatchGroup`, `PatchZone`, `PatchDistance` | `Get()` |
+| `Flush`, `FlushPlayer`, `FlushAll`, `FlushList`, `FlushGroup`, `FlushZone`, `FlushDistance` | `Version()` |
+| `SetInterestZone`, `SetInterestPosition`, `Get`, `Clear` | |
+
+See [Channel endpoint](/reference/api/channel) for signatures.
+
+```lua filename="Server.server.luau" copy
+Network.PlayerState.Set(player, { Health = 100, Stamina = 100 })
+
+-- Later: only Health goes over the wire
+Network.PlayerState.Patch(player, { Health = 72 })
+```
+
+```lua filename="Client.client.luau" copy
+Network.PlayerState.On(function(state, version, patch)
+    HealthBar.Set(state.Health)
+end)
+
+local current = Network.PlayerState.Get()
+```
+
+## How updates are sent
+
+- `Set` stores a full value and marks the player for a full snapshot.
+- `Patch` merges fields into the stored value and marks only those fields dirty.
+- Once per replication step, and no more often than [`TickRate`](/reference/fields#tickrate) allows, the server sends each player either a full snapshot (after `Set`, or on a keyframe) or a delta of the dirty fields.
+- `Flush*` sends immediately instead of waiting for the tick.
+
+To clear an optional field in a patch, set it to [`State.Tombstone`](/reference/api/state#tombstone); a `nil` in a Luau table cannot be distinguished from a missing key.
+
+```lua copy
+Network.PlayerState.Patch(player, { Equipped = Network.State.Tombstone })
+```

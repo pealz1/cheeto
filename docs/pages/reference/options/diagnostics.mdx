@@ -1,0 +1,54 @@
+---
+title: "Capture and diagnostics options"
+description: "EnablePacketCapture, CaptureRedactions, CaptureLimit, NoRawCaptureInProduction and EnableInspector."
+---
+
+import { Spec } from '../../../components/Reference'
+
+# Capture and diagnostics options
+
+| Option | Type | Default |
+| --- | --- | --- |
+| [`EnablePacketCapture`](#enablepacketcapture) | boolean | `false` |
+| [`CaptureRedactions`](#captureredactions) | string | `""` |
+| [`CaptureLimit`](#capturelimit) | number | `1024` |
+| [`NoRawCaptureInProduction`](#norawcaptureinproduction) | boolean | `true` |
+| [`EnableInspector`](#enableinspector) | boolean | `false` |
+
+All five are runtime options and can be changed with `Configure`. See [Capture and replay](/operations/capture-and-replay) for how captures are used.
+
+## `EnablePacketCapture`
+
+<Spec type="boolean" default={<code>false</code>} />
+
+Records every sent, received and dropped event from the moment the module loads, as if [`Capture.Start`](/reference/api/capture#start) had been called. Capturing costs a table allocation and a payload summary per event, so keep it off in live servers unless you are investigating something.
+
+## `CaptureRedactions`
+
+<Spec type="string" default={<><code>""</code></>} />
+
+A comma-separated list of field names. When a captured payload summary contains a table key with one of these names, its value is written as `[redacted]`. Whitespace around names is ignored. Replace the list at runtime with [`Capture.Redact`](/reference/api/capture#redact) or `Capture.Start({ Redactions = ... })`.
+
+```cheeto copy
+option CaptureRedactions = "Password,Token,Receipt"
+```
+
+Redaction only applies to the readable summary. Raw buffers, when kept, contain the original bytes; see [`NoRawCaptureInProduction`](#norawcaptureinproduction).
+
+## `CaptureLimit`
+
+<Spec type="number" default={<code>1024</code>} />
+
+Maximum number of capture entries kept. When full, the oldest entry is removed for each new one.
+
+## `NoRawCaptureInProduction`
+
+<Spec type="boolean" default={<code>true</code>} />
+
+When the [`SecurityProfile`](/reference/options/security#securityprofile) is anything other than `Development`, capture entries do not keep a copy of the raw packet buffer and are marked `Redaction.Raw = true`. [`Capture.ReplayRaw`](/reference/api/capture#replayraw) then has nothing to inject and counts those entries as `MissingRaw`. [`--hardening-checklist`](/reference/cli#--hardening-checklist) fails if this is set to `false`.
+
+## `EnableInspector`
+
+<Spec type="boolean" default={<code>false</code>} />
+
+Allows [`Inspector.Snapshot`](/reference/api/inspector#snapshot), which otherwise errors unless `Inspector.Enable(true)` was called. While the inspector is enabled, events are also recorded into the capture buffer even if capture was not started.

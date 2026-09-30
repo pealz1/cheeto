@@ -1,0 +1,60 @@
+---
+title: "Function endpoint"
+description: "Invoke on the client and On on the server, generated for every function."
+---
+
+import { Callout } from 'nextra/components'
+import { Sig } from '../../../components/Reference'
+
+# Function endpoint
+
+Every [`function`](/reference/declarations/function) becomes `Network.<FunctionName>`, with `Invoke` on the client and `On` on the server.
+
+## Invoke
+
+<Sig side="client" yields>{"Invoke(...data): ...return"}</Sig>
+
+Sends a request and waits for the server's reply. With `Yield: Coroutine` it yields the calling thread and returns the reply's values. With `Future` or `Promise` it returns immediately with a Future or Promise that resolves to them.
+
+The request is appended to the client's reliable batch, so it leaves at the next replication step.
+
+**Errors** (raised by `Invoke`, or rejected by the Future/Promise):
+
+| Message | Cause |
+| --- | --- |
+| `There was an exception while processing "Name".` | The server's listener errored |
+| `Invoke timed out after N seconds.` | No reply within [`InvokeTimeoutSeconds`](/reference/fields#invoketimeoutseconds) |
+| `More than N calls ... are awaiting a response` | [`MaxPendingInvokes`](/reference/fields#maxpendinginvokes) reached |
+| `Invocation id is already awaiting a response` | More than 255 invokes outstanding |
+| `Invoke was cancelled.` or your reason | [`CancelInvocations`](/reference/api/module#cancelinvocations) was called |
+
+```lua copy
+local ok, inventory = pcall(Network.GetInventory.Invoke, 1)
+if not ok then
+    warn("Inventory request failed:", inventory)
+end
+```
+
+<Callout type="warning">
+A request the server drops before running the listener, because of a policy, auth rule, cooldown, rate limit, honeypot or kill switch, gets no reply at all. Without a timeout the calling thread waits forever. Set `InvokeTimeoutSeconds` on every function that has access control.
+</Callout>
+
+## On
+
+<Sig side="server">{"On(listener: (player: Player, ...data) -> ...return): ()"}</Sig>
+
+Sets the function's handler. There is one handler per function; calling `On` again replaces it. The handler runs in its own thread, may yield, and its return values are sent back to the invoking client. If it errors, the error is logged on the server and the client's `Invoke` raises `There was an exception while processing`.
+
+Requests that arrive before a handler is set are queued and handled once `On` is called. `On` returns nothing; to stop handling a function, set a handler that errors or returns a failure value your client understands.
+
+```lua copy
+Network.GetInventory.On(function(player, page)
+    local inventory = Inventories[player]
+    if not inventory then
+        error("No inventory loaded")
+    end
+    return { Items = inventory:Page(page), Capacity = inventory.Capacity }
+end)
+```
+
+If the invoking player leaves before the handler returns, the reply is discarded.

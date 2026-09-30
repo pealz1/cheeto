@@ -1,0 +1,62 @@
+---
+title: "The receive pipeline"
+description: "Every check a received packet and event go through, in order, and what each drop means."
+---
+
+import { Callout } from 'nextra/components'
+
+# The receive pipeline
+
+This is the exact order in which a received remote call is checked. Knowing it tells you what can see what: a policy runs before decoding, so it cannot read the payload; a `Validate` hook runs after, so it can.
+
+## 1. The packet
+
+For each remote call:
+
+| Step | Check | On failure |
+| --- | --- | --- |
+| 1 | The first argument is a buffer | `InvalidBuffer` |
+| 2 | Its size is within [`MaxReliablePacketBytes`](/reference/options/limits#maxreliablepacketbytes) or [`MaxUnreliablePacketBytes`](/reference/options/limits#maxunreliablepacketbytes) | `MaxPacketBytes` |
+| 3 | The sender is within the per-call [`RateLimitPerSecond`](/reference/options/limits#ratelimitpersecond) for this remote | `RateLimit` |
+| 4 | The second argument, if any, is a table of instances | `InvalidInstances` |
+| 5 | Packet-level [`BeforeReceive`](/reference/api/hooks#beforereceive) hooks allow it | `MiddlewareRejected` |
+| 6 | Reliable only: if it is a fragment, it is stored and processing stops until the last fragment arrives | `FragmentOverflow`, `FragmentTimeout`, `MalformedPacket` |
+
+Any failure here discards the whole call.
+
+## 2. Each frame
+
+The packet is then read one frame at a time. Control frames (handshake, prediction acknowledgements, fragments, shield and integrity messages) are handled internally. For every endpoint frame:
+
+| Step | Check | On failure |
+| --- | --- | --- |
+| 1 | The frame header can be read | `MalformedPacket` |
+| 2 | The packet size is within the endpoint's own [`MaxPacketBytes`](/reference/fields#maxpacketbytes), if set | `MaxPacketBytes` |
+| 3 | The endpoint is not a [honeypot](/security/honeypots) | `Honeypot` |
+| 4 | The sender is within the endpoint's [`RateLimitPerSecond`](/reference/fields#ratelimitpersecond), if set | `RateLimit` |
+| 5 | Per-event [`BeforeReceive`](/reference/api/hooks#beforereceive) hooks allow it | `MiddlewareRejected` |
+| 6 | The [`Auth`](/reference/fields#auth) rule returns `true`, if set | `AuthRejected` |
+| 7 | The endpoint and its policy group are not [killed](/security/kill-switches) | `KillSwitch` |
+| 8 | The sender's [`CooldownSeconds`](/reference/fields#cooldownseconds) has elapsed | `PolicyRejected` |
+| 9 | Predicted events only: the sequence number is new and recent | `ReplayDuplicate`, `ReplayStale` |
+| 10 | Predicted events with [`Idempotency`](/reference/fields#idempotency): the sequence number was not used in the last 120 s | `ReplayDuplicate` |
+| 11 | The [`Policy`](/reference/fields#policy) allows the sender, or with [`RequirePolicies`](/reference/options/security#requirepolicies) a policy exists | `PolicyRejected` or the policy's reason |
+| 12 | Every policy in the [`PolicyGroup`](/reference/fields#policygroup) allows the sender | `PolicyRejected` or the policy's reason |
+| 13 | The payload **decodes**: types, ranges and instance classes all match | `MalformedPacket` |
+| 14 | The decoded payload passes the [payload checks](/security/payload-validation) | `Canonicalization`, `DecodeBudget` |
+| 15 | [`Validate`](/reference/api/hooks#validate) hooks allow it, if the endpoint declares a payload constraint | `ConstraintRejected` |
+| 16 | [`AfterReceive`](/reference/api/hooks#afterreceive) hooks run; predicted events are acknowledged | |
+| 17 | The listener runs, or the event is queued if no listener is connected yet | `QueueFull` when the queue is full |
+
+A failed frame is skipped using its length prefix, and the next frame is processed normally.
+
+## What this means for your code
+
+- **Policies and auth rules cannot see the payload.** Steps 6 to 12 run before step 13. Check "who" in a policy and "what" in a `Validate` hook or in the listener.
+- **Honeypots report even rate-limited senders.** Step 3 comes before the rate limit, so a flood of honeypot traffic is fully reported.
+- **Cooldowns cost almost nothing.** A request inside its cooldown is rejected before any decoding work.
+- **Your listener only sees valid data.** By step 17, the payload matches the schema's types and ranges and passed your rules.
+
+<Callout type="warning">
+Everything in step 2 runs on whichever side receives the endpoint, including the client for server-sent events and channels. Only put `Auth`, `Policy`, cooldowns and rate limits on endpoints that clients send.
+</Callout>

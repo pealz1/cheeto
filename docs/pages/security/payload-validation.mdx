@@ -1,0 +1,48 @@
+---
+title: "Payload validation"
+description: "What is checked in every decoded payload before any listener sees it."
+---
+
+import { Callout } from 'nextra/components'
+
+# Payload validation
+
+Every received event goes through two rounds of checks before its listener runs.
+
+## 1. Decoding against the schema
+
+The generated decoder reads exactly the declared types, so a payload cannot contain an unexpected type or extra fields. While reading, it checks:
+
+- number ranges: `u8(0..100)` rejects 101;
+- string, buffer and array lengths: `string(3..20)` rejects a 2-byte name;
+- vector magnitudes: `vector(0..1)` rejects a length-2 vector;
+- instance classes: `Instance(Player)` rejects a Part;
+- required instances: a non-optional `Instance` that arrives as `nil` is rejected.
+
+Any failure drops the event with `MalformedPacket`.
+
+## 2. Payload checks
+
+Then the decoded value is walked once more, bounded by the [decode budget options](/reference/options/limits#decode-budgets):
+
+| Check | Default limit | Drop reason |
+| --- | --- | --- |
+| Numbers are finite (no NaN or infinity) | | `Canonicalization` |
+| Vectors and CFrame positions are finite and within 10⁹ studs | | `Canonicalization` |
+| Color3 channels are finite | | `Canonicalization` |
+| Strings are at most [`MaxPayloadStringBytes`](/reference/options/limits#maxpayloadstringbytes) | 8,192 bytes | `Canonicalization` |
+| Tables are at most [`MaxPayloadDepth`](/reference/options/limits#maxpayloaddepth) deep | 16 | `Canonicalization` |
+| Tables have at most [`MaxTableKeys`](/reference/options/limits#maxtablekeys) keys | 2,048 | `Canonicalization` |
+| Table keys are strings, booleans or positive whole numbers | | `Canonicalization` |
+| Arrays are not sparse (highest index at most twice the entry count) | | `Canonicalization` |
+| Total values visited at most [`MaxDecodeOperations`](/reference/options/limits#maxdecodeoperations) | 100,000 | `DecodeBudget` |
+
+These matter most for [`unknown`](/reference/types/unknown) fields, which bypass the schema's types, and they protect your listeners from values that break math (NaN positions, infinite damage).
+
+## What is left to you
+
+Validation proves the data is well-formed. It cannot prove it is legitimate. A `u16(0..500)` damage value of 500 is valid, and whether this player's weapon can deal 500 is a game rule. Check game rules in a [`Validate` hook](/security/constraints) or in the listener, using server-side state.
+
+<Callout type="info">
+Turn on [`WriteValidations`](/reference/options/runtime#writevalidations) during development to run the type and range checks on the sender too, so mistakes fail at the `Fire` call instead of as a dropped packet on the other side.
+</Callout>

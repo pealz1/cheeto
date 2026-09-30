@@ -1,0 +1,45 @@
+---
+title: "Client shield"
+description: "Client-side tripwires for common exploit tools, reported to the server over Cheeto's own frames."
+---
+
+import { Callout } from 'nextra/components'
+
+# Client shield
+
+The client shield is a set of probes that run in the client module and look for signs of common exploit tooling. Hits are reported to the server inside Cheeto's normal traffic, not through a separate remote, and the server records them and can kick.
+
+Turn it on with [`EnableClientShield`](/reference/options/client-shield#enableclientshield), or with [`SecurityPreset = Maximum`](/security/maximum-security).
+
+## What it looks for
+
+Every [`ClientShieldProbeIntervalSeconds`](/reference/options/client-shield#clientshieldprobeintervalseconds) (1.25 s by default) the shield runs a sweep:
+
+| Probe | Looks for | Reason |
+| --- | --- | --- |
+| Environment globals | Executor functions such as `hookmetamethod`, `getrawmetatable`, `getgenv`, `getgc`, `gethui`, `saveinstance`, `decompile`, `writefile`, and markers like `IY_LOADED` | `ExploitEnvironment`, `InfiniteYield`, `SaveInstance`, `RemoteSpy` |
+| Stack traps | Environments leaked through hooked metamethods | `MetamethodHook` |
+| GUI tree | Text and names used by Infinite Yield, Dex, remote spies and save-instance tools | `InfiniteYield`, `DexExplorer`, `RemoteSpy`, `SaveInstance` |
+| Weak service probes | Tools that cache services the game does not use | `DexExplorer`, `InfiniteYield`, `SaveInstance` |
+| Chat tripwire | The Infinite Yield `;setcreatorid` pattern | `InfiniteYield` (immediate kick) |
+| Save-instance safe mode | The error text a safe-mode save produces | `SaveInstance` (immediate kick) |
+
+## What the server does
+
+Each report adds its weight to the player's score for that reason. The report is recorded (at most once per reason per [`ClientShieldReportCooldownSeconds`](/reference/options/client-shield#clientshieldreportcooldownseconds)) and sent to [`OnViolation`](/security/violations) with channel `ClientShield`.
+
+With [`ClientShieldKick`](/reference/options/client-shield#clientshieldkick) on, the player is kicked when the report is marked immediate, when [`ClientShieldStrict`](/reference/options/client-shield#clientshieldstrict) is on, or when the score for that reason reaches [`ClientShieldScoreThreshold`](/reference/options/client-shield#clientshieldscorethreshold).
+
+Review recent reports with [`Security.ClientShield()`](/reference/api/security#clientshield). You can route your own server-side detections into the same pipeline with [`Security.ReportClientShield`](/reference/api/security#reportclientshield).
+
+## Limits
+
+<Callout type="error">
+The shield runs on the exploiter's computer. A capable exploit can hide from every probe, block the reports, or disable the shield entirely. Absence of reports proves nothing. Presence of a report is strong evidence, but not proof: probes can misfire on unusual setups.
+</Callout>
+
+- Probes only see what a LocalScript can see. UI placed in protected containers is invisible to the GUI probe.
+- The probe list targets well-known public tools. Private or new tools are not detected.
+- Kicking on a single report, as `Maximum` does, will occasionally remove a legitimate player.
+
+Roll out with `ClientShieldKick = false`, watch reports from real servers, and investigate before enforcing.

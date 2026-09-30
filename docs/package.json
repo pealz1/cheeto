@@ -4,8 +4,10 @@
   "private": true,
   "description": "Documentation site for Cheeto",
   "scripts": {
+    "prebuild": "node scripts/check-reference.mjs",
     "dev": "next dev",
     "build": "next build",
+    "postbuild": "node scripts/check-links.mjs",
     "start": "npx serve out"
   },
   "repository": {

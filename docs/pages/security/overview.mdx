@@ -1,0 +1,72 @@
+---
+title: "Security model"
+description: "What Cheeto protects against, what it cannot, and which layer does what."
+---
+
+import { Callout } from 'nextra/components'
+
+# Security model
+
+Assume every client is hostile. An exploiter can read everything the server sends them, and can fire any remote with any bytes, as often as they like. Cheeto's job is to make sure that whatever arrives either matches your contract exactly, or is dropped and reported before your code sees it.
+
+## The layers
+
+| Layer | Stops | Where it runs | Page |
+| --- | --- | --- | --- |
+| Packet limits | Oversized packets, floods, fragment abuse | Before decoding | [Rate limits and cooldowns](/security/rate-limits-and-cooldowns) |
+| Honeypots | Anyone probing endpoints that nothing legitimate calls | Before decoding | [Honeypots](/security/honeypots) |
+| Auth rules | Senders in the wrong state (dead, not loaded) | Before decoding | [Auth rules](/security/auth-rules) |
+| Kill switches | An endpoint under active abuse | Before decoding | [Kill switches](/security/kill-switches) |
+| Cooldowns | Repeating one-shot actions | Before decoding | [Rate limits and cooldowns](/security/rate-limits-and-cooldowns) |
+| Replay checks | Resending captured predicted events | Before decoding | [Replay and idempotency](/security/replay-and-idempotency) |
+| Policies | Senders who may not use this endpoint | Before decoding | [Policies](/security/policies) |
+| Schema types | Wrong types, out-of-range numbers, wrong instance classes | Decoding | [Types](/reference/types/numbers) |
+| Payload checks | NaN, huge tables, deep nesting, long strings | After decoding | [Payload validation](/security/payload-validation) |
+| Validate hooks | Payload-specific rules such as distance and ownership | After decoding | [Constraints and Validate](/security/constraints) |
+| Handles | Clients naming objects they should not control | Your listener | [Handles and capabilities](/security/handles-and-capabilities) |
+
+Beside the network, three optional systems watch clients directly: the [client shield](/security/client-shield) (exploit tripwires), [client integrity](/security/client-integrity) (liveness challenges) and [character integrity](/security/character-integrity) (server-side movement checks). [Remote hardening](/security/remote-hardening) makes the remotes harder to find.
+
+Every drop and report goes to one place: [`Security.OnViolation`](/security/violations).
+
+## What a schema should look like
+
+Every endpoint a client sends should have, at minimum:
+
+- a [`Policy`](/reference/fields#policy) with a real rule registered on the server;
+- tight types: bounded strings, bounded arrays, ranged numbers, classes on instances;
+- a [`CooldownSeconds`](/reference/fields#cooldownseconds) or [`RateLimitPerSecond`](/reference/fields#ratelimitpersecond) that matches how often a real player can do it;
+- an [`InvokeTimeoutSeconds`](/reference/fields#invoketimeoutseconds) if it is a function.
+
+```cheeto copy
+option SecurityProfile = Production
+option RequirePolicies = true
+option InvokeTimeoutSeconds = 10
+
+event BuyItem {
+    From: Client,
+    Type: Reliable,
+    Call: SingleAsync,
+    Policy: "shop",
+    CooldownSeconds: 0.5,
+    Data: u16(1..500)
+}
+```
+
+[`SecurityPreset = Maximum`](/security/maximum-security) turns the optional systems on in one line.
+
+## What Cheeto cannot do
+
+<Callout type="error">
+**Cheeto cannot make a client trustworthy.** It cannot stop a client from reading what you send it, from sending any bytes it wants, or from lying about its own state. The client shield and integrity checks run on hardware the exploiter controls, so they are tripwires and evidence, never proof.
+</Callout>
+
+The server must still decide everything that matters:
+
+- Send the client what it wants to do (`BuyItem 42`), never the result (`SetCoins 900`).
+- Look up prices, damage, cooldown state and ownership on the server.
+- Never send secrets, other players' private data, or anything you would not want an exploiter to read.
+
+<Callout type="warning">
+Several protections have preconditions that are easy to miss: built-in policy names allow everyone, constraint fields do nothing on their own, and replay checks need `Predict`. Read [Limitations](/limitations#security) before relying on them.
+</Callout>

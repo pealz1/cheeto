@@ -1,0 +1,51 @@
+---
+title: "Kill switches"
+description: "Disable an endpoint or a group of endpoints on a live server."
+---
+
+import { Callout } from 'nextra/components'
+
+# Kill switches
+
+When an exploit is found in one endpoint, you often cannot ship a fix right away. A kill switch turns that endpoint off on a running server, without a restart and without affecting anything else.
+
+```lua copy
+Network.Security.Kill("TradeRequest", "dupe investigation")
+-- later
+Network.Security.Unkill("TradeRequest")
+```
+
+While killed, events arriving on the endpoint are dropped with `KillSwitch` before decoding, and sends on it are dropped too. Function requests to a killed function get no reply, so clients' `Invoke` calls time out.
+
+## Killing a group
+
+Endpoints that share a [`PolicyGroup`](/reference/fields#policygroup) can be switched off together:
+
+```lua copy
+Network.Security.KillPolicyGroup("economy", "market exploit")
+```
+
+Design your policy groups with this in mind: grouping everything that touches currency under `economy` gives you one switch for the whole economy.
+
+## Doing it across servers
+
+A kill switch affects only the server it runs on. To switch an endpoint off everywhere, broadcast the command, for example with the [MessagingService adapter](/reference/api/replication#messagingservice):
+
+```lua copy
+local control = Network.Replication.MessagingService("net-control")
+
+control.Subscribe(function(message)
+    if message.Channel == "kill" then
+        Network.Security.Kill(message.Payload)
+    elseif message.Channel == "unkill" then
+        Network.Security.Unkill(message.Payload)
+    end
+end)
+
+-- From an admin command:
+control.Publish("kill", "TradeRequest")
+```
+
+<Callout type="info">
+If your endpoints are split across several generated modules, kill the endpoint on the module that actually carries it.
+</Callout>

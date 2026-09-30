@@ -1,0 +1,32 @@
+---
+title: "Inspector"
+description: "One table with everything the module knows, for debug panels and bug reports."
+---
+
+# Inspector
+
+The inspector bundles metrics, handshake results, captured packets, and integrity state into one snapshot. Enable it on demand from an admin command or in Studio.
+
+```lua copy
+Network.Inspector.Enable(true)
+
+task.delay(30, function()
+    local snapshot = Network.Inspector.Snapshot()
+    print(snapshot.Metrics.DroppedPackets)
+    print(#snapshot.Capture, "captured events")
+    Network.Inspector.Enable(false)
+end)
+```
+
+While enabled, the inspector also records events into the capture buffer, so `snapshot.Capture` has recent traffic even if you never called `Capture.Start`.
+
+| Field | Contents |
+| --- | --- |
+| `Metrics` | [`Stats()`](/reference/api/module#stats) |
+| `Protocol`, `Peers` | [Handshake results](/reference/api/protocol) |
+| `Capture` | [Captured entries](/reference/api/capture#entries) |
+| `ClientIntegrity` | [Client integrity state](/reference/api/security#clientintegrity) |
+| `CharacterIntegrity` | [Character integrity state](/reference/api/security#characterintegrity) |
+| `Runtime` | Protocol, schema version, security profile |
+
+`Snapshot` errors unless the inspector is enabled with `Inspector.Enable(true)` or the [`EnableInspector`](/reference/options/diagnostics#enableinspector) option.

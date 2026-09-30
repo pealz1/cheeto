@@ -1,0 +1,81 @@
+---
+title: "Transport"
+description: "Queue accounting, flush decisions, network stats, coalescing and the drop reason list."
+---
+
+import { Callout } from 'nextra/components'
+import { Sig } from '../../../components/Reference'
+
+# Transport
+
+`Network.Transport` exposes the per-peer state the runtime uses to decide when to flush and what to shed. Most games only read [`Errors`](#errors) and [`Snapshot`](#snapshot). The recording functions are what the generated code calls itself; call them only if you build your own scheduling on top.
+
+A **peer** is a `Player` on the server, or the server on the client (pass `nil` or `"Server"`).
+
+## Errors
+
+<Sig side="both">{"Errors: {[string]: string}"}</Sig>
+
+A frozen table of every built-in [drop reason](/reference/drop-reasons), each key mapping to itself. Use it instead of string literals:
+
+```lua copy
+Network.Security.OnViolation(function(report)
+    if report.Reason == Network.Transport.Errors.Honeypot then
+        Moderation.Flag(report.Player)
+    end
+end)
+```
+
+## Snapshot
+
+<Sig side="both">{"Snapshot(peer: any?): TransportState | {[string]: TransportState}"}</Sig>
+
+A copy of one peer's transport state, or of every peer's keyed by `tostring(peer)`:
+
+`{ QueuedBytes, QueuedEvents, SentBytes, SentPackets, DroppedLowPriority, LastFlush, LastQueueTime, Rtt, Jitter, ClockSkew, PacketLoss, Priority }`
+
+`Priority` has `{ Bytes, Events }` for each of `Critical`, `Gameplay`, `Cosmetic` and `Background`, counted since the peer was first seen.
+
+## UpdateNetworkStats
+
+<Sig side="both">{"UpdateNetworkStats(peer: any, rtt: number?, jitter: number?, clockSkew: number?, packetLoss: number?): ()"}</Sig>
+
+Stores network measurements for a peer. The runtime does not measure these itself. They only affect flushing: while `rtt > 0.25` or `jitter > 0.1`, the peer's burst budget ([`MaxBurstBytes`](/reference/options/limits#maxburstbytes)) is reduced by a quarter. `nil` arguments leave the stored value unchanged.
+
+```lua copy
+Network.Transport.UpdateNetworkStats(player, player:GetNetworkPing() * 2)
+```
+
+## ShouldFlush
+
+<Sig side="both">{"ShouldFlush(peer: any, channel: string, size: number, priority: string?): boolean"}</Sig>
+
+The runtime's flush decision for a peer with `size` bytes queued. `true` when `priority` is `Critical`, when `size` reaches the burst budget, when the peer's tracked queue is at least half of [`MaxQueuedBytes`](/reference/options/limits#maxqueuedbytes), or when at least 1/60 s has passed since the peer's last flush. `false` when `size` is 0.
+
+## RecordQueuedEvent
+
+<Sig side="both">{"RecordQueuedEvent(peer: any, channel: string, size: number, priority: string?): boolean"}</Sig>
+
+Adds `size` bytes to the peer's tracked queue. Returns `false`, and drops with `Backpressure`, when the queue is over `MaxQueuedBytes`, shedding is on, and `priority` is `Cosmetic` or `Background`.
+
+## RecordFlush
+
+<Sig side="both">{"RecordFlush(peer: any, channel: string, size: number): ()"}</Sig>
+
+Subtracts a sent packet from the peer's tracked queue and updates its sent counters. Emits the `transport.flush` [telemetry](/reference/api/hooks#telemetry) event.
+
+## Coalesce
+
+<Sig side="both">{"Coalesce(peer: any, key: string, priority: string, payload: any): ()"}</Sig>
+
+Stores `payload` under `key` in the peer's coalesce bucket, replacing any earlier one. Events with [`CoalesceKey`](/reference/fields#coalescekey) call this on every send.
+
+## FlushCoalesced
+
+<Sig side="both">{"FlushCoalesced(peer: any): {[string]: { Priority: string, Payload: any, Time: number }}"}</Sig>
+
+Returns and empties the peer's coalesce bucket: the latest payload stored under each key.
+
+<Callout type="info">
+Coalescing records the latest value per key; it does not stop earlier sends. Use it to build your own latest-value-wins replication by reading `FlushCoalesced` on your own schedule and sending only what it returns.
+</Callout>

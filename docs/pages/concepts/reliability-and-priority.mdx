@@ -1,0 +1,44 @@
+---
+title: "Reliability and priority"
+description: "Choosing between reliable and unreliable events, and what Priority does."
+---
+
+import { Callout } from 'nextra/components'
+
+# Reliability and priority
+
+## Reliable or unreliable
+
+| | `Type: Reliable` | `Type: Unreliable` |
+| --- | --- | --- |
+| Arrives | Always, unless dropped by a check | Usually; can be lost |
+| Order | In order with every other reliable event to that peer | Any order |
+| Sent | Batched, once per frame | Immediately, one call per event |
+| Size | Up to `MaxReliablePacketBytes`, fragmented above 48 KB | Up to `MaxUnreliablePacketBytes` (about 1 KB) |
+| Queued before a listener connects | Yes | No, discarded |
+
+Use **reliable** for anything whose loss would be a bug: purchases, damage, state changes, chat. Use **unreliable** for data that is replaced by the next update anyway: positions, aim, cosmetic effects. Losing one is harmless, and waiting for a retransmission would only deliver stale data.
+
+Functions are always reliable. [Channels](/concepts/state-channels) are reliable unless you set `Type: Unreliable`.
+
+## Priority
+
+[`Priority`](/reference/fields#priority) has four levels: `Critical`, `Gameplay` (the default), `Cosmetic` and `Background`.
+
+Priority decides one thing: which events may be **shed** when a peer is backed up. When the bytes tracked for a peer exceed [`MaxQueuedBytes`](/reference/options/limits#maxqueuedbytes) and [`LowPriorityShedding`](/reference/options/limits#lowpriorityshedding) is on, new `Cosmetic` and `Background` events to that peer are dropped with `Backpressure`. `Critical` and `Gameplay` events are never shed.
+
+Priority does not reorder events within a batch or send them sooner.
+
+```cheeto copy
+event HitSpark {
+    From: Server,
+    Type: Unreliable,
+    Call: ManyAsync,
+    Priority: Cosmetic,
+    Data: vector<f16>
+}
+```
+
+<Callout type="warning">
+Because of a known accounting issue, broadcasts with `Cosmetic` or `Background` priority can start being shed on long-running servers even when nothing is backed up. See [Limitations](/limitations#backpressure-accounting).
+</Callout>

@@ -1,0 +1,43 @@
+---
+title: "type"
+description: "Name a type so it can be reused across declarations."
+---
+
+# type
+
+`type` gives a name to any type expression. The name can then be used anywhere a type is expected, including in other files through [`import`](/reference/declarations/import).
+
+```cheeto copy
+type Health = u8(0..100)
+type Position = vector<i16>
+type UserIds = f64[..50]
+type Nickname = string(3..20)?
+
+event HealthChanged {
+    From: Server,
+    Type: Reliable,
+    Call: ManyAsync,
+    Data: (Instance(Player), Health)
+}
+```
+
+A `type` generates a Luau type alias in the generated modules, and in the [`TypesOutput`](/reference/options/output#typesoutput) module when one is configured. Types declared inside a [`scope`](/reference/declarations/scope) are prefixed with the scope name, for example `Combat_Health`.
+
+## What a type can name
+
+`type` names primitives and anything built from them with ranges, encodings, arrays and optionals. It cannot alias a `struct`: the compiler reports `Cannot cast "Struct" to "Primitive"`. Use the struct's own name, or use it inside another struct:
+
+```cheeto copy
+struct Item {
+    Id: u16,
+    Count: u8
+}
+
+struct Loadout {
+    Items: Item[..8]
+}
+```
+
+`map` and `enum` aliases use their own keyword: `map Scores = Dictionary<string, u32>`, `enum Outcome = Result<u32>`.
+
+To export read and write functions for a type, prefix it with [`export`](/reference/declarations/export).

@@ -1,0 +1,60 @@
+---
+title: "Handles"
+description: "Server-issued numeric handles for objects, and expiring capability grants."
+---
+
+import { Sig } from '../../../components/Reference'
+
+# Handles
+
+`Network.Handles` lets the server give clients a number that stands for an object, instead of letting clients name objects directly. The server resolves the number back and checks who is using it. See [Handles and capabilities](/security/handles-and-capabilities).
+
+These functions exist on both modules, but handles and capabilities only live in the module that issued them. Register them on the server and resolve them on the server.
+
+## Register
+
+<Sig side="both">{"Register(object: any, owner: Player?, expiresAt: number?): number"}</Sig>
+
+Returns a handle for `object`. Registering the same object again returns the same handle and updates its owner and expiry. `owner` restricts who can resolve it. `expiresAt` is an absolute `os.clock()` time.
+
+```lua copy
+local handle = Network.Handles.Register(buildPiece, player, os.clock() + 60)
+Network.PieceSpawned.Fire(player, handle)
+```
+
+## Resolve
+
+<Sig side="both">{"Resolve(handle: number, player: Player?): any?"}</Sig>
+
+Returns the object for a handle, or `nil` if the handle is unknown, expired (it is then removed), or owned by someone other than `player`. Passing `nil` for `player` skips the owner check, so always pass the sender when resolving a client's request.
+
+```lua copy
+Network.MovePiece.On(function(player, handle, cframe)
+    local piece = Network.Handles.Resolve(handle, player)
+    if piece then
+        piece:PivotTo(cframe)
+    end
+end)
+```
+
+## Revoke
+
+<Sig side="both">{"Revoke(handle: number): ()"}</Sig>
+
+Removes a handle immediately.
+
+## IssueCapability
+
+<Sig side="both">{"IssueCapability(object: any, owner: Player?, permissions: {[string]: boolean}?, durationSeconds: number?): number"}</Sig>
+
+Returns a one-off token granting `owner` the listed permissions on `object` for `durationSeconds` (default 30). Unlike handles, each call returns a new token.
+
+```lua copy
+local token = Network.Handles.IssueCapability(plot, player, { Edit = true }, 15)
+```
+
+## ValidateCapability
+
+<Sig side="both">{"ValidateCapability(token: number, player: Player?, permission: string?): any?"}</Sig>
+
+Returns the object if the token exists, has not expired, belongs to `player`, and grants `permission`. Otherwise returns `nil`; expired tokens are removed.

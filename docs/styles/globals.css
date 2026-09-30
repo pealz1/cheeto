@@ -357,6 +357,106 @@ samp {
   border: 1px solid var(--rule-strong);
 }
 
+/* ------------------------------------------------------ reference entries */
+
+.ref-sig {
+  margin: var(--space-3) 0 var(--space-4);
+  border: 1px solid var(--rule-strong);
+  border-left: 4px solid var(--accent);
+  background: var(--paper-raised);
+}
+
+.ref-sig-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 6px var(--space-3);
+  border-bottom: 1px solid var(--rule);
+}
+
+.ref-badge {
+  font-family: var(--font-mono), monospace;
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 1px 6px;
+  border: 1px solid var(--rule-strong);
+  color: var(--ink-soft);
+}
+
+.ref-badge[data-side='server'] {
+  background: var(--ink);
+  color: var(--paper);
+  border-color: var(--ink);
+}
+
+.ref-badge[data-side='client'] {
+  background: var(--accent-wash);
+  border-color: var(--accent);
+  color: var(--ink);
+}
+
+.ref-badge[data-tone='warn'] {
+  border-color: var(--bad);
+  color: var(--bad);
+}
+
+.nextra-content .ref-sig-code {
+  display: block;
+  padding: var(--space-3);
+  overflow-x: auto;
+  white-space: pre;
+  border: 0 !important;
+  background: transparent !important;
+  font-size: 0.86rem !important;
+  line-height: 1.6;
+  color: var(--ink) !important;
+}
+
+.ref-spec {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  margin: var(--space-3) 0 var(--space-4);
+  border-top: 2px solid var(--ink);
+  font-size: 0.9rem;
+}
+
+.ref-spec > div {
+  display: grid;
+  grid-template-columns: 8rem minmax(0, 1fr);
+  gap: var(--space-3);
+  padding: 7px 0;
+  border-bottom: 1px solid var(--rule);
+}
+
+.ref-spec dt {
+  font-family: var(--font-mono), monospace;
+  font-size: 0.7rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+  padding-top: 2px;
+}
+
+.ref-spec dd {
+  margin: 0;
+  color: var(--ink);
+}
+
+/* Sidebar group headings from _meta separators. */
+.cheeto-sidebar-group {
+  display: block;
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--rule-strong);
+  font-family: var(--font-mono), monospace;
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
 /* --------------------------------------------------------------- footer */
 
 footer {

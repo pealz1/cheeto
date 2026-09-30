@@ -1,0 +1,143 @@
+---
+title: "Channel endpoint"
+description: "Server writers and client readers generated for every channel."
+---
+
+import { Callout } from 'nextra/components'
+import { Sig } from '../../../components/Reference'
+
+# Channel endpoint
+
+Every [`channel`](/reference/declarations/channel) becomes `Network.<ChannelName>`. The server stores the state per player and decides when to send it; the client keeps the latest value it received.
+
+In the signatures, `T` is the channel's `Data` type and `Patch` is a table of changed fields.
+
+## Server
+
+| Method | Targets |
+| --- | --- |
+| [`Set`](#set) / [`Patch`](#patch) / [`Flush`](#flush) | Chosen by [`Scope`](/reference/fields#scope) and [`Interest`](/reference/fields#interest) |
+| `SetPlayer`, `PatchPlayer`, `FlushPlayer` | One player |
+| `SetAll`, `PatchAll`, `FlushAll` | Every player |
+| `SetList`, `PatchList`, `FlushList` | A list of players |
+| `SetGroup`, `PatchGroup`, `FlushGroup` | A [group](/reference/api/module#setgroup) |
+| `SetZone`, `PatchZone`, `FlushZone` | Players in a zone for this channel |
+| `SetDistance`, `PatchDistance`, `FlushDistance` | Players near a position |
+| [`SetInterestZone`](#setinterestzone), [`SetInterestPosition`](#setinterestposition) | Interest bookkeeping |
+| [`Get`](#get-server), [`Clear`](#clear) | Read or forget stored state |
+
+### Set
+
+<Sig side="server">{"SetPlayer(player: Player, value: T): ()"}</Sig>
+<Sig side="server">{"SetAll(value: T): ()"}</Sig>
+<Sig side="server">{"SetList(players: {Player}, value: T): ()"}</Sig>
+<Sig side="server">{"SetGroup(groupName: string, value: T): ()"}</Sig>
+<Sig side="server">{"SetZone(zone: string, value: T): ()"}</Sig>
+<Sig side="server">{"SetDistance(origin: Vector3, value: T, radius: number?): ()"}</Sig>
+
+Stores a full value for each targeted player and marks them for a **full snapshot** at the next flush. `SetAll` also stores the value as the channel's global value, returned by `Get()` with no player. Players who have left are skipped.
+
+`Set` without a suffix is `SetPlayer` for `Scope: Player` (the default), `SetAll` for `Scope: Global`, `SetGroup` for `Scope: Group`, `SetZone` for `Interest: Zone` and `SetDistance` for `Interest: Distance`.
+
+```lua copy
+Network.PlayerState.Set(player, { Health = 100, Stamina = 100 })
+```
+
+### Patch
+
+<Sig side="server">{"PatchPlayer(player: Player, patch: Patch): ()"}</Sig>
+<Sig side="server">{"PatchAll(patch: Patch): ()"}</Sig>
+<Sig side="server">{"PatchList(players: {Player}, patch: Patch): ()"}</Sig>
+<Sig side="server">{"PatchGroup(groupName: string, patch: Patch): ()"}</Sig>
+<Sig side="server">{"PatchZone(zone: string, patch: Patch): ()"}</Sig>
+<Sig side="server">{"PatchDistance(origin: Vector3, patch: Patch, radius: number?): ()"}</Sig>
+
+Merges the fields in `patch` into each targeted player's stored value and marks just those fields dirty. At the next flush, players with dirty fields get a **delta**: a bitmask plus the changed fields. Use [`State.Tombstone`](/reference/api/state#tombstone) as a value to clear an optional field.
+
+Deltas require a struct `Data` and [`Delta`](/reference/fields#delta) not set to `false`. Otherwise a patch still updates the stored value, and the next flush sends it in full.
+
+`Patch` without a suffix follows the same mapping as `Set`.
+
+```lua copy
+Network.PlayerState.Patch(player, { Health = 72 })
+```
+
+### Flush
+
+<Sig side="server">{"FlushPlayer(player: Player, forceFull: boolean?): ()"}</Sig>
+<Sig side="server">{"FlushAll(forceFull: boolean?): ()"}</Sig>
+<Sig side="server">{"FlushList(players: {Player}, forceFull: boolean?): ()"}</Sig>
+<Sig side="server">{"FlushGroup(groupName: string, forceFull: boolean?): ()"}</Sig>
+<Sig side="server">{"FlushZone(zone: string, forceFull: boolean?): ()"}</Sig>
+<Sig side="server">{"FlushDistance(origin: Vector3, radius: number?, forceFull: boolean?): ()"}</Sig>
+
+Writes pending state into the targeted players' batches now, instead of waiting for the automatic flush. `forceFull` sends a full snapshot even when only deltas are pending. The batch itself still leaves at the next replication step.
+
+`Flush` without a suffix is `FlushAll`.
+
+Automatic flushing happens every replication step, limited by [`TickRate`](/reference/fields#tickrate), with a full snapshot forced every [`KeyframeRate`](/reference/fields#keyframerate) when set.
+
+### SetInterestZone
+
+<Sig side="server">{"SetInterestZone(player: Player, zone: string?): ()"}</Sig>
+
+Records the zone a player is in for this channel, used by the `Zone` variants. `nil` removes the player from every zone of this channel.
+
+### SetInterestPosition
+
+<Sig side="server">{"SetInterestPosition(player: Player, position: Vector3?): ()"}</Sig>
+
+Records a player's position for this channel, used by the `Distance` variants. The runtime does not track characters; call this from your own loop.
+
+```lua copy
+RunService.Heartbeat:Connect(function()
+    for _, player in Players:GetPlayers() do
+        local root = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+        Network.WorldEffects.SetInterestPosition(player, root and root.Position)
+    end
+end)
+```
+
+### Get (server)
+
+<Sig side="server">{"Get(player: Player?): T?"}</Sig>
+
+Returns the value stored for `player`, or the global value set by `SetAll` when called without a player.
+
+### Clear
+
+<Sig side="server">{"Clear(player: Player?): ()"}</Sig>
+
+Forgets the stored value, pending deltas and pending snapshot for one player, or for everyone when called without a player. Nothing is sent to clients; their last value stays until the next `Set`.
+
+## Client
+
+### On
+
+<Sig side="client">{"On(listener: (value: T, version: number, patch: Patch?) -> ()): () -> ()"}</Sig>
+
+Called after every snapshot or delta is applied, with the full current value, the channel's version counter and, for deltas, the patch that was applied. Returns a disconnect function.
+
+```lua copy
+Network.PlayerState.On(function(state, version, patch)
+    if patch == nil or patch.Health ~= nil then
+        HealthBar.Set(state.Health)
+    end
+end)
+```
+
+<Callout type="info">
+`On` does not fire for the value received before it was connected. Read [`Get`](#get-client) once when connecting, or use [`Connection:OnState`](/reference/api/connection#onstate) with `fireImmediately`.
+</Callout>
+
+### Get (client)
+
+<Sig side="client">{"Get(): T?"}</Sig>
+
+The latest value received, or `nil` if nothing has arrived yet.
+
+### Version
+
+<Sig side="client">{"Version(): number"}</Sig>
+
+A counter that increases every time a snapshot or delta is applied. Useful for cheap change detection.

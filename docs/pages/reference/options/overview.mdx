@@ -1,0 +1,67 @@
+---
+title: "All options"
+description: "Every option a Cheeto schema accepts, with its type and the page that documents it."
+---
+
+import { Callout } from 'nextra/components'
+
+# Options
+
+Options configure the compiler and the generated runtime. They go at the top of the schema, before any declaration, one per line:
+
+```cheeto copy
+option ClientOutput = "Network/Client.luau"
+option ServerOutput = "Network/Server.luau"
+option SecurityProfile = Production
+```
+
+An unknown option name is a compile error that lists the valid names. A value of the wrong kind, such as a string where a number is expected, is also a compile error.
+
+## Compile time and runtime
+
+Most options become fields of the generated module's `RuntimeConfig` table. Those can also be changed while the game runs with [`Network.Configure`](/reference/api/module#configure):
+
+```lua copy
+Network.Configure({ RateLimitPerSecond = 30, EnableHoneypots = false })
+```
+
+A few options only affect what code is generated and cannot be changed at runtime. Each entry states which kind it is.
+
+<Callout type="warning">
+Some defaults depend on [`SecurityProfile`](/reference/options/security#securityprofile) and [`SecurityPreset`](/reference/options/security#securitypreset). Entries list the default for each profile where they differ.
+</Callout>
+
+## Index
+
+### Output and modules
+[`Casing`](/reference/options/output#casing) · [`ClientOutput`](/reference/options/output#clientoutput) · [`ServerOutput`](/reference/options/output#serveroutput) · [`TypesOutput`](/reference/options/output#typesoutput) · [`Typescript`](/reference/options/output#typescript) · [`RuntimeOutput`](/reference/options/output#runtimeoutput) · [`RuntimeRequire`](/reference/options/output#runtimerequire) · [`RemoteScope`](/reference/options/output#remotescope) · [`FutureLibrary`](/reference/options/output#futurelibrary) · [`PromiseLibrary`](/reference/options/output#promiselibrary) · [`UseColon`](/reference/options/output#usecolon)
+
+### Runtime features
+[`UsePolling`](/reference/options/runtime#usepolling) · [`ManualReplication`](/reference/options/runtime#manualreplication) · [`SyncValidation`](/reference/options/runtime#syncvalidation) · [`WriteValidations`](/reference/options/runtime#writevalidations) · [`ExposeMetrics`](/reference/options/runtime#exposemetrics) · [`EnableMiddleware`](/reference/options/runtime#enablemiddleware) · [`EnablePrediction`](/reference/options/runtime#enableprediction) · [`EnableStateChannels`](/reference/options/runtime#enablestatechannels) · [`EnableReplicationAdapters`](/reference/options/runtime#enablereplicationadapters) · [`EnableMicroProfiler`](/reference/options/runtime#enablemicroprofiler) · [`UseEmptyInstanceOptimization`](/reference/options/runtime#useemptyinstanceoptimization)
+
+### Transport limits
+[`MaxPacketBytes`](/reference/options/limits#maxpacketbytes) · [`MaxReliablePacketBytes`](/reference/options/limits#maxreliablepacketbytes) · [`MaxUnreliablePacketBytes`](/reference/options/limits#maxunreliablepacketbytes) · [`RateLimitPerSecond`](/reference/options/limits#ratelimitpersecond) · [`RateLimitBurst`](/reference/options/limits#ratelimitburst) · [`MaxQueuedEvents`](/reference/options/limits#maxqueuedevents) · [`MaxQueuedBytes`](/reference/options/limits#maxqueuedbytes) · [`MaxBurstBytes`](/reference/options/limits#maxburstbytes) · [`LowPriorityShedding`](/reference/options/limits#lowpriorityshedding) · [`MaxPendingInvokes`](/reference/options/limits#maxpendinginvokes) · [`InvokeTimeoutSeconds`](/reference/options/limits#invoketimeoutseconds) · [`ReliableFragmentBytes`](/reference/options/limits#reliablefragmentbytes) · [`MaxInFlightFragments`](/reference/options/limits#maxinflightfragments) · [`FragmentTimeoutSeconds`](/reference/options/limits#fragmenttimeoutseconds) · [`ReplayWindowSize`](/reference/options/limits#replaywindowsize) · [`ReplayStaleSeconds`](/reference/options/limits#replaystaleseconds) · [`MaxDecodeOperations`](/reference/options/limits#maxdecodeoperations) · [`MaxPayloadDepth`](/reference/options/limits#maxpayloaddepth) · [`MaxPayloadStringBytes`](/reference/options/limits#maxpayloadstringbytes) · [`MaxTableKeys`](/reference/options/limits#maxtablekeys)
+
+### Wire encoding
+[`UseVarints`](/reference/options/encoding#usevarints) · [`UseBitPacking`](/reference/options/encoding#usebitpacking) · [`UseStringDictionaries`](/reference/options/encoding#usestringdictionaries) · [`UseBufferPooling`](/reference/options/encoding#usebufferpooling) · [`BufferPoolLimit`](/reference/options/encoding#bufferpoollimit)
+
+### Versioning
+[`Version`](/reference/options/versioning#version) · [`SchemaVersion`](/reference/options/versioning#schemaversion) · [`MinimumSchemaVersion`](/reference/options/versioning#minimumschemaversion) · [`EnableProtocolHandshake`](/reference/options/versioning#enableprotocolhandshake) · [`ProtocolVersion`](/reference/options/versioning#protocolversion) · [`ProtocolMode`](/reference/options/versioning#removed-options) · [`AcceptProtocolVersion1`](/reference/options/versioning#removed-options)
+
+### Security
+[`SecurityProfile`](/reference/options/security#securityprofile) · [`SecurityPreset`](/reference/options/security#securitypreset) · [`RequirePolicies`](/reference/options/security#requirepolicies) · [`StrictProduction`](/reference/options/security#strictproduction) · [`EnableHoneypots`](/reference/options/security#enablehoneypots)
+
+### Capture and diagnostics
+[`EnablePacketCapture`](/reference/options/diagnostics#enablepacketcapture) · [`CaptureRedactions`](/reference/options/diagnostics#captureredactions) · [`CaptureLimit`](/reference/options/diagnostics#capturelimit) · [`NoRawCaptureInProduction`](/reference/options/diagnostics#norawcaptureinproduction) · [`EnableInspector`](/reference/options/diagnostics#enableinspector)
+
+### Client shield
+[`EnableClientShield`](/reference/options/client-shield#enableclientshield) · [`ClientShieldStrict`](/reference/options/client-shield#clientshieldstrict) · [`ClientShieldKick`](/reference/options/client-shield#clientshieldkick) · [`ClientShieldKickMessage`](/reference/options/client-shield#clientshieldkickmessage) · [`ClientShieldProbeIntervalSeconds`](/reference/options/client-shield#clientshieldprobeintervalseconds) · [`ClientShieldReportCooldownSeconds`](/reference/options/client-shield#clientshieldreportcooldownseconds) · [`ClientShieldScoreThreshold`](/reference/options/client-shield#clientshieldscorethreshold)
+
+### Client integrity
+[`EnableClientIntegrity`](/reference/options/client-integrity#enableclientintegrity) · [`ClientIntegrityChallengeIntervalSeconds`](/reference/options/client-integrity#clientintegritychallengeintervalseconds) · [`ClientIntegrityReceiptTimeoutSeconds`](/reference/options/client-integrity#clientintegrityreceipttimeoutseconds) · [`ClientIntegrityJoinGraceSeconds`](/reference/options/client-integrity#clientintegrityjoingraceseconds) · [`ClientIntegrityScoreDecayPerSecond`](/reference/options/client-integrity#clientintegrityscoredecaypersecond) · [`ClientIntegrityCleanReceiptDecay`](/reference/options/client-integrity#clientintegritycleanreceiptdecay) · [`ClientIntegrityMissWeight`](/reference/options/client-integrity#clientintegritymissweight) · [`ClientIntegrityInvalidWeight`](/reference/options/client-integrity#clientintegrityinvalidweight) · [`ClientIntegrityScoreThreshold`](/reference/options/client-integrity#clientintegrityscorethreshold) · [`ClientIntegrityMaxConsecutiveFailures`](/reference/options/client-integrity#clientintegritymaxconsecutivefailures)
+
+### Character integrity
+[`EnableCharacterIntegrity`](/reference/options/character-integrity#enablecharacterintegrity) · [`CharacterIntegrityMode`](/reference/options/character-integrity#characterintegritymode) · [`CharacterIntegrityKick`](/reference/options/character-integrity#characterintegritykick) · [`CharacterIntegritySampleIntervalSeconds`](/reference/options/character-integrity#characterintegritysampleintervalseconds) · [`CharacterIntegrityJoinGraceSeconds`](/reference/options/character-integrity#characterintegrityjoingraceseconds) · [`CharacterIntegrityTeleportGraceSeconds`](/reference/options/character-integrity#characterintegrityteleportgraceseconds) · [`CharacterIntegrityMaxStepSeconds`](/reference/options/character-integrity#characterintegritymaxstepseconds) · [`CharacterIntegrityMaxHorizontalSpeed`](/reference/options/character-integrity#characterintegritymaxhorizontalspeed) · [`CharacterIntegrityMaxVerticalSpeed`](/reference/options/character-integrity#characterintegritymaxverticalspeed) · [`CharacterIntegritySpeedMultiplier`](/reference/options/character-integrity#characterintegrityspeedmultiplier) · [`CharacterIntegrityDistanceSlack`](/reference/options/character-integrity#characterintegritydistanceslack) · [`CharacterIntegrityPingAllowance`](/reference/options/character-integrity#characterintegritypingallowance) · [`CharacterIntegrityScoreDecayPerSecond`](/reference/options/character-integrity#characterintegrityscoredecaypersecond) · [`CharacterIntegrityCorrectionScore`](/reference/options/character-integrity#characterintegritycorrectionscore) · [`CharacterIntegrityKickScore`](/reference/options/character-integrity#characterintegritykickscore) · [`CharacterIntegrityMaxConsecutiveBreaches`](/reference/options/character-integrity#characterintegritymaxconsecutivebreaches) · [`CharacterIntegrityCorrectionCooldownSeconds`](/reference/options/character-integrity#characterintegritycorrectioncooldownseconds) · [`CharacterIntegrityReportCooldownSeconds`](/reference/options/character-integrity#characterintegrityreportcooldownseconds) · [`CharacterIntegrityHistoryLimit`](/reference/options/character-integrity#characterintegrityhistorylimit)
+
+### Remote hardening
+[`EnableRemoteNameRotation`](/reference/options/remote-hardening#enableremotenamerotation) · [`RemoteNameRotationSeconds`](/reference/options/remote-hardening#remotenamerotationseconds) · [`EnableRemoteDecoys`](/reference/options/remote-hardening#enableremotedecoys) · [`RemoteDecoyCount`](/reference/options/remote-hardening#remotedecoycount)

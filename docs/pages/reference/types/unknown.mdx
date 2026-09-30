@@ -1,0 +1,25 @@
+---
+title: "unknown"
+description: "Values whose shape is only known at runtime, sent with Roblox's own serializer."
+---
+
+import { Callout } from 'nextra/components'
+
+# unknown
+
+`unknown` accepts any value Roblox can pass through a RemoteEvent argument: numbers, strings, tables, instances, datatypes, or `nil`.
+
+```cheeto copy
+event DebugPayload {
+    From: Server,
+    Type: Reliable,
+    Call: ManyAsync,
+    Data: unknown
+}
+```
+
+Cheeto does not encode it. The value travels beside the buffer, like an [Instance](/reference/types/instances), and Roblox serializes it with its usual rules: metatables are dropped, mixed tables lose keys, and functions cannot be sent.
+
+<Callout type="warning">
+`unknown` gives up everything Cheeto adds: no size savings, no type checking, and no range validation. The runtime's payload check still applies (depth, key count, string length, non-finite numbers). Avoid it for data clients send; use a [tagged enum](/reference/declarations/enum#tagged-enums) when a value can have several shapes.
+</Callout>

@@ -1,0 +1,76 @@
+---
+title: "Wire protocol"
+description: "The byte layout of Cheeto packets and frames."
+---
+
+import { Callout } from 'nextra/components'
+
+# Wire protocol
+
+Cheeto has exactly one wire protocol. Internally it is numbered 2 because it replaced an older format from the project Cheeto grew out of; there is no version 1 to fall back to, nothing to negotiate, and nothing to configure. The `ProtocolVersion` option only accepts `2`, and the old `ProtocolMode` and `AcceptProtocolVersion1` options fail compilation.
+
+You do not need this page to use Cheeto. It is here for debugging captures and for contributors.
+
+## Packets
+
+A **packet** is one remote call. Its first argument is a buffer; its second is either `nil` or an array of instances.
+
+The buffer is a sequence of **frames**, one per event, function call, reply or control message, back to back.
+
+## Frames
+
+| Field | Size | Meaning |
+| --- | --- | --- |
+| Index | 1 byte | Which endpoint this frame belongs to (0 to 251), or a control frame (252 to 255) |
+| Flags | 1 byte | Bit 0: a prediction id follows |
+| Payload length | varint | Bytes of payload after the header |
+| Instance count | varint | How many entries of the instance array belong to this frame |
+| Prediction id | varint | Only when flag bit 0 is set |
+| Payload | *length* bytes | The values, encoded per the schema |
+
+Endpoint indexes are assigned in declaration order, separately for reliable and unreliable endpoints. Because every frame states its length, a receiver can skip a frame it rejects and continue with the next, which is how one bad event never affects the others in its packet.
+
+## Example
+
+`DealDamage.Fire({ Target = target, Damage = 25 })`, for an event whose data is `{ Target: Instance(Player), Damage: u16(0..500) }`:
+
+| Bytes | Field |
+| --- | --- |
+| `id` | Index of `DealDamage` |
+| `00` | Flags: no prediction id |
+| `01` | Payload length: 1 byte |
+| `01` | Instance count: 1 (`Target`) |
+| `19` | `Damage = 25` as a varint |
+
+Five bytes in the buffer, plus `target` in the instance array.
+
+## Payload encoding
+
+Values are written in schema order with no field names or type tags:
+
+- `u8`/`i8` as one byte; 16 and 32-bit integers as LEB128 varints (zig-zag for signed) when [`UseVarints`](/reference/options/encoding#usevarints) is on, otherwise little-endian fixed width.
+- `f16`, `f32`, `f64` as IEEE floats, little-endian.
+- Booleans and optional presence flags as bits, eight per byte, when [`UseBitPacking`](/reference/options/encoding#usebitpacking) is on.
+- Strings and buffers as a length then the bytes; exact-length types have no length.
+- Arrays and maps as a count then the elements.
+- Unit enums as a one-byte index; tagged enums as the index then the variant's fields.
+- Instances and `unknown` values in the instance array, not the buffer.
+
+See [Types](/reference/types/numbers) for each type's layout.
+
+## Control frames
+
+| Index | Purpose | Contents |
+| --- | --- | --- |
+| 255 | Prediction reply | Prediction id (varint), accepted (bit), reason (string) |
+| 254 | Capability handshake | Marker `02`, protocol `02`, schema version (`u16`), minimum version (`u16`), hash length (`u8`), hash |
+| 253 | Fragment | Fragment id, index, count and original size (varints), then a slice of the original packet |
+| 252 | Shield and integrity | A kind byte (0 shield report, 1 challenge, 2 receipt) and its fields |
+
+## Fragmentation
+
+A reliable batch larger than [`ReliableFragmentBytes`](/reference/options/limits#reliablefragmentbytes) is cut into slices, each wrapped in a fragment frame and sent as its own remote call. The receiver collects slices by fragment id and processes the reassembled packet once every slice has arrived. Reassembly is bounded by [`MaxInFlightFragments`](/reference/options/limits#maxinflightfragments) and [`FragmentTimeoutSeconds`](/reference/options/limits#fragmenttimeoutseconds).
+
+<Callout type="info">
+The byte layout depends on the [encoding options](/reference/options/encoding). Both sides read them from their own configuration, so they must agree.
+</Callout>

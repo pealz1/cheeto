@@ -1,6 +1,6 @@
 # Cheeto documentation
 
-The source for [pealz1.github.io/cheeto](https://pealz1.github.io/cheeto), built with [Nextra](https://nextra.site).
+The source for [pealz.cc/cheeto](https://pealz.cc/cheeto), built with [Nextra](https://nextra.site).
 
 ## Local development
 

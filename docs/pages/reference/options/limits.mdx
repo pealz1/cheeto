@@ -1,0 +1,203 @@
+---
+title: "Transport limits"
+description: "Packet size caps, rate limits, queues, invoke limits, fragmentation, replay windows and decode budgets."
+---
+
+import { Callout } from 'nextra/components'
+import { Spec } from '../../../components/Reference'
+
+# Transport limits
+
+These options bound how much a peer can send and how much work a packet can cost. Every drop they cause is reported through [`Security.OnViolation`](/reference/api/security#onviolation) with one of the [drop reasons](/reference/drop-reasons).
+
+Defaults come from [`SecurityProfile`](/reference/options/security#securityprofile). `SecurityPreset = Maximum` without an explicit profile uses `Competitive`.
+
+| Option | Development | Production | Competitive |
+| --- | --- | --- | --- |
+| [`MaxPacketBytes`](#maxpacketbytes) | 1,048,576 | 262,144 | 65,536 |
+| [`MaxUnreliablePacketBytes`](#maxunreliablepacketbytes) | 1,000 | 1,000 | 900 |
+| [`RateLimitPerSecond`](#ratelimitpersecond) | 0 (off) | 120 | 60 |
+| [`RateLimitBurst`](#ratelimitburst) | 0 | 240 | 120 |
+| [`MaxQueuedBytes`](#maxqueuedbytes) | 262,144 | 131,072 | 65,536 |
+| [`MaxBurstBytes`](#maxburstbytes) | 65,536 | 32,768 | 16,384 |
+| [`MaxPendingInvokes`](#maxpendinginvokes) | 256 | 64 | 32 |
+
+The remaining limits have one default regardless of profile: [`ReliableFragmentBytes`](#reliablefragmentbytes) 49,152 · [`MaxInFlightFragments`](#maxinflightfragments) 32 · [`FragmentTimeoutSeconds`](#fragmenttimeoutseconds) 10 · [`ReplayWindowSize`](#replaywindowsize) 128 · [`ReplayStaleSeconds`](#replaystaleseconds) 30 · [`MaxDecodeOperations`](#maxdecodeoperations) 100,000 · [`MaxPayloadDepth`](#maxpayloaddepth) 16 · [`MaxPayloadStringBytes`](#maxpayloadstringbytes) 8,192 · [`MaxTableKeys`](#maxtablekeys) 2,048 · [`MaxQueuedEvents`](#maxqueuedevents) 256 · [`LowPriorityShedding`](#lowpriorityshedding) `true` · [`InvokeTimeoutSeconds`](#invoketimeoutseconds) 0.
+
+## Packet size
+
+### `MaxPacketBytes`
+
+<Spec type="number (bytes)" default="1,048,576 / 262,144 / 65,536 by profile" on="option, event, function, channel" />
+
+The fallback size cap for both remotes. It is used for [`MaxReliablePacketBytes`](#maxreliablepacketbytes) when that is not set, and to cap [`MaxUnreliablePacketBytes`](#maxunreliablepacketbytes).
+
+On receive, a remote call whose buffer is larger than the cap is dropped whole with reason `MaxPacketBytes` before anything is decoded. On send, an outgoing reliable batch over the cap is dropped whole at flush time, before fragmentation, so a batch larger than the cap is never sent.
+
+When you set this option explicitly, or set `MaxPacketBytes` on an endpoint, the generated receive code also checks it per endpoint. That check compares the size of the **whole received packet**, which can hold many batched events, not the size of the one event. Set per-endpoint caps with that in mind.
+
+```cheeto copy
+option MaxPacketBytes = 65536
+```
+
+<Callout type="info">
+`--doctor` warns when the reliable cap is above 1 MiB, and `--strict` fails when either cap is missing or `0`.
+</Callout>
+
+### `MaxReliablePacketBytes`
+
+<Spec type="number (bytes)" default={<>same as <code>MaxPacketBytes</code></>} />
+
+Size cap for the reliable remote only. A value of `0` disables the check.
+
+### `MaxUnreliablePacketBytes`
+
+<Spec type="number (bytes)" default={<>the smaller of <code>MaxPacketBytes</code> and 1,000 (900 for Competitive)</>} />
+
+Size cap for the unreliable remote. Unreliable events are sent immediately, one remote call per `Fire`, and an event whose encoded size is over the cap is dropped on the sender with `MaxPacketBytes` instead of being passed to Roblox. Keep it at or below Roblox's limit for `UnreliableRemoteEvent` payloads.
+
+## Rate limiting
+
+### `RateLimitPerSecond`
+
+<Spec type="number (per second)" default="0 / 120 / 60 by profile" on="option, event, function, channel" />
+
+A token bucket that refills at this many tokens per second, per sender. `0` disables it. It is enforced in two places:
+
+1. **Per remote call.** The runtime value (profile default or your option) limits how many reliable or unreliable remote calls one peer can make per second. The reliable and unreliable remotes have separate buckets. Excess calls are dropped whole with `RateLimit`.
+2. **Per endpoint.** Only when you set the option explicitly in the schema, or set `RateLimitPerSecond` on the endpoint, is a bucket compiled into that endpoint's receive path. Excess events on that endpoint are dropped with `RateLimit`; other events in the same packet still run.
+
+Both sides enforce it. A client also rate-limits what it receives from the server, so a server that sends many separate unreliable events per second to one player can hit the client's per-call limit. Unreliable events are not batched.
+
+```cheeto copy
+option RateLimitPerSecond = 60
+option RateLimitBurst = 120
+```
+
+### `RateLimitBurst`
+
+<Spec type="number" default={<>0 / 240 / 120 by profile; equal to <code>RateLimitPerSecond</code> when only that is set</>} on="option, event, function, channel" />
+
+Bucket capacity: how many calls can arrive back to back before the per-second rate applies. `0` means "same as `RateLimitPerSecond`".
+
+## Queues
+
+### `MaxQueuedEvents`
+
+<Spec type="number" default={<code>256</code>} on="option, event, function, channel" />
+
+The per-endpoint inbound queue length. Reliable events that arrive before any `On` listener is connected are queued and delivered when one connects; polling events wait in a queue until `Iter` reads them. When the queue is full, further events are dropped with `QueueFull`.
+
+This value is compiled into the endpoints. Security profiles do not change it and `Configure` has no effect on it.
+
+### `MaxQueuedBytes`
+
+<Spec type="number (bytes)" default="262,144 / 131,072 / 65,536 by profile" />
+
+Bytes of outgoing data tracked per peer. When the tracked amount is over this value and [`LowPriorityShedding`](#lowpriorityshedding) is on, newly queued events with `Priority: Cosmetic` or `Priority: Background` are dropped with `Backpressure`. Critical and Gameplay events are never shed. At half of this value the flush step sends the peer's batch immediately.
+
+<Callout type="warning">
+The tracked amount is not reduced for unreliable sends or for broadcasts (`FireAll`, `FireList`, `FireExcept`, `FireGroup`). On a long-running server this can shed Cosmetic and Background broadcasts that are not actually backed up. See [Limitations](/limitations#backpressure-accounting).
+</Callout>
+
+### `MaxBurstBytes`
+
+<Spec type="number (bytes)" default="65,536 / 32,768 / 16,384 by profile" />
+
+The flush step sends a peer's reliable batch as soon as it reaches this size, instead of waiting for the next frame interval. The budget shrinks by a quarter while the peer's recorded round-trip time is above 250 ms or jitter above 100 ms. Those figures come from [`Transport.UpdateNetworkStats`](/reference/api/transport#updatenetworkstats); the runtime does not measure them itself.
+
+### `LowPriorityShedding`
+
+<Spec type="boolean" default={<code>true</code>} />
+
+Allows `Backpressure` drops of Cosmetic and Background events when [`MaxQueuedBytes`](#maxqueuedbytes) is exceeded. Set to `false` to never shed.
+
+## Functions
+
+### `MaxPendingInvokes`
+
+<Spec type="number" default="256 / 64 / 32 by profile" on="option, function" />
+
+How many `Invoke` calls can be waiting for a reply at once. Two limits apply: the module-wide runtime value, and a per-function limit taken from the function's `MaxPendingInvokes` field, or this option if set, or 256. Going over either makes `Invoke` raise `More than N calls ... are awaiting a response`.
+
+Independently of this option, invocation ids are one byte, so at most 255 invokes can be outstanding per module.
+
+### `InvokeTimeoutSeconds`
+
+<Spec type="number (seconds)" default={<><code>0</code> (wait forever)</>} on="option, function" />
+
+How long `Invoke` waits for a reply before it raises `Invoke timed out after N seconds.` `0` waits forever. Timeouts are checked by the flush step, so with [`ManualReplication`](/reference/options/runtime#manualreplication) they only fire when you call `StepReplication`.
+
+<Callout type="warning">
+Each function's timeout is compiled from its own `InvokeTimeoutSeconds` field or this option when written in the schema. The security profiles list 10 s (Production) and 5 s (Competitive), but that runtime value is **not** used by generated invokes, and `Configure` cannot change it. Set this option explicitly in production. See [Limitations](/limitations#invoke-timeouts).
+</Callout>
+
+```cheeto copy
+option InvokeTimeoutSeconds = 10
+```
+
+## Fragmentation
+
+### `ReliableFragmentBytes`
+
+<Spec type="number (bytes)" default={<code>49152</code>} />
+
+An outgoing reliable batch larger than this is split into fragments of at most this many bytes, each sent as its own remote call and reassembled on the other side. `0` disables fragmentation. Fragmentation happens after the [`MaxReliablePacketBytes`](#maxreliablepacketbytes) check, so it cannot be used to send a batch larger than that cap.
+
+### `MaxInFlightFragments`
+
+<Spec type="number" default={<code>32</code>} />
+
+How many partially received fragmented packets one sender may have at once. A fragment that would start another reassembly is dropped with `FragmentOverflow`. `0` means no limit.
+
+### `FragmentTimeoutSeconds`
+
+<Spec type="number (seconds)" default={<code>10</code>} />
+
+A reassembly that has not completed within this time is discarded and reported as `FragmentTimeout`.
+
+## Replay protection
+
+### `ReplayWindowSize`
+
+<Spec type="number" default={<code>128</code>} />
+
+Only applies to packets that carry a sequence number, which means events sent with [`Predict`](/reference/api/event#predict). For those, a sequence number seen before is dropped with `ReplayDuplicate`, and one at least this far behind the highest seen is dropped with `ReplayStale`. Tracked per sender and per event.
+
+<Callout type="warning">
+Events sent with `Fire` carry no sequence number, so this option has no effect on them. Use [`CooldownSeconds`](/reference/fields#cooldownseconds) to limit repeats of an unsequenced action.
+</Callout>
+
+### `ReplayStaleSeconds`
+
+<Spec type="number (seconds)" default={<code>30</code>} />
+
+How long a seen sequence number is remembered before it may be reused. Same precondition as [`ReplayWindowSize`](#replaywindowsize).
+
+## Decode budgets
+
+After a payload is decoded and before any listener runs, the runtime walks the decoded value. These options bound that walk. Violations are dropped with `Canonicalization` or `DecodeBudget`. They apply to every endpoint on both sides, including data the server sends to clients.
+
+### `MaxDecodeOperations`
+
+<Spec type="number" default={<code>100000</code>} />
+
+Maximum number of values visited in one payload. Exceeding it drops the event with `DecodeBudget`.
+
+### `MaxPayloadDepth`
+
+<Spec type="number" default={<code>16</code>} />
+
+Maximum table nesting depth. Deeper payloads are dropped with `Canonicalization`.
+
+### `MaxPayloadStringBytes`
+
+<Spec type="number (bytes)" default={<code>8192</code>} />
+
+Maximum length of any single string in a payload. This applies even when the schema type allows longer strings, so a `string` longer than 8 KB is dropped unless you raise this option.
+
+### `MaxTableKeys`
+
+<Spec type="number" default={<code>2048</code>} />
+
+Maximum number of keys in any single table in a payload, including arrays. Larger tables are dropped with `Canonicalization`. Raise it together with array and map bounds you declare.

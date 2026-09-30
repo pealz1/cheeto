@@ -1,0 +1,85 @@
+---
+title: "Production checklist"
+description: "Everything to check before a schema goes live, and how to enforce it in CI."
+---
+
+import { Callout } from 'nextra/components'
+
+# Production checklist
+
+## Schema options
+
+```cheeto copy
+option ClientOutput = "Network/Client.luau"
+option ServerOutput = "Network/Server.luau"
+
+option Version = 1
+option MinimumSchemaVersion = 1
+
+option SecurityProfile = Production
+option RequirePolicies = true
+option MaxPacketBytes = 65536
+option RateLimitPerSecond = 120
+option InvokeTimeoutSeconds = 10
+option SyncValidation = false
+option WriteValidations = false
+option StrictProduction = true
+
+event Ping {
+    From: Client,
+    Type: Reliable,
+    Call: SingleAsync,
+    Policy: "ping",
+    RateLimitPerSecond: 2
+}
+```
+
+- [ ] `SecurityProfile` is `Production` or `Competitive`, or [`SecurityPreset = Maximum`](/security/maximum-security).
+- [ ] `RequirePolicies = true`.
+- [ ] `MaxPacketBytes`, `RateLimitPerSecond` and `InvokeTimeoutSeconds` are written explicitly. Strict mode does not count profile defaults, and the profile's invoke timeout is not applied to generated invokes.
+- [ ] `SyncValidation` and `WriteValidations` are `false`.
+- [ ] `Version` was increased if the wire layout changed.
+- [ ] `StrictProduction = true`, so the build fails if any of the above regresses.
+
+## Endpoints
+
+- [ ] Every client-sent event and function has a `Policy`, and every policy name has a real rule registered with `Security.RegisterPolicy`. None of the [built-in placeholder names](/security/policies#the-built-in-names) is left unregistered.
+- [ ] Every client-sent endpoint has a cooldown or rate limit that fits real play.
+- [ ] Types are tight: bounded strings and arrays, ranged numbers, classes on instances, no `unknown` from clients.
+- [ ] Clients send intent (`BuyItem(itemId)`), never results (`SetCoins(amount)`).
+- [ ] Objects clients act on are referred to by [handles](/security/handles-and-capabilities), not raw instances, where ownership matters.
+- [ ] Constraint fields have a matching `Validate` hook or policy.
+- [ ] Server-sent events and channels have no `Auth`, `Policy`, cooldown or rate-limit fields.
+- [ ] A few [honeypots](/security/honeypots) are declared, and nothing calls them.
+
+## Server code
+
+- [ ] `Security.OnViolation` is connected and logs to somewhere you read.
+- [ ] Every server teleport uses `Security.TeleportCharacter` if character integrity is on.
+- [ ] Every function handler can error safely; clients `pcall` their invokes.
+
+## CI
+
+Run these on every change to the schema:
+
+```sh copy
+cheeto network --hardening-checklist --yes
+cheeto network --check-lock --yes
+cheeto network --benchmark --yes
+```
+
+| Command | Fails when |
+| --- | --- |
+| [`--hardening-checklist`](/reference/cli#--hardening-checklist) | Any strict check fails, `RequirePolicies` is off, or raw production capture is on |
+| [`--check-lock`](/reference/cli#--check-lock) | The schema surface changed without an updated `cheeto.lock` |
+| [`--benchmark`](/reference/cli#--benchmark) | Generated modules grew past the size thresholds |
+
+<Callout type="info">
+`--ci` runs doctor, benchmark, load-sim, capture-replay, golden-snapshots, compatibility, schema-docs and check-lock together, but not the hardening checklist. Run that separately.
+</Callout>
+
+## After launch
+
+- [ ] Watch `Stats().DroppedPackets` and `RateLimitHits` on live servers; real players hitting limits means limits are too tight.
+- [ ] Review violation logs weekly, and kill-switch any endpoint under active abuse.
+- [ ] Keep security kicks off until reports from live servers look clean.

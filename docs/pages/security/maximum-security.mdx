@@ -1,0 +1,116 @@
+---
+title: "Profiles and presets"
+description: "SecurityProfile chooses limits; SecurityPreset = Maximum switches on every optional protection."
+---
+
+import { Callout, Steps } from 'nextra/components'
+
+# Profiles and presets
+
+Two options set many defaults at once.
+
+## SecurityProfile
+
+[`SecurityProfile`](/reference/options/security#securityprofile) picks packet, rate, queue and invoke limits.
+
+| | Development | Production | Competitive |
+| --- | --- | --- | --- |
+| Max reliable packet | 1 MiB | 256 KiB | 64 KiB |
+| Max unreliable packet | 1,000 B | 1,000 B | 900 B |
+| Rate limit per remote | off | 120/s, burst 240 | 60/s, burst 120 |
+| Max pending invokes | 256 | 64 | 32 |
+
+Use `Development` in Studio, `Production` for most live games, and `Competitive` where abuse is likely and traffic is predictable. Every limit can still be set individually. See [Transport limits](/reference/options/limits).
+
+## SecurityPreset = Maximum
+
+`option SecurityPreset = Maximum` changes these defaults:
+
+| Option | Becomes |
+| --- | --- |
+| `SecurityProfile` | `Competitive` |
+| `RequirePolicies` | `true`: every client-sent endpoint needs a `Policy` |
+| `EnableClientShield`, `ClientShieldStrict`, `ClientShieldKick` | `true`: exploit tripwires, and kick on the first hit |
+| `EnableClientIntegrity` | `true`: periodic liveness challenges |
+| `EnableCharacterIntegrity` | `true`, in `Correct` mode: impossible movement is pulled back |
+| `EnableRemoteNameRotation`, `EnableRemoteDecoys` | `true`, with 8 decoys |
+
+Character kicks stay off. Anything you set explicitly overrides the preset.
+
+```cheeto copy
+option ClientOutput = "Network/Client.luau"
+option ServerOutput = "Network/Server.luau"
+option SecurityPreset = Maximum
+option Version = 1
+option MinimumSchemaVersion = 1
+option InvokeTimeoutSeconds = 10
+
+event DamageRequest {
+    From: Client,
+    Type: Reliable,
+    Call: SingleAsync,
+    Policy: "damage",
+    CooldownSeconds: 0.2,
+    Data: u16(0..200)
+}
+```
+
+## Rolling it out
+
+`Maximum` kicks players. On a live game, turn it on in stages.
+
+<Steps>
+
+### Start reporting only
+
+Keep every protection on but disable kicks and corrections:
+
+```cheeto copy
+option SecurityPreset = Maximum
+option ClientShieldKick = false
+option CharacterIntegrityMode = Report
+```
+
+### Register real policies and watch violations
+
+Replace every built-in policy name you use, and log violations:
+
+```lua copy filename="ServerScriptService/Network.server.luau"
+local Network = require(ReplicatedStorage.Network.Server)
+
+Network.Security.RegisterPolicy("damage", function(context)
+    local character = context.Source.Character
+    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+    return humanoid ~= nil and humanoid.Health > 0, "dead"
+end)
+
+Network.Security.OnViolation(function(report)
+    Log.Warn("net", report.Reason, report.Player, report.Event, report.Action)
+end)
+```
+
+Require the client module early, from a LocalScript in `StarterPlayerScripts`, so the shield starts before other code runs:
+
+```lua copy filename="StarterPlayerScripts/Network.client.luau"
+require(ReplicatedStorage.Network.Client)
+```
+
+### Tune on real sessions
+
+Look at which reasons fire and for whom. Raise [movement limits](/reference/options/character-integrity) for mechanics that move players fast, and wrap server teleports in [`Security.TeleportCharacter`](/reference/api/security#teleportcharacter). Investigate every shield report on a real player before trusting it.
+
+### Enforce
+
+Remove the overrides so corrections and shield kicks apply. Enable character kicks last, and only once reports are clean:
+
+```cheeto copy
+option SecurityPreset = Maximum
+option CharacterIntegrityMode = Kick
+option CharacterIntegrityKick = true
+```
+
+</Steps>
+
+<Callout type="warning">
+`ClientShieldStrict` under `Maximum` means one detection kicks. A false positive from a legitimate tool or plugin removes a real player. Keep `ClientShieldKick = false` until you have watched reports on live servers.
+</Callout>

@@ -1,0 +1,390 @@
+---
+title: "Endpoint fields"
+description: "Every field accepted inside event, function and channel blocks, with type, default, and exact runtime behaviour."
+---
+
+import { Callout } from 'nextra/components'
+import { Spec } from '../../components/Reference'
+
+# Endpoint fields
+
+Fields go inside an [`event`](/reference/declarations/event), [`function`](/reference/declarations/function) or [`channel`](/reference/declarations/channel) block as `Name: Value`, separated by commas. Field names are also accepted in all lowercase, so `from: Client` works too. An unknown field, a repeated field, or a value outside a field's allowed set is a compile error.
+
+<Callout type="warning">
+**Receive-side checks run where the data arrives.** `Auth`, `Policy`, `PolicyGroup`, `CooldownSeconds`, the rate limits and `Honeypot` are evaluated by the receiver. For client-to-server events and functions that is the server. For server-to-client events and channels it is the **client**, where rules you registered on the server do not exist, so the client drops everything. Only put access-control fields on endpoints that clients send.
+</Callout>
+
+## Summary
+
+| Field | event | function | channel | Kind |
+| --- | --- | --- | --- | --- |
+| [`From`](#from) | required | | | Delivery |
+| [`Type`](#type) | required | | optional | Delivery |
+| [`Call`](#call) | required | | | Delivery |
+| [`Poll`](#poll) | ✓ | | | Delivery |
+| [`Yield`](#yield) | | required | | Delivery |
+| [`Data`](#data) | ✓ | ✓ | required | Payload |
+| [`Return`](#return) | | ✓ | | Payload |
+| [`Predict`](#predict) | ✓ | | | Delivery |
+| [`Scope`](#scope) | | | ✓ | Channel |
+| [`TickRate`](#tickrate) | | | ✓ | Channel |
+| [`Delta`](#delta) | | | ✓ | Channel |
+| [`KeyframeRate`](#keyframerate) | | | ✓ | Channel |
+| [`Interest`](#interest) | | | ✓ | Channel |
+| [`InterestRadius`](#interestradius) | | | ✓ | Channel |
+| [`Auth`](#auth) | ✓ | ✓ | ✓ | Access |
+| [`Policy`](#policy) | ✓ | ✓ | ✓ | Access |
+| [`PolicyGroup`](#policygroup) | ✓ | ✓ | | Access |
+| [`Honeypot`](#honeypot) | ✓ | ✓ | | Access |
+| [`CooldownSeconds`](#cooldownseconds) | ✓ | ✓ | | Limit |
+| [`RateLimitPerSecond`](#ratelimitpersecond) | ✓ | ✓ | ✓ | Limit |
+| [`RateLimitBurst`](#ratelimitburst) | ✓ | ✓ | ✓ | Limit |
+| [`MaxPacketBytes`](#maxpacketbytes) | ✓ | ✓ | ✓ | Limit |
+| [`MaxQueuedEvents`](#maxqueuedevents) | ✓ | ✓ | ✓ | Limit |
+| [`MaxPendingInvokes`](#maxpendinginvokes) | | ✓ | | Limit |
+| [`InvokeTimeoutSeconds`](#invoketimeoutseconds) | | ✓ | | Limit |
+| [`Idempotency`](#idempotency) | ✓ | ✓ | | Replay |
+| [`Risk`](#risk) | ✓ | ✓ | ✓ | Constraint |
+| [`MaxDistance`](#maxdistance) | ✓ | ✓ | | Constraint |
+| [`RequireOwnership`](#requireownership) | ✓ | ✓ | | Constraint |
+| [`RequireTeam`](#requireteam) | ✓ | ✓ | | Constraint |
+| [`RequireZone`](#requirezone) | ✓ | ✓ | | Constraint |
+| [`RequireMatch`](#requirematch) | ✓ | ✓ | | Constraint |
+| [`RequireInventoryOwnership`](#requireinventoryownership) | ✓ | ✓ | | Constraint |
+| [`RequireCharacterState`](#requirecharacterstate) | ✓ | ✓ | | Constraint |
+| [`RequireObjectHandle`](#requireobjecthandle) | ✓ | ✓ | | Constraint |
+| [`RequireServerKnownId`](#requireserverknownid) | ✓ | ✓ | | Constraint |
+| [`Priority`](#priority) | ✓ | ✓ | ✓ | Scheduling |
+| [`ReliabilityMode`](#reliabilitymode) | ✓ | | | Scheduling |
+| [`CoalesceKey`](#coalescekey) | ✓ | | | Scheduling |
+| [`WireId`](#wireid) | ✓ | ✓ | ✓ | Identity |
+| [`ReservedId`](#reservedid) | ✓ | ✓ | ✓ | Identity |
+| [`DeprecatedId`](#deprecatedid) | ✓ | ✓ | ✓ | Identity |
+
+## Delivery
+
+### `From`
+
+<Spec type="identifier" default="required" values={<><code>Server</code>, <code>Client</code></>} on="event" />
+
+Which side sends the event. The sending side's module gets the fire methods and the receiving side gets `On` (or `Iter` for polling). Functions have no `From`: clients always invoke and the server always answers.
+
+### `Type`
+
+<Spec type="identifier" default={<>required for events; <code>Reliable</code> for channels</>} values={<><code>Reliable</code>, <code>Unreliable</code></>} on="event, channel" />
+
+- `Reliable` events are batched per peer, sent once per frame over a `RemoteEvent`, arrive in order, and can be [fragmented](/concepts/batching-and-flushing#fragmentation) when large.
+- `Unreliable` events are sent immediately, one `UnreliableRemoteEvent` call per `Fire`, may be lost or reordered, and are capped by [`MaxUnreliablePacketBytes`](/reference/options/limits#maxunreliablepacketbytes).
+
+Functions are always reliable.
+
+### `Call`
+
+<Spec type="identifier" default="required" values={<><code>SingleSync</code>, <code>SingleAsync</code>, <code>ManySync</code>, <code>ManyAsync</code>, <code>Polling</code></>} on="event" />
+
+How the receiving side delivers events.
+
+| Value | Listeners | Listener runs |
+| --- | --- | --- |
+| `SingleSync` | One; connecting another replaces it | Inline, on the receive thread |
+| `SingleAsync` | One; connecting another replaces it | In a new thread (`task.spawn`) |
+| `ManySync` | Any number | Inline, in connection order |
+| `ManyAsync` | Any number | Each in a new thread |
+| `Polling` | None | Queued; read with `Iter` |
+
+Sync listeners must not yield or error. A yielding sync listener delays every event after it in the same packet; [`SyncValidation`](/reference/options/runtime#syncvalidation) warns when it happens.
+
+### `Poll`
+
+<Spec type="boolean" default={<code>false</code>} on="event" />
+
+`Poll: true` forces `Call` to `Polling` regardless of what `Call` says. `Call` must still be present.
+
+### `Yield`
+
+<Spec type="identifier" default="required" values={<><code>Coroutine</code>, <code>Future</code>, <code>Promise</code></>} on="function" />
+
+What `Invoke` returns on the client.
+
+| Value | `Invoke` returns | Needs |
+| --- | --- | --- |
+| `Coroutine` | The return value, after yielding | nothing |
+| `Future` | A Future created with `Future.Try` | [`FutureLibrary`](/reference/options/output#futurelibrary) |
+| `Promise` | A Promise | [`PromiseLibrary`](/reference/options/output#promiselibrary) |
+
+### `Data`
+
+<Spec type="type or type pack" default="no data" on="event, function, channel (required)" />
+
+What the endpoint carries. Any [type](/reference/types/numbers), a reference to a declared type, an inline `struct`, or a parenthesized **type pack** of several values:
+
+```cheeto copy
+event Hit {
+    From: Client,
+    Type: Reliable,
+    Call: SingleAsync,
+    Policy: "combat",
+    Data: (Instance(Player), u16(0..500), boolean)
+}
+```
+
+A type pack becomes separate arguments: `Fire(target, damage, critical)`.
+
+### `Return`
+
+<Spec type="type or type pack" default="no value" on="function" />
+
+What the server's listener returns to the invoking client.
+
+### `Predict`
+
+<Spec type="boolean" default={<>generated unless <code>EnablePrediction = false</code></>} on="event (client-origin)" />
+
+Client-origin events get a [`Predict`](/reference/api/event#predict) method by default. `Predict: true` keeps it even when [`EnablePrediction`](/reference/options/runtime#enableprediction) is `false` at compile time.
+
+## Channels
+
+### `Scope`
+
+<Spec type="identifier" default={<code>Player</code>} values={<><code>Player</code>, <code>Global</code>, <code>Group</code>, <code>Zone</code>, <code>Party</code>, <code>Match</code>, <code>Team</code>, <code>Cell</code>, <code>Owner</code></>} on="channel" />
+
+Chooses what the shorthand `Set` and `Patch` methods target. `Global` maps them to `SetAll` and `PatchAll`, `Group` to `SetGroup` and `PatchGroup`, and every other value to the per-player `SetPlayer` and `PatchPlayer`. All targeted variants are generated regardless.
+
+### `TickRate`
+
+<Spec type="number (per second)" default="every flush" on="channel" />
+
+How often the server automatically flushes pending changes, at most. `20` flushes at most every 50 ms. Without it, pending changes are flushed on every replication step.
+
+### `Delta`
+
+<Spec type="boolean" default={<><code>true</code> when <code>Data</code> is a struct</>} on="channel" />
+
+With a struct payload, `Patch` sends only the changed fields plus a bitmask, instead of the whole value. `Delta: false` always sends the full value. Non-struct payloads always send the full value.
+
+### `KeyframeRate`
+
+<Spec type="number (per second)" default="none" on="channel" />
+
+How often a full snapshot is forced even when only deltas are pending, so a client that missed state recovers.
+
+### `Interest`
+
+<Spec type="identifier" default={<code>None</code>} values={<><code>None</code>, <code>Zone</code>, <code>Distance</code>, <code>Party</code>, <code>Match</code>, <code>Team</code>, <code>Cell</code>, <code>Owner</code></>} on="channel" />
+
+`Zone` maps `Set`/`Patch` to `SetZone`/`PatchZone`, and `Distance` maps them to `SetDistance`/`PatchDistance`. Other values currently behave like `None`. See [Audiences and routing](/concepts/interest-and-routing).
+
+### `InterestRadius`
+
+<Spec type="number (studs)" default={<code>0</code>} on="channel" />
+
+Default radius for the `Distance` variants when no radius is passed.
+
+## Access control
+
+### `Auth`
+
+<Spec type="string" default="none" on="event, function, channel" />
+
+Names an [auth rule](/security/auth-rules) that must return `true` for each received event. Register rules with [`UseAuth`](/reference/api/module#useauth). The built-in rules are `AlivePlayer` (sender is a player still in the game) and `ServerOnly` (sender is the server).
+
+A rule name that was never registered drops **every** packet on the endpoint with `AuthRejected`, and logs one warning per name. A rule that errors also drops.
+
+```cheeto copy
+event UseItem {
+    From: Client,
+    Type: Reliable,
+    Call: SingleAsync,
+    Auth: "AlivePlayer",
+    Policy: "inventory",
+    Data: u16
+}
+```
+
+### `Policy`
+
+<Spec type="string" default="none" on="event, function, channel" />
+
+Names a [policy](/security/policies) that must allow the sender. Policies run before the payload is decoded and receive a context with the sender, endpoint name, constraints and packet size. Register them with [`Security.RegisterPolicy`](/reference/api/security#registerpolicy).
+
+An unregistered policy name drops every packet with `PolicyRejected`. A policy can return a reason string as its second value, which becomes the drop reason.
+
+<Callout type="error">
+The built-in names `damage`, `currency`, `trade`, `inventory`, `teleport`, `admin`, `crafting`, `marketplace` and `moderation` are **placeholders that allow every connected player**. They exist so schemas compile and run; they check nothing. Replace each one you use with `Security.RegisterPolicy`.
+</Callout>
+
+### `PolicyGroup`
+
+<Spec type="string" default="none" on="event, function" />
+
+Names a group registered with [`Security.RegisterPolicyGroup`](/reference/api/security#registerpolicygroup). Every policy in the group must allow the sender. A group that was never registered adds no checks. The group name is also the unit for [`Security.KillPolicyGroup`](/reference/api/security#killpolicygroup).
+
+### `Honeypot`
+
+<Spec type="boolean" default={<code>false</code>} on="event, function" />
+
+Marks an endpoint that no legitimate code calls. Traffic on it is dropped before rate limiting and decoding, with reason `Honeypot`. See [Honeypots](/security/honeypots).
+
+## Limits
+
+### `CooldownSeconds`
+
+<Spec type="number (seconds)" default={<><code>0</code> (off)</>} on="event, function" />
+
+Minimum time between two accepted calls from the same sender on this endpoint. Calls inside the window are dropped with `PolicyRejected` before decoding. Enforced by the runtime; no rule needed.
+
+Set it looser than the client's own retry interval, or legitimate retries are dropped.
+
+### `RateLimitPerSecond`
+
+<Spec type="number" default={<>the schema's <code>RateLimitPerSecond</code> option if written, else off</>} on="event, function, channel" />
+
+A per-sender token bucket for this endpoint. Excess events are dropped with `RateLimit`. See [`RateLimitPerSecond`](/reference/options/limits#ratelimitpersecond) for how this interacts with the per-packet limit.
+
+### `RateLimitBurst`
+
+<Spec type="number" default={<>the schema option, else equal to the rate</>} on="event, function, channel" />
+
+Bucket capacity for this endpoint.
+
+### `MaxPacketBytes`
+
+<Spec type="number (bytes)" default={<>the schema's <code>MaxPacketBytes</code> option if written, else no per-endpoint check</>} on="event, function, channel" />
+
+Drops this endpoint's event with `MaxPacketBytes` when the **received packet** it arrived in is larger than this. The check uses the whole packet's size, which includes any other events batched with it.
+
+### `MaxQueuedEvents`
+
+<Spec type="number" default={<>the schema option, else <code>256</code></>} on="event, function, channel" />
+
+Maximum events waiting for a listener (or for `Iter`) on this endpoint before new ones are dropped with `QueueFull`.
+
+### `MaxPendingInvokes`
+
+<Spec type="number" default={<>the schema option, else <code>256</code></>} on="function" />
+
+Maximum invokes of this function waiting for a reply on one client. `Invoke` raises an error beyond it.
+
+### `InvokeTimeoutSeconds`
+
+<Spec type="number (seconds)" default={<>the schema option, else <code>0</code> (never)</>} on="function" />
+
+How long `Invoke` waits before raising `Invoke timed out after N seconds.`
+
+## Replay
+
+### `Idempotency`
+
+<Spec type="boolean" default={<code>false</code>} on="event, function" />
+
+Drops a second packet with the same sequence number on this endpoint from the same sender within 120 seconds, with reason `ReplayDuplicate`.
+
+<Callout type="warning">
+Only packets sent with [`Predict`](/reference/api/event#predict) carry a sequence number. On anything sent with `Fire` or `Invoke` this field does nothing. See [Replay and idempotency](/security/replay-and-idempotency).
+</Callout>
+
+## Constraints
+
+Constraint fields are **not enforced by the runtime**. They are copied into a `Constraints` table and handed to your policies and to the [`Validate`](/reference/api/hooks#validate) hook. Declaring one without a rule that reads it does nothing. See [Constraints and Validate](/security/constraints).
+
+The `Validate` hook only runs for endpoints that declare at least one payload constraint (`MaxDistance`, `RequireOwnership`, `RequireTeam`, `RequireZone`, `RequireMatch`, `RequireInventoryOwnership`, `RequireObjectHandle`, `RequireServerKnownId`).
+
+### `Risk`
+
+<Spec type="identifier" default="none" on="event, function, channel" />
+
+A free-form tag, such as `Damage` or `Currency`, passed as `Constraints.Risk`. Does not trigger `Validate`.
+
+### `MaxDistance`
+
+<Spec type="number (studs)" default={<code>0</code>} on="event, function" />
+
+Passed as `Constraints.MaxDistance`.
+
+### `RequireOwnership`
+
+<Spec type="boolean" default={<code>false</code>} on="event, function" />
+
+Passed as `Constraints.RequireOwnership`.
+
+### `RequireTeam`
+
+<Spec type="string" default="none" on="event, function" />
+
+Passed as `Constraints.RequireTeam`.
+
+### `RequireZone`
+
+<Spec type="string" default="none" on="event, function" />
+
+Passed as `Constraints.RequireZone`.
+
+### `RequireMatch`
+
+<Spec type="string" default="none" on="event, function" />
+
+Passed as `Constraints.RequireMatch`.
+
+### `RequireInventoryOwnership`
+
+<Spec type="boolean" default={<code>false</code>} on="event, function" />
+
+Passed as `Constraints.RequireInventoryOwnership`.
+
+### `RequireCharacterState`
+
+<Spec type="string" default="none" on="event, function" />
+
+Passed as `Constraints.RequireCharacterState`. It describes the sender, not the payload, so check it in a policy. Does not trigger `Validate`.
+
+### `RequireObjectHandle`
+
+<Spec type="boolean" default={<code>false</code>} on="event, function" />
+
+Passed as `Constraints.RequireObjectHandle`. Pair it with [handles](/security/handles-and-capabilities).
+
+### `RequireServerKnownId`
+
+<Spec type="boolean" default={<code>false</code>} on="event, function" />
+
+Passed as `Constraints.RequireServerKnownId`.
+
+## Scheduling
+
+### `Priority`
+
+<Spec type="identifier" default={<code>Gameplay</code>} values={<><code>Critical</code>, <code>Gameplay</code>, <code>Cosmetic</code>, <code>Background</code></>} on="event, function, channel" />
+
+Decides which outgoing events may be shed under backpressure: `Cosmetic` and `Background` events are dropped with `Backpressure` when the peer's tracked queue is over [`MaxQueuedBytes`](/reference/options/limits#maxqueuedbytes) and [`LowPriorityShedding`](/reference/options/limits#lowpriorityshedding) is on. It does not reorder events or change when they are flushed.
+
+### `ReliabilityMode`
+
+<Spec type="identifier" default="no effect" values={<><code>Reliable</code>, <code>Unreliable</code>, <code>Sequenced</code>, <code>Latest</code></>} on="event" />
+
+Accepted and ignored. Delivery is decided by [`Type`](#type) alone.
+
+### `CoalesceKey`
+
+<Spec type="string" default="none" on="event" />
+
+Each send also stores its payload under this key in a per-peer bucket, replacing the previous one, which you can read with [`Transport.FlushCoalesced`](/reference/api/transport#flushcoalesced). The event is still sent every time; this does not merge or suppress sends.
+
+## Identity
+
+### `WireId`
+
+<Spec type="number" default="declaration order" on="event, function, channel" />
+
+Recorded in `cheeto.lock`. The generated modules do **not** use it: endpoints are numbered by declaration order. Reordering or removing endpoints changes the wire layout whatever `WireId` says. See [Limitations](/limitations#wire-ids).
+
+### `ReservedId`
+
+<Spec type="number" default="none" on="event, function, channel" />
+
+Recorded in `cheeto.lock` as reserved. Same caveat as [`WireId`](#wireid).
+
+### `DeprecatedId`
+
+<Spec type="number" default="none" on="event, function, channel" />
+
+Recorded in `cheeto.lock` as deprecated. Same caveat as [`WireId`](#wireid).

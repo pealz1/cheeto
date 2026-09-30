@@ -1,0 +1,35 @@
+---
+title: "Arrays"
+description: "Lists of one element type, with optional length bounds."
+---
+
+import { Callout } from 'nextra/components'
+
+# Arrays
+
+Square brackets after a type make an array of it:
+
+```cheeto copy
+type Tags = string(1..16)[]
+type Party = f64[1..4]
+type Grid = u8[..16][..16]
+
+struct Item {
+    Id: u16,
+    Count: u8
+}
+
+struct Inventory {
+    Items: Item[..64]
+}
+```
+
+- A range inside the brackets bounds the element count. A received array outside it drops the event with `MalformedPacket`.
+- `[N]` is an exact length and writes no length prefix.
+- Arrays can nest: `u8[..16][..16]` is an array of up to 16 arrays of up to 16 bytes.
+
+Arrays are sent as a length followed by each element, so they must be proper Luau arrays: keys `1` to `n` with no holes.
+
+<Callout type="warning">
+The runtime drops any received table with more than [`MaxTableKeys`](/reference/options/limits#maxtablekeys) entries (2,048 by default) with `Canonicalization`, whatever the declared bound. Raise that option for larger arrays.
+</Callout>

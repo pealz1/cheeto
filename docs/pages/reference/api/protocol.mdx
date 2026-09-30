@@ -1,0 +1,57 @@
+---
+title: "Protocol"
+description: "Results of the capability handshake."
+---
+
+import { Sig } from '../../../components/Reference'
+
+# Protocol
+
+`Network.Protocol` reports what the [handshake](/reference/options/versioning#enableprotocolhandshake) learned about each peer.
+
+## Info
+
+<Sig side="both">{"Info(peer: any?): ProtocolInfo"}</Sig>
+
+Returns this module's versions and what a peer reported:
+
+```lua
+{
+    LocalProtocolVersion: number,  -- always 2
+    LocalSchemaVersion: number,
+    MinimumSchemaVersion: number,
+    ProtocolMode: "StrictV2Only",
+    Peer: {
+        ProtocolVersion: number,
+        SchemaVersion: number,
+        MinimumSchemaVersion: number,
+        SchemaHash: string,
+        Compatible: boolean,
+        LastSeen: number,
+    }?,
+}
+```
+
+`Peer` is `nil` until that peer's handshake has been received. On the server, pass a player. On the client, pass nothing.
+
+```lua copy
+Players.PlayerAdded:Connect(function(player)
+    task.wait(10)
+    local peer = Network.Protocol.Info(player).Peer
+    if peer and not peer.Compatible then
+        player:Kick("Please rejoin: this server is running a different version.")
+    end
+end)
+```
+
+## Peers
+
+<Sig side="both">{"Peers: {[any]: PeerCapability}"}</Sig>
+
+The live table of every peer's handshake, keyed by player (or by an internal key for the server). Read it; do not modify it.
+
+## QueueHandshake
+
+<Sig side="both">{"QueueHandshake(peer: any?): ()"}</Sig>
+
+Writes this module's handshake into the current outgoing batch if it has not been sent yet. The generated code calls it on every send, so you rarely need it.

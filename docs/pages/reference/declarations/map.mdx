@@ -1,0 +1,37 @@
+---
+title: "map"
+description: "Key-value tables with one key type and one value type."
+---
+
+# map
+
+A `map` is a table whose keys all have one type and whose values all have one type.
+
+```cheeto copy
+map Scores = { [string]: u32 }
+map Owners = { [u16]: Instance(Player) }
+```
+
+## Size
+
+Maps cannot be given a size range. The entry count is sent as a length prefix, so a map holds at most 65,535 entries, and the runtime drops any received table with more than [`MaxTableKeys`](/reference/options/limits#maxtablekeys) keys (2,048 by default). To bound a collection tightly, use an [array](/reference/types/arrays) of structs with a range instead.
+
+## Generics
+
+```cheeto copy
+map Dictionary<K, V> = { [K]: V }
+map NameToId = Dictionary<string, u32>
+```
+
+## Inline maps
+
+A map can also be written inline where a type is expected:
+
+```cheeto copy
+event Leaderboard {
+    From: Server,
+    Type: Reliable,
+    Call: ManyAsync,
+    Data: map { [string]: u32 }
+}
+```

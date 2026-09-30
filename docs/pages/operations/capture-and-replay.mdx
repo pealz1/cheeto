@@ -1,0 +1,68 @@
+---
+title: "Capture and replay"
+description: "Record traffic from a session and feed it back through the real receive path."
+---
+
+import { Callout } from 'nextra/components'
+
+# Capture and replay
+
+A capture records every event a module sends, receives or drops, with a readable summary of its data and, where allowed, the raw bytes. Use it to reproduce a bug from a real session, or to see exactly what an exploiter sent.
+
+## Recording
+
+```lua copy
+Network.Capture.Start({
+    Limit = 500,
+    Redactions = { "Password", "Token" },
+})
+
+-- ... play ...
+
+Network.Capture.Stop()
+local entries = Network.Capture.Entries()
+for _, entry in entries do
+    print(entry.Direction, entry.Name, entry.Status, entry.Reason, entry.PayloadSummary)
+end
+```
+
+- The buffer keeps the newest [`CaptureLimit`](/reference/options/diagnostics#capturelimit) entries.
+- Fields named in the redaction list appear as `[redacted]` in summaries.
+- Outside the `Development` profile, raw bytes are not kept unless you turn off [`NoRawCaptureInProduction`](/reference/options/diagnostics#norawcaptureinproduction). Summaries are always kept.
+
+See [Capture](/reference/api/capture) for every entry field.
+
+## Replaying through your own logic
+
+[`Capture.Replay`](/reference/api/capture#replay) calls a handler per endpoint for each accepted entry. Nothing is decoded; you get the entry and its summary.
+
+```lua copy
+local result = Network.Capture.Replay(entries, {
+    Purchase = function(entry)
+        print("purchase at", entry.Time, entry.PayloadSummary)
+    end,
+})
+print(result.Accepted, result.Dropped, result.Replayed)
+```
+
+## Replaying raw bytes
+
+[`Capture.ReplayRaw`](/reference/api/capture#replayraw) feeds each entry's raw bytes into the module's real receive path, as if they had just arrived: every check, the decoder, validation and your listeners run. This reproduces decoding bugs and exploit packets exactly.
+
+```lua copy
+local received = {}
+for _, entry in entries do
+    if entry.Direction == "receive" then
+        table.insert(received, entry)
+    end
+end
+Network.Capture.ReplayRaw(received, Players:GetPlayers()[1])
+```
+
+<Callout type="warning">
+Only replay in Studio or a private test server. On the server, always pass a real player as the source: captured sources are stored as strings. Filter to received entries, or your own sends are replayed as if a player sent them.
+</Callout>
+
+## Capturing on demand
+
+Capture costs an allocation per event. Instead of leaving [`EnablePacketCapture`](/reference/options/diagnostics#enablepacketcapture) on, start a capture from an admin command when you need one, and stop it after.

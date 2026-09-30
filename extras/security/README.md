@@ -6,7 +6,7 @@ Standalone client and server detectors that run alongside any networking setup. 
 - **Movement anti-cheat** catches speed, fly, noclip, infinite jump, mass, void teleport, anti-gravity and anti-knockback, and rolls the player back well before it ever reports them.
 
 > [!TIP]
-> If your game already uses a Cheeto schema, start with [`SecurityPreset = Maximum`](https://pealz1.github.io/cheeto/guides/maximum-security) instead. It runs liveness challenges and server-side character checks over Cheeto's own transport, without a second RemoteEvent. This toolkit is for games that have not moved their networking to Cheeto yet, or that want an extra layer.
+> If your game already uses a Cheeto schema, start with [`SecurityPreset = Maximum`](https://pealz.cc/cheeto/security/maximum-security) instead. It runs liveness challenges and server-side character checks over Cheeto's own transport, without a second RemoteEvent. This toolkit is for games that have not moved their networking to Cheeto yet, or that want an extra layer.
 
 ## Files
 

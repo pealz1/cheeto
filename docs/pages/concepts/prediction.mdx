@@ -1,0 +1,54 @@
+---
+title: "Prediction"
+description: "Act immediately on the client, then confirm or undo when the server answers."
+---
+
+import { Callout } from 'nextra/components'
+
+# Prediction
+
+Prediction lets a client show the result of an action before the server confirms it, and undo it if the server refuses. Cheeto tracks the pending predictions and tells you when each is confirmed or rolled back.
+
+## The flow
+
+1. The client calls the event's [`Predict`](/reference/api/event#predict) instead of `Fire`. It sends the event with a prediction id and returns the id.
+2. The client applies the action locally, remembering the id.
+3. The server receives the event. If it decodes successfully, the server automatically sends back an acknowledgement; if decoding fails, it sends a rejection with the reason.
+4. On the client, an acknowledgement calls [`Prediction.Ack`](/reference/api/prediction#ack) and a rejection calls [`Prediction.Rollback`](/reference/api/prediction#rollback), which run the [`Ack`](/reference/api/hooks#ack) and [`Rollback`](/reference/api/hooks#rollback) hooks.
+
+```lua copy filename="Client.client.luau"
+local placed = {}
+
+Network.Use("Ack", function(context)
+    placed[context.Id] = nil
+end)
+
+Network.Use("Rollback", function(context)
+    local block = placed[context.Id]
+    if block then
+        block:Destroy()
+        placed[context.Id] = nil
+    end
+end)
+
+local function place(position)
+    local id = Network.PlaceBlock.Predict(position)
+    placed[id] = Blocks.CreateGhost(position)
+end
+```
+
+## What the acknowledgement means
+
+The acknowledgement is sent when the event **decodes**, before your server listener runs. It confirms that the server accepted the data, not that your game logic succeeded. If your listener can still refuse the action, send your own result event and roll back from it.
+
+<Callout type="warning">
+Events dropped before decoding, by a policy, auth rule, cooldown, rate limit or kill switch, get no reply at all, so their predictions stay pending. Roll back predictions older than a timeout yourself; see [`Prediction.Pending`](/reference/api/prediction#pending).
+</Callout>
+
+## Sequence numbers
+
+The prediction id doubles as a sequence number, which is what enables [replay protection](/security/replay-and-idempotency) and [`Idempotency`](/reference/fields#idempotency) for that event. Events sent with `Fire` have no sequence number and get neither.
+
+## Turning it off
+
+With [`EnablePrediction`](/reference/options/runtime#enableprediction) set to `false`, `Predict` is not generated, unless an event sets `Predict: true`, and the prediction helpers error at runtime.

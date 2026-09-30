@@ -1,0 +1,75 @@
+---
+title: "Constraints and Validate"
+description: "Declaring payload rules in the schema and enforcing them in a Validate hook."
+---
+
+import { Callout } from 'nextra/components'
+
+# Constraints and Validate
+
+Constraint fields let you write down an endpoint's rules in the schema, next to its data: how far away a target may be, whether the sender must own it, which team they must be on. Cheeto hands them to your code. **It does not enforce any of them by itself.**
+
+| Field | Type | Describes |
+| --- | --- | --- |
+| [`MaxDistance`](/reference/fields#maxdistance) | number | The payload |
+| [`RequireOwnership`](/reference/fields#requireownership) | boolean | The payload |
+| [`RequireTeam`](/reference/fields#requireteam) | string | The payload |
+| [`RequireZone`](/reference/fields#requirezone) | string | The payload |
+| [`RequireMatch`](/reference/fields#requirematch) | string | The payload |
+| [`RequireInventoryOwnership`](/reference/fields#requireinventoryownership) | boolean | The payload |
+| [`RequireObjectHandle`](/reference/fields#requireobjecthandle) | boolean | The payload |
+| [`RequireServerKnownId`](/reference/fields#requireserverknownid) | boolean | The payload |
+| [`RequireCharacterState`](/reference/fields#requirecharacterstate) | string | The sender |
+| [`Risk`](/reference/fields#risk) | identifier | A tag |
+
+## Where to enforce them
+
+A constraint about the **sender** (`RequireCharacterState`) can be checked in a [policy](/security/policies), because the sender is known before decoding. A constraint about the **payload** needs the decoded data, which only exists after decoding, so it goes in a `Validate` hook.
+
+The `Validate` hook runs after decoding and before the listener, and only for endpoints that declare at least one payload constraint. Returning `false` drops the event with `ConstraintRejected`.
+
+```cheeto copy
+event Interact {
+    From: Client,
+    Type: Reliable,
+    Call: SingleAsync,
+    Policy: "interact",
+    MaxDistance: 12,
+    RequireOwnership: true,
+    Data: Instance(Model)
+}
+```
+
+```lua copy
+Network.Use("Validate", function(context)
+    local constraints = context.Constraints
+    local target = context.Payload[1]
+    local character = context.Source.Character
+    if not character then
+        return false
+    end
+
+    if constraints.MaxDistance > 0 then
+        local distance = (target:GetPivot().Position - character:GetPivot().Position).Magnitude
+        if distance > constraints.MaxDistance then
+            return false
+        end
+    end
+
+    if constraints.RequireOwnership and target:GetAttribute("OwnerId") ~= context.Source.UserId then
+        return false
+    end
+
+    return true
+end)
+```
+
+One `Validate` hook serves every endpoint: the context includes `Name`, so you can branch per endpoint, and `Constraints`, so you can write generic rules like the one above once.
+
+<Callout type="warning">
+A declared constraint with no rule reading it does nothing. Add the hook in the same change that adds the field.
+</Callout>
+
+## Cost
+
+The hook allocates a context table per event, so it is only generated for endpoints that declare a payload constraint. Endpoints without one pay nothing.

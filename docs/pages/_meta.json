@@ -12,13 +12,20 @@
       "timestamp": false
     }
   },
-  "getting-started": "Getting Started",
+  "getting-started": "Get started",
+  "concepts": "Concepts",
+  "security": "Security",
+  "operations": "Operations",
   "guides": "Guides",
-  "language": "Language Reference",
+  "limitations": "Limitations",
   "docs": {
     "title": "Docs",
     "type": "page",
-    "href": "/getting-started/installation"
+    "href": "/getting-started/introduction"
+  },
+  "reference": {
+    "title": "Reference",
+    "type": "page"
   },
   "releases": {
     "title": "Releases",

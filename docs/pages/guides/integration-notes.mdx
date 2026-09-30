@@ -1,4 +1,4 @@
-# Integration Notes
+# Integration notes
 
 Hard-won notes from putting Cheeto into real places. Everything here cost a
 debugging session to learn once; none of it should cost one twice.
@@ -43,7 +43,7 @@ to know:
 | Declaration | If the rule is not registered |
 |---|---|
 | `Policy: "X"` | **Every packet on that event is dropped.** |
-| `PolicyGroup: "X"` | Same. |
+| `PolicyGroup: "X"` | Adds no checks until registered. A policy *listed in* a registered group that is itself unregistered drops every packet. |
 | `Auth: "X"` | **Every packet on that event is dropped**, and one warning is logged per unknown rule name. |
 
 Register the rule in the same change that declares it. If your endpoints are
@@ -105,12 +105,12 @@ cooldown silently breaks it.
 
 ## Honeypots work because names are not on the wire
 
-Cheeto multiplexes by `WireId`; event names never travel. So the only way to
+Frames carry a one-byte endpoint number, never a name, so the only way to
 discover an endpoint is to read the generated client module -- which is exactly
 what writing an exploit involves. That makes `Honeypot: true` genuinely useful:
 give it an attractive name, never call it from game code, and any inbound traffic
-is proof of a fabricated packet rather than a mistake. The runtime drops it before
-reading the payload and raises a violation.
+is proof of a fabricated packet rather than a mistake. See
+[Honeypots](/security/honeypots).
 
 ## Land client-side detection in report-only first
 

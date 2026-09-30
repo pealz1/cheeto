@@ -1,0 +1,59 @@
+---
+title: "Violations and abuse scores"
+description: "One stream for every drop and security report, and per-player counters."
+---
+
+import { Callout } from 'nextra/components'
+
+# Violations and abuse scores
+
+Every protection reports to the same place. Subscribe once and you see drops, honeypot hits, shield reports, integrity failures and movement evidence as one stream of [`ViolationReport`](/reference/violation-report)s.
+
+```lua copy
+Network.Security.OnViolation(function(report)
+    -- report.Reason, report.Player, report.Event, report.Channel,
+    -- report.Score, report.Action, report.PayloadSize, report.Time
+end)
+```
+
+## Sorting reports
+
+Not every report means cheating. Group them before acting:
+
+| Kind | Reasons | Usually means |
+| --- | --- | --- |
+| Proof of tampering | `Honeypot`, `RemoteDecoy`, `InvalidBuffer`, `InvalidInstances` | A hand-crafted packet. Legitimate clients cannot produce these |
+| Likely tampering | `MalformedPacket`, `Canonicalization`, `DecodeBudget`, `ReplayDuplicate`, shield reasons | Crafted data, or occasionally a version mismatch |
+| Rule violations | `PolicyRejected`, `AuthRejected`, `ConstraintRejected`, custom policy reasons | Often exploits, but also races such as acting while dying |
+| Volume | `RateLimit`, `MaxPacketBytes`, `QueueFull`, `FragmentOverflow` | Floods, or limits that are too tight for real play |
+| Your side | `Backpressure`, `KillSwitch`, send-side `MaxPacketBytes`, `MiddlewareRejected` on send | Your server's own limits and switches |
+| Movement and liveness | Character and client integrity reasons | Read with their own thresholds and modes |
+
+```lua copy
+local PROOF = {
+    [Network.Transport.Errors.Honeypot] = true,
+    [Network.Transport.Errors.RemoteDecoy] = true,
+    [Network.Transport.Errors.InvalidBuffer] = true,
+}
+
+Network.Security.OnViolation(function(report)
+    if typeof(report.Player) ~= "Instance" then
+        return
+    end
+    if PROOF[report.Reason] then
+        Moderation.Ban(report.Player, report.Reason)
+    else
+        Telemetry.Count("net." .. report.Reason)
+    end
+end)
+```
+
+## Abuse scores
+
+Each report also increments a counter for the sender, keyed by endpoint name or reason. Read them with [`Security.AbuseScores(player)`](/reference/api/security#abusescores) to spot a player who hits many small limits. Counters reset when the player leaves.
+
+`report.Score` is that counter's value for the report's `Event`.
+
+<Callout type="info">
+`OnViolation` is a middleware hook. It stops firing if [`EnableMiddleware`](/reference/options/runtime#enablemiddleware) is off, and a slow callback delays packet processing. Hand heavy work (DataStore writes, webhooks) to a separate thread.
+</Callout>

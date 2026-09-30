@@ -1,0 +1,74 @@
+---
+title: "struct"
+description: "A table with a fixed set of named fields."
+---
+
+import { Callout } from 'nextra/components'
+
+# struct
+
+A `struct` is a table with a fixed set of named fields, each with its own type. Field names never go over the wire: fields are written in declaration order, so a struct costs only the size of its values.
+
+```cheeto copy
+struct Entity {
+    Health: u8(0..100),
+    Position: vector,
+    Rotation: u8,
+    Animations: struct {
+        First: u8?,
+        Second: u8,
+        Third: u8
+    }
+}
+```
+
+Fields are separated by commas. A trailing comma is allowed. Structs can also be written inline wherever a type is expected, as `Animations` shows.
+
+## Merging
+
+`..Name` copies every field of another struct into this one, like a table union in Luau:
+
+```cheeto copy
+struct Named {
+    Name: string(1..32)
+}
+
+struct Priced {
+    Price: u32
+}
+
+struct ShopItem {
+    ..Named,
+    ..Priced,
+    Stock: u16
+}
+```
+
+`ShopItem` has the fields `Name`, `Price` and `Stock`.
+
+## Generics
+
+```cheeto copy
+struct Entity {
+    Health: u8,
+    Position: vector
+}
+
+struct Page<T> {
+    Items: T[..50],
+    Cursor: u32?
+}
+
+event EntityPage {
+    From: Server,
+    Type: Reliable,
+    Call: ManyAsync,
+    Data: Page<Entity>
+}
+```
+
+A generic struct is instantiated where it is used. It cannot be given a new name with `type`.
+
+<Callout type="info">
+Changing the order of struct fields changes the wire layout. Increase [`Version`](/reference/options/versioning#version) when you reorder, add or remove fields.
+</Callout>

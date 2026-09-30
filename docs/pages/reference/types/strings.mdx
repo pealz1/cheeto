@@ -1,0 +1,28 @@
+---
+title: "string"
+description: "Text values, with optional length bounds."
+---
+
+import { Callout } from 'nextra/components'
+
+# string
+
+```cheeto copy
+type Message = string
+type Username = string(3..20)
+type Uuid = string(36)
+```
+
+A `string` is written as a length prefix followed by its bytes. A range bounds the length in bytes, not characters; characters outside ASCII take more than one byte.
+
+| Declaration | Prefix |
+| --- | --- |
+| `string` | Varint, or 2 bytes with varints off (max 65,535 bytes) |
+| `string(..255)` | Varint, or 1 byte with varints off |
+| `string(36)` | None: always exactly 36 bytes |
+
+With [`UseStringDictionaries`](/reference/options/encoding#usestringdictionaries) on, a string repeated within one batch is sent once and referenced after that.
+
+<Callout type="warning">
+The runtime drops any received string longer than [`MaxPayloadStringBytes`](/reference/options/limits#maxpayloadstringbytes), 8,192 bytes by default, even when the declared type allows more. Raise that option if you send long text.
+</Callout>

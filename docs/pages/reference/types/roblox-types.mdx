@@ -1,0 +1,55 @@
+---
+title: "Other Roblox types"
+description: "Wire formats of every other Roblox datatype Cheeto can send."
+---
+
+import { Callout } from 'nextra/components'
+
+# Other Roblox types
+
+Each of these is written into the buffer with a fixed layout. Sizes assume the default [encoding options](/reference/options/encoding).
+
+| Type | Layout | Size |
+| --- | --- | --- |
+| `Color3` | R, G, B each rounded to 0–255 | 3 bytes |
+| `BrickColor` | `BrickColor.Number` as `u16` | 1–3 bytes |
+| `DateTime` | `UnixTimestamp` as `f64` | 8 bytes |
+| `DateTimeMillis` | `UnixTimestampMillis` as `f64` | 8 bytes |
+| `Vector2` | X, Y as `f32`, or the type in `Vector2<T>` | 8 bytes by default |
+| `Vector2int16` | X, Y as `i16` | 2–6 bytes |
+| `Vector3int16` | X, Y, Z as `i16` | 3–9 bytes |
+| `UDim` | Scale `f32`, Offset `i32` | 5–9 bytes |
+| `UDim2` | Two `UDim` | 10–18 bytes |
+| `Rect` | Min and Max as `Vector2` | 16 bytes |
+| `Ray` | Origin and Direction as `vector` | 24 bytes |
+| `Region3` | Minimum and maximum corners as `vector` | 24 bytes |
+| `NumberRange` | Min, Max as `f32` | 8 bytes |
+| `NumberSequence` | Count, then Time, Value, Envelope as `f32` per keypoint | 1–3 + 12 per keypoint |
+| `ColorSequence` | Count, then Time `f32` and `Color3` per keypoint | 1–3 + 7 per keypoint |
+| `PhysicalProperties` | Density, Friction, Elasticity, FrictionWeight, ElasticityWeight as `f32` | 20 bytes |
+| `Axes` | X, Y, Z flags in one byte | 1 byte |
+| `Faces` | Six face flags in one byte | 1 byte |
+| `EnumItem` | Enum type name and item name as strings | varies |
+| `TweenInfo` | Time `f32`, EasingStyle and EasingDirection as `EnumItem`, RepeatCount `i32`, Reverses `boolean`, DelayTime `f32` | varies |
+| `Font` | Family as string, Weight and Style as `EnumItem` | varies |
+
+```cheeto copy
+struct Appearance {
+    Color: Color3,
+    Material: EnumItem,
+    Size: Vector2<i16>,
+    Glow: NumberSequence
+}
+```
+
+<Callout type="warning">
+`Color3` is quantized to 8 bits per channel, the same precision as a hex colour. Channels outside 0–1, such as HDR colours built with `Color3.new(2, 0, 0)`, cannot be sent.
+</Callout>
+
+## EnumItem
+
+`EnumItem` sends any Roblox enum value by name, so it works without declaring anything, but costs two strings. If you always send values from one enum, a schema [`enum`](/reference/declarations/enum) costs one byte:
+
+```cheeto copy
+enum Material = { Plastic, Wood, Metal }
+```

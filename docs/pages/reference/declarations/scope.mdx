@@ -1,0 +1,44 @@
+---
+title: "scope"
+description: "Group declarations under a name to organise large schemas."
+---
+
+import { Callout } from 'nextra/components'
+
+# scope
+
+A `scope` groups declarations under a name. Endpoints inside it are nested in the generated module, and types get the scope name as a prefix.
+
+```cheeto copy
+scope Combat {
+    type Damage = u16(0..500)
+
+    event Hit {
+        From: Client,
+        Type: Reliable,
+        Call: SingleAsync,
+        Policy: "damage",
+        Data: Damage
+    }
+}
+
+struct Summary {
+    Total: Combat.Damage
+}
+```
+
+## In Luau
+
+```lua copy
+local Network = require(ReplicatedStorage.Network.Client)
+
+Network.Combat.Hit.Fire(25)
+
+local damage: Network.Combat_Damage = 25
+```
+
+Inside a scope, names from enclosing scopes are visible without a prefix. Outside, refer to scoped names with a dot: `Combat.Damage`.
+
+<Callout type="info">
+Scopes can nest. Every [`import`](/reference/declarations/import) also creates a scope named after the file or its alias.
+</Callout>

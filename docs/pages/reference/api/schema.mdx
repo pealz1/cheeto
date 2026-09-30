@@ -1,0 +1,80 @@
+---
+title: "Schema"
+description: "Schema version information and helpers for migrating stored payloads."
+---
+
+import { Callout } from 'nextra/components'
+import { Sig } from '../../../components/Reference'
+
+# Schema
+
+`Network.Schema` describes the compiled schema's version and lets you migrate payloads written by older versions, such as data you saved with an [exported type](/reference/api/exports).
+
+<Callout type="info">
+Migrations are applied only when you call [`Migrate`](#migrate). Received network traffic is never migrated: both sides of a live connection run the same schema.
+</Callout>
+
+## Version
+
+<Sig side="both">{"Version: number"}</Sig>
+
+This module's [`Version`](/reference/options/versioning#version).
+
+## MinimumVersion
+
+<Sig side="both">{"MinimumVersion: number"}</Sig>
+
+The [`MinimumSchemaVersion`](/reference/options/versioning#minimumschemaversion) it accepts.
+
+## Hash
+
+<Sig side="both">{"Hash: string"}</Sig>
+
+The schema hash used in the handshake, `"schema-<Version>"`.
+
+## Info
+
+<Sig side="both">{"Info(): { Version, MinimumVersion, Hash, Defaults, Renames, Deprecated }"}</Sig>
+
+The version fields plus copies of the registered defaults, renames and deprecations.
+
+## RegisterMigration
+
+<Sig side="both">{"RegisterMigration(fromVersion: number, migrate: (payload) -> payload): ()"}</Sig>
+
+Registers the step that upgrades a payload from `fromVersion` to `fromVersion + 1`.
+
+## SetDefault
+
+<Sig side="both">{"SetDefault(field: string, value: any): ()"}</Sig>
+
+Fills `field` with `value` when a migrated payload lacks it.
+
+## RenameField
+
+<Sig side="both">{"RenameField(from: string, to: string): ()"}</Sig>
+
+Moves `from` to `to` when `to` is not already set.
+
+## DeprecateField
+
+<Sig side="both">{"DeprecateField(field: string): ()"}</Sig>
+
+Removes `field` from migrated payloads.
+
+## Migrate
+
+<Sig side="both">{"Migrate(payload: any, fromVersion: number?): (any, number)"}</Sig>
+
+Applies renames, defaults and deprecations, then every registered migration step from `fromVersion` up to the current version, then the renames, defaults and deprecations again. Returns the new payload and the current version. Missing steps are skipped. Only top-level fields of a table payload are renamed, defaulted or removed.
+
+```lua copy
+Network.Schema.RegisterMigration(1, function(save)
+    save.Coins = save.Gold
+    save.Gold = nil
+    return save
+end)
+Network.Schema.SetDefault("Gems", 0)
+
+local current, version = Network.Schema.Migrate(storedSave, storedSave.Version)
+```

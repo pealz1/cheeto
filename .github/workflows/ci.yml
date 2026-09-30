@@ -51,3 +51,6 @@ jobs:
 
       - name: Run the hardening checklist
         run: lune run src/CLI/init.luau test/Sources/HardeningGood -- --hardening-checklist --yes
+
+      - name: Compile every schema example in the docs
+        run: node docs/scripts/check-examples.mjs

@@ -1,0 +1,76 @@
+---
+title: "function"
+description: "Client-to-server requests that yield for a typed reply."
+---
+
+import { Callout } from 'nextra/components'
+
+# function
+
+A `function` is a request from a client that the server answers. It replaces a `RemoteFunction`, without the risk of a client hanging a server thread, because the server never invokes clients.
+
+```cheeto copy
+function GetInventory {
+    Yield: Coroutine,
+    Policy: "inventory",
+    InvokeTimeoutSeconds: 10,
+    Data: u8,
+    Return: struct {
+        Items: string(0..32)[..64],
+        Capacity: u8
+    }
+}
+```
+
+## Fields
+
+`Yield` is required. `Data` and `Return` are optional.
+
+| Field | Purpose |
+| --- | --- |
+| [`Yield`](/reference/fields#yield) | `Coroutine`, `Future` or `Promise`: what `Invoke` returns |
+| [`Data`](/reference/fields#data) | What the client sends |
+| [`Return`](/reference/fields#return) | What the server returns |
+| [`MaxPendingInvokes`](/reference/fields#maxpendinginvokes), [`InvokeTimeoutSeconds`](/reference/fields#invoketimeoutseconds) | Invoke limits |
+| [`Auth`](/reference/fields#auth), [`Policy`](/reference/fields#policy), [`PolicyGroup`](/reference/fields#policygroup), [`Honeypot`](/reference/fields#honeypot) | Access control, checked on the server |
+| [`CooldownSeconds`](/reference/fields#cooldownseconds), [`RateLimitPerSecond`](/reference/fields#ratelimitpersecond), [`RateLimitBurst`](/reference/fields#ratelimitburst), [`MaxPacketBytes`](/reference/fields#maxpacketbytes), [`MaxQueuedEvents`](/reference/fields#maxqueuedevents) | Limits on requests |
+| [`Idempotency`](/reference/fields#idempotency), constraints, [`Priority`](/reference/fields#priority), identity fields | As for events |
+
+There is no `From`, `Type` or `Call`: requests always go client to server over the reliable remote.
+
+## Generated API
+
+| Server module | Client module |
+| --- | --- |
+| `On(listener)` | `Invoke(...)` |
+
+See [Function endpoint](/reference/api/function).
+
+```lua filename="Server.server.luau" copy
+Network.GetInventory.On(function(player, page)
+    local inventory = Inventories[player]
+    return { Items = inventory:Page(page), Capacity = inventory.Capacity }
+end)
+```
+
+```lua filename="Client.client.luau" copy
+local ok, result = pcall(Network.GetInventory.Invoke, 1)
+if ok then
+    Inventory.Render(result.Items)
+end
+```
+
+## Errors
+
+`Invoke` raises an error on the client when:
+
+- the server's listener errored (`There was an exception while processing "GetInventory".`),
+- the request timed out ([`InvokeTimeoutSeconds`](/reference/fields#invoketimeoutseconds)),
+- too many invokes are pending ([`MaxPendingInvokes`](/reference/fields#maxpendinginvokes)),
+- invokes were cancelled with [`CancelInvocations`](/reference/api/module#cancelinvocations).
+
+Wrap `Invoke` in `pcall`, or use `Future`/`Promise`, whenever a failure should not stop the calling thread.
+
+<Callout type="warning">
+A request dropped by a policy, auth rule, cooldown or rate limit gets no reply. The client's `Invoke` then waits until its timeout, or forever when `InvokeTimeoutSeconds` is `0`. Always set a timeout on functions that have access control.
+</Callout>

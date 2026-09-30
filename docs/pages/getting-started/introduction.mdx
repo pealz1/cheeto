@@ -1,0 +1,76 @@
+---
+title: "Introduction"
+description: "What Cheeto is, how it works, and where to find everything."
+---
+
+import { Callout } from 'nextra/components'
+
+# Introduction
+
+Cheeto is a networking compiler for Roblox. You describe your game's network traffic once, in a small schema language, and Cheeto generates two Luau modules: one for the server and one for the client. They contain typed functions for every message, the code that packs those messages into buffers, and the checks that reject bad data before your code sees it.
+
+```cheeto copy filename="network.cheeto"
+option ClientOutput = "Network/Client.luau"
+option ServerOutput = "Network/Server.luau"
+
+event DealDamage {
+    From: Client,
+    Type: Reliable,
+    Call: SingleAsync,
+    Policy: "combat",
+    CooldownSeconds: 0.25,
+    Data: struct {
+        Target: Instance(Player),
+        Damage: u16(0..500)
+    }
+}
+```
+
+```lua copy filename="Server.server.luau"
+local Network = require(ReplicatedStorage.Network.Server)
+
+Network.Security.RegisterPolicy("combat", function(context)
+    return context.Source.Character ~= nil
+end)
+
+Network.DealDamage.On(function(player, hit)
+    Combat.Apply(player, hit.Target, hit.Damage)
+end)
+```
+
+```lua copy filename="Client.client.luau"
+local Network = require(ReplicatedStorage.Network.Client)
+
+Network.DealDamage.Fire({ Target = target, Damage = 25 })
+```
+
+## Why use it
+
+- **Smaller packets.** Every message is written into a buffer at its declared width, integers as variable-length numbers and booleans as bits. Reliable messages to a player are batched into one remote call per frame.
+- **Types on both sides.** The generated functions are fully typed, so a wrong argument is an autocomplete error, not a runtime surprise. TypeScript definitions are available for roblox-ts.
+- **Data is checked before it reaches you.** Ranges, instance classes, sizes, rate limits and your own policies are enforced as each message is received. Invalid messages are dropped and reported; they never throw into your handlers.
+- **One place for the contract.** The schema is the single definition of what can be sent, by whom, and how often. Reviewing a network change means reading one diff.
+
+## How it works
+
+1. You write a `.cheeto` schema with [options](/reference/options/overview) and [declarations](/reference/declarations/event): events, functions, channels and types.
+2. The `cheeto` compiler, or the [Studio plugin](/getting-started/studio-plugin), turns it into a server module and a client module.
+3. The server module creates one `RemoteEvent` and one `UnreliableRemoteEvent`. Every message in the schema travels through these two, identified by a one-byte number.
+4. Your code requires the modules and calls typed functions such as `Fire` and `On`.
+
+See [How Cheeto works](/concepts/how-it-works) for the details.
+
+## Where to go next
+
+| If you want to | Read |
+| --- | --- |
+| Install the compiler | [Installation](/getting-started/installation) |
+| Build a first schema | [Quick start](/getting-started/quick-start) |
+| Understand what happens to a message | [The receive pipeline](/concepts/receive-pipeline) |
+| Lock down client requests | [Security model](/security/overview) |
+| Look up an exact option, field or function | [Reference](/reference) |
+| Know what Cheeto cannot do | [Limitations](/limitations) |
+
+<Callout type="info">
+Cheeto has one wire protocol. You may see it called "v2" in older material, because it replaced an earlier format; there is nothing to choose or configure.
+</Callout>

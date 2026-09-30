@@ -1,7 +1,8 @@
 import { Callout } from 'nextra/components'
 
-# Studio Plugin
+# Studio plugin
 
+The plugin lets you write, check and generate schemas without leaving Roblox Studio. It uses the same compiler as the command line, so everything in the [Reference](/reference) applies.
 
 ## Navigating
 After installing the plugin locate it within your plugin tab in Studio.
@@ -19,8 +20,7 @@ Within the side menu you can manage your network description files.
 ![Navigation](/plugin/Navigation.png)
 
 ## Saving
-To save a network description simply press the save button at the bottom of the side menu.   
-This will prompt you to save whatever is currently in the editor.
+To save a network description, press the save button at the bottom of the side menu. It prompts you to save what is currently in the editor. Saved schemas are stored as StringValues under `ServerStorage.CHEETO_CONFIGURATION_FILES`, which is also where [`import`](/reference/declarations/import) looks for them.
 
 <Callout type="info">
     You can save to already existing files by simply inputting their name.
@@ -50,7 +50,7 @@ The plugin respects `TypesOutput`, `ServerOutput`, and `ClientOutput` options as
 
 ## Observability
 The toolbar includes a metrics panel that records the latest parse and generation time, generated output sizes, and the last generation error.
-Generated modules also expose `Stats()`, `Report()`, and `StartReporter(intervalSeconds)` so you can inspect bytes sent, bytes received, dropped packets, validation failures, rate-limit hits, and invoke queue state while tuning a game.
+Generated modules also expose [`Stats()`](/reference/api/module#stats), [`Report()`](/reference/api/module#report) and [`StartReporter(intervalSeconds)`](/reference/api/module#startreporter) for inspecting traffic while you tune a game.
 
 ## Editor
 The editor is the center piece of the plugin, it has various rudimentary intellisense features built-in to help with your writing speed, and analysis to correct any mistakes.

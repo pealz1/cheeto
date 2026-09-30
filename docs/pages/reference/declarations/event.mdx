@@ -1,0 +1,108 @@
+---
+title: "event"
+description: "One-way messages between the server and clients, reliable or unreliable."
+---
+
+import { Callout } from 'nextra/components'
+
+# event
+
+An `event` is a one-way message. It replaces a `RemoteEvent` or `UnreliableRemoteEvent`: one side fires, the other listens. Every event shares the module's two remotes, so declaring more events does not create more instances.
+
+```cheeto copy
+event DealDamage {
+    From: Client,
+    Type: Reliable,
+    Call: SingleAsync,
+    Policy: "damage",
+    CooldownSeconds: 0.25,
+    Data: struct {
+        Target: Instance(Player),
+        Damage: u16(0..500)
+    }
+}
+```
+
+## Fields
+
+`From`, `Type` and `Call` are required. Everything else is optional.
+
+| Field | Purpose |
+| --- | --- |
+| [`From`](/reference/fields#from) | `Server` or `Client`: who sends |
+| [`Type`](/reference/fields#type) | `Reliable` or `Unreliable` |
+| [`Call`](/reference/fields#call) | `SingleSync`, `SingleAsync`, `ManySync`, `ManyAsync` or `Polling` |
+| [`Data`](/reference/fields#data) | Payload type or type pack; omit for no data |
+| [`Poll`](/reference/fields#poll), [`Predict`](/reference/fields#predict) | Delivery switches |
+| [`Auth`](/reference/fields#auth), [`Policy`](/reference/fields#policy), [`PolicyGroup`](/reference/fields#policygroup), [`Honeypot`](/reference/fields#honeypot) | Access control, checked by the receiver |
+| [`CooldownSeconds`](/reference/fields#cooldownseconds), [`RateLimitPerSecond`](/reference/fields#ratelimitpersecond), [`RateLimitBurst`](/reference/fields#ratelimitburst), [`MaxPacketBytes`](/reference/fields#maxpacketbytes), [`MaxQueuedEvents`](/reference/fields#maxqueuedevents) | Limits |
+| [`Idempotency`](/reference/fields#idempotency) | Duplicate rejection for predicted sends |
+| [`Risk`](/reference/fields#risk), [`MaxDistance`](/reference/fields#maxdistance), `Require*` | Constraints passed to your rules |
+| [`Priority`](/reference/fields#priority), [`CoalesceKey`](/reference/fields#coalescekey), [`ReliabilityMode`](/reference/fields#reliabilitymode) | Scheduling |
+| [`WireId`](/reference/fields#wireid), [`ReservedId`](/reference/fields#reservedid), [`DeprecatedId`](/reference/fields#deprecatedid) | Lockfile identity |
+
+## Generated API
+
+The sending side gets fire methods and the receiving side gets a listener. See [Event endpoint](/reference/api/event) for signatures.
+
+| `From` | Server module | Client module |
+| --- | --- | --- |
+| `Server` | `Fire`, `FireAll`, `FireList`, `FireExcept`, `FireGroup` | `On` (or `Iter` when polling) |
+| `Client` | `On` (or `Iter` when polling) | `Fire`, `Predict` |
+
+```lua filename="Server.server.luau" copy
+local Network = require(ReplicatedStorage.Network.Server)
+
+Network.DealDamage.On(function(player, hit)
+    Combat.Apply(player, hit.Target, hit.Damage)
+end)
+```
+
+```lua filename="Client.client.luau" copy
+local Network = require(ReplicatedStorage.Network.Client)
+
+Network.DealDamage.Fire({ Target = target, Damage = 25 })
+```
+
+## Type packs
+
+Several values can be sent without a wrapper table by writing a type pack. The values become separate arguments on both sides.
+
+```cheeto copy
+event Scored {
+    From: Server,
+    Type: Reliable,
+    Call: ManyAsync,
+    Data: (Instance(Player), u32, string(0..32))
+}
+```
+
+```lua copy
+Network.Scored.FireAll(player, 150, "Headshot")
+
+Network.Scored.On(function(player, points, reason) end)
+```
+
+## Events without data
+
+Omit `Data` for a signal with no payload:
+
+```cheeto copy
+event RoundStarted {
+    From: Server,
+    Type: Reliable,
+    Call: ManyAsync
+}
+```
+
+```lua copy
+Network.RoundStarted.FireAll()
+```
+
+## Delivery order
+
+Reliable events to one peer arrive in the order they were fired, across all reliable events of the module, because they share one batched stream. Unreliable events are independent and can arrive in any order or not at all.
+
+<Callout type="info">
+Reliable events that arrive before any listener is connected are queued, up to [`MaxQueuedEvents`](/reference/fields#maxqueuedevents), and delivered when the first listener connects. Unreliable events that arrive with no listener are discarded.
+</Callout>

@@ -1,0 +1,48 @@
+---
+title: "Metrics"
+description: "Reading traffic and drop counters from a live module."
+---
+
+# Metrics
+
+Every module counts what it does. Read the counters with [`Stats()`](/reference/api/module#stats), print them with [`Report()`](/reference/api/module#report), or print them on a timer with [`StartReporter()`](/reference/api/module#startreporter).
+
+```lua copy
+local stats = Network.Stats()
+
+print("reliable bytes out", stats.BytesSent.Reliable)
+print("damage events in", stats.EventBytesReceived.DealDamage)
+print("rate limited", stats.DroppedPackets.RateLimit)
+print("pending invokes", stats.PendingInvokes)
+```
+
+## What to watch
+
+| Signal | Where | Suggests |
+| --- | --- | --- |
+| Bytes per endpoint | `EventBytesSent`, `EventBytesReceived` | Which endpoints to optimize first |
+| Drops by reason | `DroppedPackets` | Attacks, bugs, or limits that are too tight |
+| Rate limit hits | `RateLimitHits` | Limits below real usage if normal players appear |
+| Queue drops | `QueueDrops` | Events arriving before listeners connect, or polling queues nobody reads |
+| Invoke timeouts | `InvokeTimeouts` | Handlers too slow, or requests dropped by policies |
+| Hook errors | `HookErrors` | Bugs in middleware, auth rules, policies or samplers |
+
+Counters only increase. To get rates, subtract two snapshots.
+
+```lua copy
+local previous = Network.Stats()
+while task.wait(60) do
+    local current = Network.Stats()
+    local sent = (current.BytesSent.Reliable or 0) - (previous.BytesSent.Reliable or 0)
+    Analytics.Gauge("net.reliable_bytes_per_min", sent)
+    previous = current
+end
+```
+
+## Profiling
+
+With [`EnableMicroProfiler`](/reference/options/runtime#enablemicroprofiler) on (the default), decoding and flushing appear in the MicroProfiler as `Cheeto.Decode.Reliable`, `Cheeto.Decode.Unreliable`, `Cheeto.Flush.Server` and `Cheeto.Flush.Client`.
+
+## Turning metrics off
+
+[`ExposeMetrics = false`](/reference/options/runtime#exposemetrics) makes `Stats`, `Report` and the inspector error. Counting continues internally.

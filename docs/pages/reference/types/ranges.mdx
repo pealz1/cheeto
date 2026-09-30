@@ -1,0 +1,43 @@
+---
+title: "Ranges"
+description: "Bound numbers, lengths and magnitudes with ranges."
+---
+
+import { Callout } from 'nextra/components'
+
+# Ranges
+
+A range limits a value. Received values outside the range fail validation and the event is dropped with `MalformedPacket` before any listener runs. Sent values are only checked when [`WriteValidations`](/reference/options/runtime#writevalidations) is on.
+
+| Written | Minimum | Maximum |
+| --- | --- | --- |
+| `0..100` | 0 | 100 |
+| `0..` | 0 | no limit |
+| `..100` | no limit | 100 |
+| `36` | 36 | 36 (exact) |
+
+## Where ranges go
+
+| Type | Syntax | Bounds |
+| --- | --- | --- |
+| Numbers | `u8(0..100)` | The value |
+| `string` | `string(3..20)` | Length in bytes |
+| `buffer` | `buffer(..900)` | Length in bytes |
+| `vector` | `vector(0..1)` | Magnitude |
+| Arrays | `u8[1..10]` | Number of elements |
+
+```cheeto copy
+type Health = u8(0..100)
+type Username = string(3..20)
+type Uuid = string(36)
+type Direction = vector(0..1)
+type Party = f64[1..4]
+```
+
+## Ranges change the encoding
+
+For strings, buffers and arrays, the upper bound picks the size of the length prefix when [`UseVarints`](/reference/options/encoding#usevarints) is off: 1 byte up to 255, 2 bytes up to 65,535, 4 bytes above. An exact range such as `string(36)` has no prefix at all.
+
+<Callout type="info">
+Maps cannot take a range. Bound a collection with an array range instead.
+</Callout>

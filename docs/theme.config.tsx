@@ -56,7 +56,10 @@ const config: DocsThemeConfig = {
     return { title: 'Cheeto: typed, secure networking for Roblox' }
   },
   sidebar: {
-    defaultMenuCollapseLevel: 1,
+    defaultMenuCollapseLevel: 2,
+    titleComponent({ title, type }) {
+      return type === 'separator' ? <span className="cheeto-sidebar-group">{title}</span> : <>{title}</>
+    },
     toggleButton: true
   },
   toc: {

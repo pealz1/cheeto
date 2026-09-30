@@ -1,0 +1,66 @@
+---
+title: "Audiences and routing"
+description: "Groups, zones, distance, parties, matches and other ways to choose who receives data."
+---
+
+# Audiences and routing
+
+Sending everything to everyone wastes bandwidth and can leak information. Cheeto keeps several kinds of membership you can target sends at.
+
+## Groups
+
+Named sets of players, used by [`FireGroup`](/reference/api/event#firegroup) and channel `SetGroup`, `PatchGroup` and `FlushGroup`.
+
+```lua copy
+Network.SetGroup("RedTeam", redPlayers)
+Network.AddToGroup("Spectators", player)
+Network.TeamChat.FireGroup("RedTeam", sender.Name, text)
+```
+
+See [`SetGroup`](/reference/api/module#setgroup) and related functions.
+
+## Zones and distance, per channel
+
+Channels can target players by zone or by distance. You tell the runtime where players are; it does not track characters itself.
+
+```lua copy
+-- Zones: set when a player enters or leaves an area
+Network.AreaWeather.SetInterestZone(player, "Desert")
+Network.AreaWeather.SetZone("Desert", { Kind = "Sandstorm", Intensity = 3 })
+
+-- Distance: update positions, then send around a point
+Network.Explosions.SetInterestPosition(player, root.Position)
+Network.Explosions.SetDistance(origin, { Position = origin, Radius = 20 }, 300)
+```
+
+Setting [`Interest: Zone`](/reference/fields#interest) or `Interest: Distance` on the channel makes the shorthand `Set` and `Patch` use these variants.
+
+## Parties, matches, teams, cells and owners
+
+[`Network.Replication`](/reference/api/replication) keeps further memberships, read with `GetInterestPlayers`:
+
+```lua copy
+Network.Replication.SetParty(partyId, player)
+Network.Replication.SetMatch(matchId, player)
+Network.Replication.SetTeam("Red", player)
+Network.Replication.SetStreamedCell("cell_4_7", player)
+Network.Replication.SetObjectOwner(vehicle, player)
+
+for _, member in Network.Replication.GetInterestPlayers("Party", partyId) do
+    Network.PartyInvite.Fire(member, inviter)
+end
+```
+
+These do not have dedicated fire methods; loop over the players, or pass the list to `FireList`.
+
+## Routing graphs
+
+A [`Graph`](/reference/api/replication#graph) lets one system keep its own observer lists that override the shared memberships, for example spectators who watch a match they are not in.
+
+## Cleanup
+
+Every membership is removed automatically when a player leaves. Memberships that change during play, such as a player leaving a party or a zone, are yours to update.
+
+## Across servers
+
+[`Replication.MessagingService`](/reference/api/replication#messagingservice) and [`Replication.MemoryStore`](/reference/api/replication#memorystore) wrap Roblox's cross-server services with the same group, zone and match naming, and tag every message with the schema version.

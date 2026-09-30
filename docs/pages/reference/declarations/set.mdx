@@ -1,0 +1,22 @@
+---
+title: "set"
+description: "A fixed set of named flags, sent as bits."
+---
+
+# set
+
+A `set` is a table of named flags. When sending, pass a table with `true` for the flags that are on; missing flags count as off. The receiver gets a table with every declared flag set to `true` or `false`.
+
+```cheeto copy
+set Permissions = {
+    Kick,
+    Ban,
+    Mute
+}
+```
+
+```lua copy
+Network.PermissionsChanged.Fire(player, { Kick = true, Mute = true })
+```
+
+Each flag is sent as one bit, so a set of up to 8 flags costs one byte, up to 16 costs two, and so on. Keys that are not declared flags are ignored when writing.

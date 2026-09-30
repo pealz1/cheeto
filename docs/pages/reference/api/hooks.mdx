@@ -1,0 +1,177 @@
+---
+title: "Middleware hooks"
+description: "Every hook name accepted by Use, when it runs, what it receives, and whether it can reject."
+---
+
+import { Callout } from 'nextra/components'
+
+# Middleware hooks
+
+Register a hook with [`Network.Use(name, callback)`](/reference/api/module#use). Each callback receives one context table. Hooks marked **can reject** stop the packet when a callback returns exactly `false`; for the others the return value is ignored. A callback that errors is logged and counted in `HookErrors`, and processing continues as if it returned nothing.
+
+Hooks run only while [`EnableMiddleware`](/reference/options/runtime#enablemiddleware) is on. They run on the side where the module is required.
+
+| Hook | When | Can reject | Drop reason |
+| --- | --- | --- | --- |
+| [`BeforeSend`](#beforesend) | Before an event is written | Yes | `MiddlewareRejected` |
+| [`AfterSend`](#aftersend) | After an event is queued, and after each remote call | No | |
+| [`BeforeReceive`](#beforereceive) | Before a packet, then before each event in it | Yes | `MiddlewareRejected` |
+| [`Validate`](#validate) | After decoding, before the listener | Yes | `ConstraintRejected` |
+| [`AfterReceive`](#afterreceive) | After an event is decoded and accepted | No | |
+| [`Drop`](#drop) | When anything is dropped | No | |
+| [`Error`](#error) | When decoding an event fails | No | |
+| [`Violation`](#violation) | For every drop and security report | No | |
+| [`Predict`](#predict), [`Ack`](#ack), [`Rollback`](#rollback) | Prediction lifecycle | No | |
+| [`Listener`](#listener) | A listener connects or disconnects | No | |
+| [`Telemetry`](#telemetry) | Internal events worth logging | No | |
+
+## BeforeSend
+
+**Can reject.** Runs before an event, invoke reply or channel update is serialized.
+
+```lua
+{ Name: string, Channel: "Reliable" | "Unreliable", Target: Player? }
+```
+
+`Target` is `nil` for broadcasts and for everything the client sends.
+
+## AfterSend
+
+Runs twice for a reliable event: once when it is queued, with `Name`, and once when the batch containing it is sent over the remote, without `Name`. Unreliable events also run it for their remote call.
+
+```lua
+{ Name: string?, Channel: string, Size: number, Target: Player? }
+```
+
+## BeforeReceive
+
+**Can reject.** Runs once per received remote call, before anything is decoded:
+
+```lua
+{ Source: Player | "Server", Channel: string, Size: number }
+```
+
+and again for each event in the packet, after its size and rate checks and before auth and policy:
+
+```lua
+{ Name: string, Source: Player | "Server", Channel: string, Size: number }
+```
+
+`Size` is the size of the whole packet in both cases.
+
+## Validate
+
+**Can reject.** Runs after an event's payload is decoded and before its listener, **only for endpoints that declare a payload constraint** (`MaxDistance` or a `Require*` field other than `RequireCharacterState`). This is the only hook that can inspect decoded data and reject it.
+
+```lua
+{
+    Name: string,
+    Source: Player | "Server",
+    Channel: string,
+    Size: number,
+    Constraints: Constraints,
+    Payload: { n: number, [number]: any }, -- the event's values, as table.pack(...)
+}
+```
+
+`Constraints` has every constraint field: `Risk`, `CooldownSeconds`, `MaxDistance`, `RequireOwnership`, `RequireTeam`, `RequireZone`, `RequireMatch`, `RequireInventoryOwnership`, `RequireCharacterState`, `RequireObjectHandle`, `RequireServerKnownId`, `Idempotency`. Undeclared ones are `nil`, `false` or `0`.
+
+```lua copy
+Network.Use("Validate", function(context)
+    local maxDistance = context.Constraints.MaxDistance
+    if maxDistance > 0 then
+        local target = context.Payload[1].Target
+        return Distance(context.Source, target) <= maxDistance
+    end
+    return true
+end)
+```
+
+See [Constraints and Validate](/security/constraints).
+
+## AfterReceive
+
+Runs after an event is decoded and passes validation, just before its listener is called or it is queued.
+
+```lua
+{ Name: string, Source: Player | "Server", Channel: string, Size: number }
+```
+
+## Drop
+
+Runs for every dropped packet or event, in either direction.
+
+```lua
+{ Name: string?, Source: any, Channel: string, Reason: string, Size: number }
+```
+
+`Reason` is one of the [drop reasons](/reference/drop-reasons), or a custom reason returned by a policy.
+
+## Error
+
+Runs when an event's payload fails to decode, just before it is dropped as `MalformedPacket`.
+
+```lua
+{ Name: string, Source: Player | "Server", Channel: string, Error: string }
+```
+
+## Violation
+
+Runs for every drop and for every client shield, client integrity and character integrity report. [`Security.OnViolation`](/reference/api/security#onviolation) is a shortcut that registers this hook. The context is a [`ViolationReport`](/reference/violation-report).
+
+## Predict
+
+Runs when [`Predict`](/reference/api/event#predict) or [`Prediction.Begin`](/reference/api/prediction#begin) starts a prediction.
+
+```lua
+{ Id: number, Name: string, Payload: any }
+```
+
+## Ack
+
+Runs when a prediction is acknowledged.
+
+```lua
+{ Id: number, Prediction: { Name: string, Payload: any, Started: number } }
+```
+
+## Rollback
+
+Runs when a prediction is rolled back.
+
+```lua
+{ Id: number, Prediction: { Name: string, Payload: any, Started: number }, Reason: string? }
+```
+
+## Listener
+
+Runs when an event listener connects or disconnects.
+
+```lua
+{ Name: string, Listener: function, Count: number, Duplicate: boolean, Action: "connect" | "disconnect" }
+```
+
+`Duplicate` is `true` when the same function was connected twice to the same event, which usually means a controller initialized twice.
+
+## Telemetry
+
+A single stream for internal events you may want to forward to logging.
+
+```lua
+{ Name: string, Payload: any, Time: number }
+```
+
+| `Name` | Payload |
+| --- | --- |
+| `security.violation` | The [`ViolationReport`](/reference/violation-report) |
+| `security.clientShield` | Shield report entry |
+| `security.clientIntegrity` | Integrity evidence entry |
+| `security.characterIntegrity` | Movement evidence entry |
+| `security.characterIntegrityError` | `{ Player, UserId, Error, Time }` when sampling a character failed |
+| `transport.flush` | `{ Target, Channel, Size, QueuedBytes, QueuedEvents }` |
+| `transport.fragment` | `{ Target, FragmentId, Count, Size }` |
+| `transport.reassembled` | `{ Source, FragmentId, Count, Size }` |
+
+<Callout type="info">
+Hooks run on the networking hot path. Keep them cheap, and do not yield in them: a yielding hook delays every event after it in the same packet.
+</Callout>

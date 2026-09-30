@@ -1,0 +1,47 @@
+---
+title: "Numbers"
+description: "Unsigned integers, signed integers and floating point numbers."
+---
+
+import { Callout } from 'nextra/components'
+
+# Numbers
+
+Number types are a letter for the kind (`u` unsigned, `i` signed, `f` floating point) followed by the bit width. Every number is a Luau `number` in code.
+
+## Integers
+
+| Type | Range | Fixed size | Varint size |
+| --- | --- | --- | --- |
+| `u8` | 0 to 255 | 1 byte | 1 byte (never varint) |
+| `u16` | 0 to 65,535 | 2 bytes | 1 to 3 bytes |
+| `u32` | 0 to 4,294,967,295 | 4 bytes | 1 to 5 bytes |
+| `i8` | −128 to 127 | 1 byte | 1 byte (never varint) |
+| `i16` | −32,768 to 32,767 | 2 bytes | 1 to 3 bytes |
+| `i32` | −2,147,483,648 to 2,147,483,647 | 4 bytes | 1 to 5 bytes |
+
+With [`UseVarints`](/reference/options/encoding#usevarints) on (the default), 16 and 32-bit integers are variable length: values below 128 take one byte, below 16,384 two bytes. Signed values are zig-zag encoded, so −1 is as cheap as 1.
+
+## Floating point
+
+| Type | Size | Exact integers up to | Notes |
+| --- | --- | --- | --- |
+| `f16` | 2 bytes | ±2,048 | Largest value ±65,504; slower to encode |
+| `f32` | 4 bytes | ±16,777,216 | Same precision as a Roblox `Vector3` component |
+| `f64` | 8 bytes | ±9,007,199,254,740,992 | Luau's native number |
+
+Values beyond the `f16` range are written as infinity. NaN and infinities are rejected when received: the runtime's payload check drops non-finite numbers with `Canonicalization`.
+
+## Bounding
+
+```cheeto copy
+type Health = u8(0..100)
+type Damage = u16(..500)
+type Temperature = f32(-50..60)
+```
+
+A received value outside the range drops the event with `MalformedPacket`. See [Ranges](/reference/types/ranges).
+
+<Callout type="warning">
+Integer types do not round, and out-of-range values are not clamped. Sending `300` as a `u8` fails on the sender. Turn on [`WriteValidations`](/reference/options/runtime#writevalidations) while developing to get a clear error at the call site.
+</Callout>

@@ -1,0 +1,54 @@
+---
+title: "Auth rules"
+description: "Named yes-or-no checks about the sender, run before decoding."
+---
+
+import { Callout } from 'nextra/components'
+
+# Auth rules
+
+An auth rule is a function that decides whether a sender may use an endpoint right now. The endpoint names it with [`Auth`](/reference/fields#auth), and you register it with [`UseAuth`](/reference/api/module#useauth).
+
+```cheeto copy
+event Respawn {
+    From: Client,
+    Type: Reliable,
+    Call: SingleAsync,
+    Auth: "Dead",
+    Policy: "respawn",
+    Data: u8
+}
+```
+
+```lua copy
+Network.UseAuth("Dead", function(context)
+    local character = context.Source.Character
+    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+    return humanoid == nil or humanoid.Health <= 0
+end)
+```
+
+## Behaviour
+
+- The rule receives `{ Name, Source, Channel, Size }` and runs before the payload is decoded.
+- It must return exactly `true`. Anything else, including `nil`, drops the event with `AuthRejected`.
+- A rule that errors drops the event and is counted in `HookErrors`.
+- A name that was never registered drops **every** event on the endpoint and logs one warning.
+- Two rules are built in: `AlivePlayer` (the sender is a player still in the game) and `ServerOnly` (the sender is the server).
+
+## Auth rules and policies
+
+Both run before decoding and both can deny. The difference is what they are for:
+
+| | Auth rule | [Policy](/security/policies) |
+| --- | --- | --- |
+| Question | Is this sender in a state to act at all? | May this sender use this endpoint? |
+| Receives | Name, source, channel, size | Also the endpoint's constraints, policy group and user id |
+| Can give a reason | No | Yes, as the drop reason |
+| Satisfies `RequirePolicies` | No | Yes |
+
+Use auth rules for broad, reusable state checks ("alive", "loaded", "not in a cutscene") and policies for per-endpoint permission.
+
+<Callout type="warning">
+Introduce an auth rule on a live game in report-only form first: log and return `true`, check the logs, then enforce. A rule that depends on something the client does on join can race the player's first input and silently drop real traffic.
+</Callout>

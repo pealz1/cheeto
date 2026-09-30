@@ -1,0 +1,99 @@
+---
+title: "Migrating from RemoteEvents"
+description: "Moving an existing game from RemoteEvents and RemoteFunctions to Cheeto, one remote at a time."
+---
+
+import { Callout, Steps } from 'nextra/components'
+
+# Migrating from RemoteEvents
+
+Cheeto can run next to your existing remotes, so you can move one remote at a time.
+
+<Steps>
+
+### Inventory your remotes
+
+List every `RemoteEvent` and `RemoteFunction`, who fires it, what it carries, and what the server does with it. For each, note what could go wrong if a client sent garbage or sent it 100 times a second.
+
+### Write the schema for one remote
+
+Take a remote like this:
+
+```lua filename="Before"
+-- Client
+ReplicatedStorage.Remotes.BuyItem:FireServer(itemId)
+
+-- Server
+ReplicatedStorage.Remotes.BuyItem.OnServerEvent:Connect(function(player, itemId)
+    if typeof(itemId) ~= "number" then return end
+    Shop.Buy(player, itemId)
+end)
+```
+
+and declare it, moving the manual checks into the schema:
+
+```cheeto copy filename="network.cheeto"
+option ClientOutput = "Network/Client.luau"
+option ServerOutput = "Network/Server.luau"
+option RequirePolicies = true
+
+event BuyItem {
+    From: Client,
+    Type: Reliable,
+    Call: SingleAsync,
+    Policy: "shop",
+    CooldownSeconds: 0.5,
+    Data: u16(1..999)
+}
+```
+
+### Replace the calls
+
+```lua filename="After"
+-- Client
+Network.BuyItem.Fire(itemId)
+
+-- Server
+Network.Security.RegisterPolicy("shop", function(context)
+    return Profiles.IsLoaded(context.Source)
+end)
+
+Network.BuyItem.On(function(player, itemId)
+    Shop.Buy(player, itemId) -- itemId is guaranteed to be a whole number from 1 to 999
+end)
+```
+
+The type check, the range check and the throttle are now in the schema. Delete the old remote.
+
+### Repeat, then tighten
+
+Move the rest of the remotes the same way. Then add the optional protections: [`SecurityProfile = Production`](/security/maximum-security), [honeypots](/security/honeypots), and [`OnViolation`](/security/violations) logging.
+
+</Steps>
+
+## Translation table
+
+| Before | Cheeto |
+| --- | --- |
+| `RemoteEvent`, client to server | `event` with `From: Client` |
+| `RemoteEvent`, server to client | `event` with `From: Server` |
+| `UnreliableRemoteEvent` | `event` with `Type: Unreliable` |
+| `RemoteFunction`, client invokes | `function` |
+| `RemoteFunction`, server invokes client | Not supported. Use an event each way |
+| `FireAllClients` | `FireAll` |
+| `FireClient` | `Fire(player, ...)` |
+| `OnServerEvent:Connect` | `On` |
+| Replicated `ValueBase` objects or attributes for state | `channel` |
+| `typeof` checks in handlers | Schema types and ranges |
+| Hand-written debounce tables | `CooldownSeconds` |
+
+<Callout type="warning">
+The server never invokes clients in Cheeto, because a client that never answers would hang a server thread. Replace server-to-client `RemoteFunction` calls with an event to the client and an event back.
+</Callout>
+
+## Things that change
+
+- **Timing.** Reliable events are sent at the end of the frame, not the moment you fire. Code that fires and immediately expects the other side to have received it was already racing; it now races predictably.
+- **Instances.** Instances that have not streamed in arrive as `nil`. Mark them optional (`Instance(Model)?`) wherever that can happen.
+- **Tables.** Cheeto sends only the fields the schema declares. Extra keys in a table you fire are silently left out.
+- **Errors.** Bad data from clients no longer reaches your handlers at all. If you logged suspicious input in handlers before, log it from [`OnViolation`](/security/violations) instead.

@@ -1,0 +1,39 @@
+---
+title: "vector"
+description: "Vector3 values, with configurable component encoding and magnitude bounds."
+---
+
+import { Callout } from 'nextra/components'
+
+# vector
+
+`vector` is a Roblox `Vector3`. The schema type is spelled `vector`; `Vector3` is not a valid schema type.
+
+```cheeto copy
+type Position = vector
+type Direction = vector(0..1)
+type GridPosition = vector<i16>
+```
+
+## Encoding
+
+By default each component is an `f32`, 12 bytes in total. A number type in angle brackets changes the component encoding:
+
+| Declaration | Size | Use |
+| --- | --- | --- |
+| `vector` | 12 bytes | Exact positions |
+| `vector<f16>` | 6 bytes | Directions, small offsets |
+| `vector<i16>` | 3 to 9 bytes | Whole-stud grid positions |
+| `vector<u8>` | 3 bytes | Small non-negative grids |
+
+<Callout type="warning">
+Integer encodings drop the fractional part, and `f16` keeps about three significant digits. Encodings wider than `f32` gain nothing, because Roblox stores `Vector3` components as `f32`.
+</Callout>
+
+## Bounding
+
+A range bounds the **magnitude**: `vector(0..1)` accepts only vectors of length 0 to 1, which is how to validate a direction.
+
+## Vector2
+
+`Vector2` accepts an encoding the same way: `Vector2<i16>`. See [Other Roblox types](/reference/types/roblox-types).

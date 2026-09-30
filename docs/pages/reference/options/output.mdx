@@ -1,0 +1,166 @@
+---
+title: "Output and modules"
+description: "Options that decide which files Cheeto writes, where, and how the generated modules name things."
+---
+
+import { Callout } from 'nextra/components'
+import { Spec } from '../../../components/Reference'
+
+# Output and modules
+
+These options are read by the compiler only. Changing them requires recompiling.
+
+| Option | Type | Default |
+| --- | --- | --- |
+| [`Casing`](#casing) | identifier | `Pascal` |
+| [`ClientOutput`](#clientoutput) | string | required |
+| [`ServerOutput`](#serveroutput) | string | required |
+| [`TypesOutput`](#typesoutput) | string | not written |
+| [`Typescript`](#typescript) | boolean | `false` |
+| [`RuntimeOutput`](#runtimeoutput) | string | runtime inlined |
+| [`RuntimeRequire`](#runtimerequire) | string | none |
+| [`RemoteScope`](#remotescope) | string | none |
+| [`FutureLibrary`](#futurelibrary) | string | none |
+| [`PromiseLibrary`](#promiselibrary) | string | none |
+| [`UseColon`](#usecolon) | boolean | no effect |
+
+## `Casing`
+
+<Spec type="identifier" default={<code>Pascal</code>} values={<><code>Pascal</code>, <code>Camel</code>, <code>Snake</code></>} />
+
+Sets the casing of the methods generated on each endpoint. Namespaces on the module root, such as `Security` or `Transport`, are not affected.
+
+| Method | `Pascal` | `Camel` | `Snake` |
+| --- | --- | --- | --- |
+| Fire | `Fire` | `fire` | `fire` |
+| FireAll | `FireAll` | `fireAll` | `fire_all` |
+| FireList | `FireList` | `fireList` | `fire_list` |
+| FireExcept | `FireExcept` | `fireExcept` | `fire_except` |
+| FireGroup | `FireGroup` | `fireGroup` | `fire_group` |
+| On | `On` | `on` | `on` |
+| Invoke | `Invoke` | `invoke` | `invoke` |
+| Predict | `Predict` | `predict` | `predict` |
+| Iter / Next | `Iter` / `Next` | `iter` / `next` | `iter` / `next` |
+| StepReplication | `StepReplication` | `stepReplication` | `step_replication` |
+| Read / Write (exports) | `Read` / `Write` | `read` / `write` | `read` / `write` |
+
+```cheeto copy
+option Casing = Camel
+```
+
+## `ClientOutput`
+
+<Spec type="string (path)" default="required" />
+
+Path of the client module, relative to the schema file. The `.luau` extension is added if you leave it out. The compiler stops with `A client output path must be defined.` when this is missing. Missing directories are created after a prompt, or silently with `--yes`.
+
+In the [Studio plugin](/getting-started/studio-plugin) the path is relative to the instance you generate into, so `"Network/Client.luau"` writes a ModuleScript named `Client` inside a folder named `Network`.
+
+```cheeto copy
+option ClientOutput = "src/shared/Network/Client.luau"
+```
+
+<Callout type="warning">
+[`--strict`](/reference/cli#--strict) rejects output paths that contain `..` or are absolute.
+</Callout>
+
+## `ServerOutput`
+
+<Spec type="string (path)" default="required" />
+
+Path of the server module. Same rules as [`ClientOutput`](#clientoutput). The server module errors if required from a client, and the client module errors if required from the server.
+
+```cheeto copy
+option ServerOutput = "src/shared/Network/Server.luau"
+```
+
+<Callout type="info">
+The server module creates the RemoteEvents when it is first required. Place it where both sides can reach its RemoteEvents, and require it from a server Script before clients need the network.
+</Callout>
+
+## `TypesOutput`
+
+<Spec type="string (path)" default="not written" />
+
+Writes a third, shared module that exports the Luau types declared in the schema, so code that runs on neither side (shared libraries, tests) can reference them without requiring a networking module.
+
+```cheeto copy
+option TypesOutput = "src/shared/Network/Types.luau"
+```
+
+## `Typescript`
+
+<Spec type="boolean" default={<code>false</code>} />
+
+Also writes `.d.ts` declaration files next to the client and server outputs, for [roblox-ts](https://roblox-ts.com) projects. A module named `init` gets `index.d.ts`.
+
+```cheeto copy
+option Typescript = true
+```
+
+<Callout type="warning">
+The declaration files cover events, functions and declared types. They do not yet describe `Predict`, `FireGroup`, channel endpoints, the runtime namespaces, or `Future`/`Promise` return types, and `Instance` is declared as `number`. See [Limitations](/limitations#typescript-definitions).
+</Callout>
+
+## `RuntimeOutput`
+
+<Spec type="string (path)" default="runtime inlined into each module" />
+
+By default every generated module contains its own copy of the runtime, about 135 KB. With `RuntimeOutput` set, the runtime is written once as a separate factory module and each generated module requires it instead. Two files are written: the path you give (server runtime) and the same path with `Client` appended to the file name (client runtime).
+
+Use this when a large surface is split across several schemas, or when a module would exceed Studio's 200,000-character script limit. Must be set together with [`RuntimeRequire`](#runtimerequire).
+
+```cheeto copy
+option RuntimeOutput = "src/shared/Network/Runtime.luau"
+option RuntimeRequire = "script.Parent.Runtime"
+```
+
+Each module that requires the shared runtime still keeps its own buffers, listeners and remotes. Only the source is shared.
+
+## `RuntimeRequire`
+
+<Spec type="string (Luau expression)" default="none" />
+
+The expression placed inside `require(...)` in generated modules to reach the runtime written by [`RuntimeOutput`](#runtimeoutput). The client module appends `Client` to it. Compiling with `RuntimeOutput` but no `RuntimeRequire` fails.
+
+```cheeto copy
+option RuntimeRequire = "game:GetService('ReplicatedStorage').Network.Runtime"
+```
+
+## `RemoteScope`
+
+<Spec type="string" default="none" />
+
+Prefixes the names of the RemoteEvents this schema creates, and the key used to detect duplicate instances. Without it the remotes are `CHEETO_RELIABLE_REMOTE` and `CHEETO_UNRELIABLE_REMOTE`; with `RemoteScope = "PACKAGE"` they become `PACKAGE_CHEETO_RELIABLE_REMOTE` and `PACKAGE_CHEETO_UNRELIABLE_REMOTE`.
+
+Requiring two generated modules with the same scope on one side raises `An instance of Cheeto is already running with the remote scope ...`. Give every schema in a place its own scope, which is required when a package ships its own Cheeto network alongside the game's.
+
+```cheeto copy
+option RemoteScope = "INVENTORY"
+```
+
+## `FutureLibrary`
+
+<Spec type="string (Luau expression)" default="none" />
+
+Required when any function uses `Yield: Future`. The value is placed inside `require(...)` at the top of both modules, so it must resolve on both sides. The generated `Invoke` returns `Future.Try(...)`, so the library must provide `Future.Try`, as [red-blox's Future](https://github.com/red-blox/Util/tree/main/libs/Future) does.
+
+```cheeto copy
+option FutureLibrary = "ReplicatedStorage.Packages.Future"
+```
+
+## `PromiseLibrary`
+
+<Spec type="string (Luau expression)" default="none" />
+
+Required when any function uses `Yield: Promise`. Same rules as [`FutureLibrary`](#futurelibrary). [evaera's Promise](https://eryn.io/roblox-lua-promise/) and compatible forks work.
+
+```cheeto copy
+option PromiseLibrary = "ReplicatedStorage.Packages.Promise"
+```
+
+## `UseColon`
+
+<Spec type="boolean" default="no effect" />
+
+Accepted by the parser for compatibility and ignored by the generator. Setting it changes nothing.

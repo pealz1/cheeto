@@ -1,0 +1,69 @@
+---
+title: "Handles and capabilities"
+description: "Let clients refer to server objects by server-issued numbers instead of instances."
+---
+
+# Handles and capabilities
+
+A client can send any instance it can see. If your `MoveBuildPiece` endpoint takes an `Instance`, an exploiter can pass another player's piece, or a part of the map. Checking ownership in every listener works, but it is easy to forget.
+
+A **handle** turns this around: the server hands each client a number for each object it may act on, and the client sends the number back. The server resolves it, and only objects it registered for that player resolve.
+
+## Handles
+
+```lua copy filename="Server"
+-- When a player places a piece
+local handle = Network.Handles.Register(piece, player)
+Network.PiecePlaced.Fire(player, handle, piece)
+
+-- When the player later moves it
+Network.MovePiece.On(function(player, handle, cframe)
+    local piece = Network.Handles.Resolve(handle, player)
+    if not piece then
+        return -- unknown, expired, or someone else's
+    end
+    piece:PivotTo(cframe)
+end)
+
+-- When the piece is deleted
+Network.Handles.Revoke(handle)
+```
+
+```cheeto copy
+event MovePiece {
+    From: Client,
+    Type: Reliable,
+    Call: SingleAsync,
+    Policy: "build",
+    RequireObjectHandle: true,
+    Data: (u32, CFrame)
+}
+```
+
+- Always pass the sender to `Resolve`; without a player the owner check is skipped.
+- `Register(object, owner, expiresAt)` accepts an absolute `os.clock()` expiry.
+- Registering the same object again returns the same handle.
+
+`RequireObjectHandle` does nothing by itself; it documents the contract and is passed to your [`Validate` hook](/security/constraints) as a constraint.
+
+## Capabilities
+
+A capability is a short-lived permission: "this player may `Edit` this plot for the next 15 seconds". Each call issues a new token.
+
+```lua copy
+local token = Network.Handles.IssueCapability(plot, player, { Edit = true }, 15)
+Network.EditSessionStarted.Fire(player, token)
+
+Network.EditPlot.On(function(player, token, change)
+    local plot = Network.Handles.ValidateCapability(token, player, "Edit")
+    if plot then
+        Plots.Apply(plot, change)
+    end
+end)
+```
+
+Use capabilities for flows the server opens and closes: an edit session, a trade window, a one-time teleport.
+
+## Where they live
+
+Handles and capabilities are stored in the module that created them. Create and resolve them on the server. They are not persisted; a new server starts empty.

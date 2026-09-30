@@ -1,0 +1,38 @@
+---
+title: "Inspector"
+description: "A single diagnostic snapshot of the module's state."
+---
+
+import { Sig } from '../../../components/Reference'
+
+# Inspector
+
+`Network.Inspector` gathers the module's diagnostic state into one table, for debug UIs and bug reports. Enabling it also turns on capture recording. See [Inspector](/operations/inspector).
+
+## Enable
+
+<Sig side="both">{"Enable(enabled: boolean): ()"}</Sig>
+
+Turns the inspector on or off for this module, independent of the [`EnableInspector`](/reference/options/diagnostics#enableinspector) option.
+
+## Snapshot
+
+<Sig side="both">{"Snapshot(): InspectorSnapshot"}</Sig>
+
+Errors with `Inspector is disabled` unless the inspector is enabled. Returns:
+
+| Field | Contents |
+| --- | --- |
+| `Metrics` | Same as [`Stats()`](/reference/api/module#stats) |
+| `Protocol` | Same as [`Protocol.Info()`](/reference/api/protocol#info) |
+| `Peers` | Copy of [`Protocol.Peers`](/reference/api/protocol#peers) |
+| `Capture` | Same as [`Capture.Entries()`](/reference/api/capture#entries) |
+| `ClientIntegrity` | Same as [`Security.ClientIntegrity()`](/reference/api/security#clientintegrity) |
+| `CharacterIntegrity` | Same as [`Security.CharacterIntegrity()`](/reference/api/security#characterintegrity) |
+| `Runtime` | `{ ProtocolVersion, ProtocolMode, SchemaVersion, SecurityProfile }` |
+
+```lua copy
+Network.Inspector.Enable(true)
+task.wait(30)
+print(Network.Inspector.Snapshot().Metrics.DroppedPackets)
+```

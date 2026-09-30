@@ -1,0 +1,31 @@
+---
+title: "Exported type"
+description: "Read and Write functions generated for types declared with export."
+---
+
+import { Sig } from '../../../components/Reference'
+
+# Exported type
+
+Every type declared with [`export`](/reference/declarations/export) becomes `Network.<TypeName>` with two functions, on both modules.
+
+## Write
+
+<Sig side="both">{"Write(value: T): buffer"}</Sig>
+
+Serializes `value` into a new buffer sized exactly to fit, using the module's current [encoding options](/reference/options/encoding). Errors if the value does not match the type.
+
+## Read
+
+<Sig side="both">{"Read(data: buffer): T"}</Sig>
+
+Deserializes a buffer produced by `Write`. Errors if the buffer is too short or a value fails its range check.
+
+```lua copy
+local encoded = Network.Snapshot.Write({ Tick = 120, Position = position, Health = 90 })
+DataStore:SetAsync(key, buffer.tostring(encoded))
+
+local decoded = Network.Snapshot.Read(buffer.fromstring(DataStore:GetAsync(key)))
+```
+
+Values containing `Instance` or `unknown` do not round-trip through a standalone buffer.

@@ -1,0 +1,65 @@
+---
+title: "Client integrity"
+description: "Server-issued liveness challenges that the client must answer with a receipt."
+---
+
+import { Callout } from 'nextra/components'
+
+# Client integrity
+
+Client integrity checks that each client's Cheeto runtime is alive and answering. The server regularly sends each player a one-time challenge; the client runs a set of checks and answers with a receipt. Clients that stop answering, send malformed receipts, or report failed checks build up a decaying score.
+
+Turn it on with [`EnableClientIntegrity`](/reference/options/client-integrity#enableclientintegrity), or with [`SecurityPreset = Maximum`](/security/maximum-security).
+
+## The cycle
+
+1. After a join grace period ([`ClientIntegrityJoinGraceSeconds`](/reference/options/client-integrity#clientintegrityjoingraceseconds), 20 s), the server sends a challenge with a fresh id and random nonce every [`ClientIntegrityChallengeIntervalSeconds`](/reference/options/client-integrity#clientintegritychallengeintervalseconds) (4 s). Only one challenge per player is outstanding.
+2. The client runs a built-in check that its runtime functions are intact, plus every sampler you registered with [`Security.OnIntegritySample`](/reference/api/security#onintegritysample).
+3. The client answers with a receipt: the challenge id and nonce, an increasing completion counter, the number of samplers, whether all passed, and a checksum.
+4. The server verifies the receipt.
+
+| Outcome | Evidence | Weight |
+| --- | --- | --- |
+| No receipt within [`ClientIntegrityReceiptTimeoutSeconds`](/reference/options/client-integrity#clientintegrityreceipttimeoutseconds) (8 s) | `IntegrityReceiptMissing` | 4 |
+| Wrong challenge, expired, reused counter, no samplers, or bad checksum | `IntegrityReceiptInvalid` | 6 |
+| Valid receipt, but a check failed | `IntegrityEvaluatorFailed` | 6 |
+| Valid, healthy receipt | Score reduced by 2, failure streak reset | |
+
+The score decays by 0.5 per second. A kick needs all of: [`ClientShieldKick`](/reference/options/client-shield#clientshieldkick) on, score at least [`ClientIntegrityScoreThreshold`](/reference/options/client-integrity#clientintegrityscorethreshold) (16), and at least [`ClientIntegrityMaxConsecutiveFailures`](/reference/options/client-integrity#clientintegritymaxconsecutivefailures) (4) failures in a row. A single missed receipt never kicks.
+
+## Adding your own checks
+
+Register cheap, deterministic checks that your game's client systems are running:
+
+```lua copy filename="Client"
+local remove = Network.Security.OnIntegritySample(function(context)
+    return {
+        Healthy = Controllers.Started
+            and Controllers.Inventory:IsBound()
+            and Controllers.Character:IsBound(),
+    }
+end)
+
+-- Call remove() if the owning system is destroyed.
+```
+
+A sampler that errors, returns `false`, or returns a table without `Healthy = true` marks the receipt unhealthy.
+
+## Grace periods
+
+Grant grace when a player legitimately cannot answer, such as during a long load:
+
+```lua copy filename="Server"
+Network.Security.GrantIntegrityGrace(player, 15, "loading-dungeon")
+```
+
+Inspect a player with [`Security.ClientIntegrity(player)`](/reference/api/security#clientintegrity), or force an immediate challenge with [`Security.ChallengeIntegrity(player)`](/reference/api/security#challengeintegrity).
+
+## Limits
+
+<Callout type="warning">
+The checksum is computed with an algorithm that is in the client module, so an exploiter can produce valid receipts without running your samplers. Treat integrity as liveness and tamper evidence: it catches clients whose runtime was broken or removed, not a careful attacker.
+</Callout>
+
+- Challenges are sent from the server's replication step; with `ManualReplication` they only run when you call `StepReplication`.
+- Long client freezes (alt-tabbing on some devices, heavy loading) cause misses. Keep the kick thresholds conservative.

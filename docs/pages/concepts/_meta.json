@@ -1,0 +1,12 @@
+{
+  "how-it-works": "How Cheeto works",
+  "receive-pipeline": "The receive pipeline",
+  "wire-protocol": "Wire protocol",
+  "batching-and-flushing": "Batching and flushing",
+  "reliability-and-priority": "Reliability and priority",
+  "functions-and-invokes": "Functions and invokes",
+  "prediction": "Prediction",
+  "state-channels": "State channels",
+  "interest-and-routing": "Audiences and routing",
+  "schema-versioning": "Schema versioning"
+}

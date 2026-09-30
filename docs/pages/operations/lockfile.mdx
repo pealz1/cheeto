@@ -1,0 +1,27 @@
+---
+title: "Lockfile"
+description: "Using cheeto.lock to make schema changes visible in review."
+---
+
+import { Callout } from 'nextra/components'
+
+# Lockfile
+
+`cheeto.lock` is a small JSON file next to your schema that records its surface: every endpoint and type by name, the schema version and key security options. Committing it turns every change to that surface into a diff someone has to approve.
+
+```sh copy
+cheeto network --write-lock --yes
+git add network.cheeto cheeto.lock
+```
+
+In CI:
+
+```sh copy
+cheeto network --check-lock --yes
+```
+
+`--check-lock` fails when the schema no longer matches the lockfile: an endpoint or type added, removed, renamed or reordered, or the version or security options changed. The fix is to run `--write-lock` and commit, which is exactly the moment a reviewer should ask whether the change is intended and whether `Version` went up.
+
+<Callout type="warning">
+The lockfile records names, not contents. Changing a field's type inside a struct does not change the lockfile, even though it changes the wire format. Review schema diffs themselves, and increase `Version` for any layout change. See [cheeto.lock format](/reference/lockfile).
+</Callout>

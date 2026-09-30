@@ -1,0 +1,66 @@
+---
+title: "Schema versioning"
+description: "Changing a schema safely while servers and clients are live."
+---
+
+import { Callout } from 'nextra/components'
+
+# Schema versioning
+
+The server and its clients must run modules compiled from the same schema. Normally they do: when you publish, new servers start with the new modules, and clients joining them download the new client module. Problems start when that assumption breaks, for example with long-lived servers during a rollout, or with data you stored using an old layout.
+
+## What changes the wire
+
+Anything that changes the bytes of a message:
+
+- adding, removing or reordering events, functions or channels (endpoints are numbered by position);
+- changing a field's type, order, range or optionality;
+- changing [encoding options](/reference/options/encoding).
+
+Changes that do not affect the wire: renaming a type alias, adding options that only affect limits or security, editing comments.
+
+## Version numbers
+
+Set [`Version`](/reference/options/versioning#version) and increase it for every wire change. Set [`MinimumSchemaVersion`](/reference/options/versioning#minimumschemaversion) to the oldest version this build can still talk to, which is almost always the same number.
+
+```cheeto copy
+option Version = 7
+option MinimumSchemaVersion = 7
+```
+
+With the [handshake](/reference/options/versioning#enableprotocolhandshake) on, every client reports its version to the server. Check it to catch stale clients:
+
+```lua copy
+local function check(player)
+    local peer = Network.Protocol.Info(player).Peer
+    if peer and not peer.Compatible then
+        player:Kick("A new version is available. Please rejoin.")
+    end
+end
+```
+
+<Callout type="warning">
+The handshake records a mismatch but does not block the peer; that is your call to make. See [Limitations](/limitations#the-handshake-does-not-block-mismatched-peers).
+</Callout>
+
+## Reviewing changes
+
+Commit [`cheeto.lock`](/reference/lockfile) and run `cheeto --check-lock` in CI. Any added, removed, renamed or reordered endpoint then fails CI until someone deliberately regenerates the lockfile, which puts the change in front of a reviewer. The lockfile does not see changes inside types, so review those in the schema diff.
+
+## Adding endpoints safely
+
+Add new endpoints at the **end** of the schema. Existing endpoints keep their numbers, so an old client talking to a new server still decodes everything it knows about.
+
+## Stored data
+
+Data you saved with an [exported type](/reference/api/exports) keeps its old layout forever. Store the version next to it, and upgrade on load with [`Schema.Migrate`](/reference/api/schema#migrate):
+
+```lua copy
+Network.Schema.RegisterMigration(6, function(save)
+    save.Coins = save.Gold
+    save.Gold = nil
+    return save
+end)
+
+local save, version = Network.Schema.Migrate(loaded.Data, loaded.Version)
+```

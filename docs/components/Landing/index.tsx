@@ -9,7 +9,7 @@ const INSTALL = 'rokit add pealz1/cheeto'
 const SPECS: Array<[string, string]> = [
   ['Input', 'One .cheeto schema'],
   ['Output', 'Client + server Luau, optional roblox-ts types'],
-  ['Wire format', 'Protocol v2, buffer-packed frames'],
+  ['Wire format', 'Batched binary frames, one remote each way'],
   ['Integers', 'LEB128 varints, declared ranges'],
   ['Datatypes', '30+ Roblox types'],
   ['Runtime deps', 'None, modules are self-contained'],
@@ -46,16 +46,16 @@ const FEATURES: Array<[string, string]> = [
   ['Buffer-packed by default', 'Fields are written at their declared width, integers as varints, booleans bit-packed, and every event in a frame shares one buffer.'],
   ['Typed end to end', 'Generated Luau types on both sides, plus TypeScript definitions for roblox-ts projects.'],
   ['Validated before your code runs', 'Size caps, decode budgets and canonicalization drop malformed payloads before a listener sees them.'],
-  ['Policies and rate limits', 'Declare who may send what and how often. Replay protection and idempotency are built in.'],
-  ['State channels', 'Delta-replicated channels with interpolation and prediction acknowledgements.'],
-  ['Production tooling', 'Doctor, strict mode, lockfiles, golden snapshots, load simulation and packet capture with replay.'],
+  ['Policies and rate limits', 'Declare who may send what and how often. Your rules run before the payload is even decoded.'],
+  ['State channels', 'Server-owned state sent as snapshots and delta patches, per player, group, zone or everyone.'],
+  ['Production tooling', 'Doctor and strict checks, a lockfile for schema review, metrics, and packet capture with replay.'],
   ['Studio plugin', 'Write, check and generate schemas without leaving Roblox Studio.'],
   ['Controller connections', 'Bind endpoints to route names, inject one object into controllers, and tear it all down with one call.']
 ]
 
 const STEPS: Array<[string, string, string, string]> = [
-  ['Describe', 'Declare events, functions, types and channels in a small schema.', '/language/events', 'Schema reference'],
-  ['Compile', 'Run cheeto. It checks the schema and writes the client, server and type modules.', '/getting-started/cli', 'CLI reference'],
+  ['Describe', 'Declare events, functions, types and channels in a small schema.', '/reference/declarations/event', 'Schema reference'],
+  ['Compile', 'Run cheeto. It checks the schema and writes the client, server and type modules.', '/reference/cli', 'CLI reference'],
   ['Require', 'Use the generated modules like any ModuleScript, with full autocomplete.', '/getting-started/quick-start', 'Quick start']
 ]
 
@@ -307,8 +307,8 @@ export default function Landing() {
               <li>Rotating remote names and decoys</li>
               <li>Client integrity and movement checks</li>
             </ol>
-            <Link href="/guides/maximum-security" className={styles.textLink}>
-              Maximum security guide
+            <Link href="/security/overview" className={styles.textLink}>
+              Security model
             </Link>
           </div>
           <IngressLog />

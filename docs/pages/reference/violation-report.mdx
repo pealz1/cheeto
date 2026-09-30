@@ -1,0 +1,37 @@
+---
+title: "ViolationReport"
+description: "The table passed to Security.OnViolation and the Violation hook."
+---
+
+# ViolationReport
+
+Every drop and every security report produces one of these, passed to [`Security.OnViolation`](/reference/api/security#onviolation) callbacks and the [`Violation`](/reference/api/hooks#violation) hook.
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `Reason` | string | A [drop reason](/reference/drop-reasons), a custom policy reason, or a security report reason |
+| `Player` | `Player`, `"Server"` or `nil` | Who sent the offending data. `nil` for some send-side drops |
+| `Event` | string | Endpoint name; the channel name for packet-level drops; `$clientShield`, `$clientIntegrity` or `$characterIntegrity` for security reports |
+| `Channel` | string | `"Reliable"`, `"Unreliable"`, `"ClientShield"`, `"ClientIntegrity"` or `"CharacterIntegrity"` |
+| `Score` | number | The sender's running count for this `Event`, from [`AbuseScores`](/reference/api/security#abusescores) |
+| `Action` | string | `"drop"` for drops; `"report"`, `"kick"`, `"correct"` for security reports |
+| `PayloadSize` | number | Size of the packet, or the report's weight for security reports |
+| `Time` | number | `os.clock()` when it happened |
+
+Field names are PascalCase: `report.Reason`, not `report.reason`.
+
+```lua copy
+Network.Security.OnViolation(function(report)
+    if typeof(report.Player) ~= "Instance" then
+        return
+    end
+    Analytics.Log("net_violation", {
+        userId = report.Player.UserId,
+        reason = report.Reason,
+        endpoint = report.Event,
+        action = report.Action,
+    })
+end)
+```
+
+Some drops are not caused by the peer: `Backpressure` and send-side `MaxPacketBytes` come from your own server. Filter by `Reason` before punishing anyone.

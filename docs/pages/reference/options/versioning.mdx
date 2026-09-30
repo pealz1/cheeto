@@ -1,0 +1,75 @@
+---
+title: "Versioning"
+description: "Schema version options, the capability handshake, and the protocol options that were removed."
+---
+
+import { Callout } from 'nextra/components'
+import { Spec } from '../../../components/Reference'
+
+# Versioning
+
+| Option | Type | Default |
+| --- | --- | --- |
+| [`Version`](#version) | number | `1` |
+| [`SchemaVersion`](#schemaversion) | number | `1` |
+| [`MinimumSchemaVersion`](#minimumschemaversion) | number | `1` |
+| [`EnableProtocolHandshake`](#enableprotocolhandshake) | boolean | `true` |
+| [`ProtocolVersion`](#protocolversion) | number | `2`, the only accepted value |
+
+For how these fit together, see [Schema versioning](/concepts/schema-versioning).
+
+## `Version`
+
+<Spec type="number (0–65535)" default={<code>1</code>} />
+
+The version of this schema. It is sent in the handshake, stamped on captures and state, and written to `cheeto.lock`. Increase it whenever a change alters the wire layout: adding, removing or reordering endpoints, or changing an endpoint's data type.
+
+The runtime's schema hash is derived from this number (`schema-<Version>`), so two different schemas with the same `Version` look identical to the handshake.
+
+```cheeto copy
+option Version = 7
+```
+
+## `SchemaVersion`
+
+<Spec type="number (0–65535)" default={<code>1</code>} />
+
+Alias of [`Version`](#version). When both are set, `SchemaVersion` wins.
+
+## `MinimumSchemaVersion`
+
+<Spec type="number (0–65535)" default={<code>1</code>} />
+
+The oldest schema version this build accepts in a peer's handshake. A peer reporting an older version is marked incompatible and its handshake frame is dropped with `IncompatibleProtocol`.
+
+```cheeto copy
+option Version = 7
+option MinimumSchemaVersion = 7
+```
+
+## `EnableProtocolHandshake`
+
+<Spec type="boolean" default={<code>true</code>} />
+
+Each module writes a small capability frame (protocol, schema version, minimum version, schema hash) into the first batch it sends. Every client therefore reports its version to the server, and the server records one entry per player in [`Protocol.Peers`](/reference/api/protocol#peers) and [`Protocol.Info`](/reference/api/protocol#info). The server writes its own frame only once per server, into the first batch it produces, so most clients never receive it. Nothing on the client depends on it.
+
+<Callout type="warning">
+An incompatible handshake is recorded and reported, but later packets from that peer are still decoded. The handshake tells you a mismatch happened; it does not block the peer. Check `Protocol.Info(player).Peer.Compatible` if you want to act on it. See [Limitations](/limitations#the-handshake-does-not-block-mismatched-peers).
+</Callout>
+
+## `ProtocolVersion`
+
+<Spec type="number" default={<code>2</code>} values={<>only <code>2</code></>} />
+
+Cheeto has one wire protocol, internally numbered 2. This option exists so older schemas keep compiling; any value other than `2` is a compile error, and `Configure` rejects changing it. You never need to write it. See [Wire protocol](/concepts/wire-protocol).
+
+## Removed options
+
+These options are still recognized so the compiler can give a clear error, and they fail compilation if present:
+
+| Option | Error |
+| --- | --- |
+| `ProtocolMode` | `ProtocolMode was removed; omit it instead of using Legacy or Negotiated.` |
+| `AcceptProtocolVersion1` | `AcceptProtocolVersion1 was removed; protocol v1 is not supported.` |
+
+Delete the line to fix the error.
