@@ -57,3 +57,6 @@ jobs:
 
       - name: Check the reference covers the compiler
         run: node docs/scripts/check-reference.mjs
+
+      - name: Type-check the generated TypeScript definitions
+        run: node docs/scripts/check-typescript.mjs

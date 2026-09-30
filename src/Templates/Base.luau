@@ -251,6 +251,7 @@ local RuntimeState = {
     Idempotency = {} :: {[any]: any},
     PlayerZones = {} :: {[any]: string},
     KnownIds = {} :: {[any]: any},
+    RateOverrides = {} :: {[string]: {Rate: number, Burst: number}},
     UnreliableBatches = {} :: {[any]: any},
     Latest = {} :: {[any]: {[string]: any}},
     SendSequences = {} :: {[number]: number},
@@ -722,12 +723,9 @@ function RuntimeSupport.CreateRemoteName(Prefix: string?): string
         Token = string.sub(Clean, 1, 18)
     end
 
-    local SafePrefix = string.gsub(tostring(Prefix or "R"), "[^%w_]", "")
-    if SafePrefix == "" then
-        SafePrefix = "R"
-    end
-
-    return `_CHEETO_{SafePrefix}_{Token}`
+    --> The same shape for real and decoy remotes: a prefix that told them
+    --> apart would tell a script which remotes to skip.
+    return `_CHEETO_{Token}`
 end
 
 local function ShouldThrottleClientShield(Source: any, Reason: string): boolean
@@ -1623,8 +1621,10 @@ function RuntimeSupport.InstallRemoteDecoys(Parent: Instance?, Count: number?): 
     local Created = {}
     local Total = math.max(0, math.floor(Count or RuntimeConfig.RemoteDecoyCount))
     for Index = 1, Total do
+        --> Both classes, like the real pair, so class does not give them away.
+        local ClassName = if Index % 2 == 0 then "UnreliableRemoteEvent" else "RemoteEvent"
         local Success, Remote = pcall(function()
-            return Instance.new("RemoteEvent")
+            return Instance.new(ClassName)
         end)
 
         if not Success or Remote == nil then
@@ -3880,7 +3880,22 @@ function RuntimeSupport.AcceptSequence(Source: any, Key: number, Sequence: numbe
     return true
 end
 
+--> Overrides set at runtime with Security.SetRateLimit win over the values
+--> compiled into each endpoint (and, under "Reliable" or "Unreliable", over
+--> the per-remote limit).
+function RuntimeSupport.SetRateLimit(Key: string, Rate: number?, Burst: number?)
+    if Rate == nil then
+        RuntimeState.RateOverrides[Key] = nil
+        return
+    end
+    RuntimeState.RateOverrides[Key] = { Rate = Rate, Burst = Burst or Rate }
+end
+
 local function CheckRateLimit(Source: any, Key: string, Rate: number?, Burst: number?): boolean
+    local Override = RuntimeState.RateOverrides[Key]
+    if Override ~= nil then
+        Rate, Burst = Override.Rate, Override.Burst
+    end
     local Rate = Rate or RuntimeConfig.RateLimitPerSecond
     if Rate <= 0 then
         return true

@@ -18,6 +18,7 @@ import { Sig } from '../../../components/Reference'
 | [`RegisterPolicy`](#registerpolicy) | Both | Define or replace a named policy |
 | [`RegisterPolicyGroup`](#registerpolicygroup) | Both | Name a list of policies |
 | [`CheckIdempotency`](#checkidempotency) | Both | One-time key check for your own code |
+| [`SetRateLimit`](#setratelimit) | Both | Change an endpoint's rate limit while the game runs |
 | [`SetZone`](#setzone), [`GetZone`](#getzone) | Server | The zone [`RequireZone`](/reference/fields#requirezone) checks |
 | [`RegisterKnownId`](#registerknownid), [`ForgetKnownId`](#forgetknownid) | Server | Ids [`RequireServerKnownId`](/reference/fields#requireserverknownid) accepts |
 | [`SetInventoryResolver`](#setinventoryresolver) | Server | The check behind [`RequireInventoryOwnership`](/reference/fields#requireinventoryownership) |
@@ -109,6 +110,20 @@ Network.Purchase.On(function(player, receiptId)
         return
     end
     Economy.Grant(player, receiptId)
+end)
+```
+
+## SetRateLimit
+
+<Sig side="both">{"SetRateLimit(key: string, rate: number?, burst: number?): ()"}</Sig>
+
+Overrides the rate limit for `key`: an endpoint name, or `"Reliable"` / `"Unreliable"` for the per-remote limit. `rate` is packets per second per sender and `burst` how many may arrive at once (default `rate`). Pass `nil` as `rate` to go back to the compiled value. Takes effect on the next packet; token buckets already filled keep their tokens.
+
+```lua copy
+-- Tighten a chat endpoint during a spam wave, then restore it.
+Network.Security.SetRateLimit("SendChat", 1, 3)
+task.delay(300, function()
+    Network.Security.SetRateLimit("SendChat", nil)
 end)
 ```
 

@@ -6,6 +6,7 @@ local fs = require("@lune/fs")
 local serde = require("@lune/serde")
 local stdio = require("@lune/stdio")
 
+local Benchmark = require("./Benchmark")
 local Error = require("../../Modules/Error")
 local Generator = require("../../Generator")
 local GetDefinitionFilePath = require("./GetDefinitionFilePath")
@@ -635,62 +636,105 @@ function Utility.Strict(Path: string, Options: CompileOptions)
 	end
 end
 
+local function Pad(Text: string, Width: number): string
+	return Text .. string.rep(" ", math.max(1, Width - #Text))
+end
+
+local function Round(Value: number, Places: number): number
+	local Scale = 10 ^ Places
+	return math.round(Value * Scale) / Scale
+end
+
+type Totals = { Bytes: number, Encode: number, Decode: number, Measured: number, Skipped: number }
+
+local function Summarize(Results: { Benchmark.Measurement }): Totals
+	local Totals = { Bytes = 0, Encode = 0, Decode = 0, Measured = 0, Skipped = 0 }
+	for _, Result in Results do
+		if Result.Skipped then
+			Totals.Skipped += 1
+		else
+			Totals.Measured += 1
+			Totals.Bytes += Result.Bytes
+			Totals.Encode += Result.EncodeMicroseconds
+			Totals.Decode += Result.DecodeMicroseconds
+		end
+	end
+	return Totals
+end
+
 function Utility.Benchmark(Path: string, Options: CompileOptions)
 	local Ast = ParseForUtility(Path, Options)
-	local FileOptions = Ast.Value.Options
 	local Counts = CountDeclarations(Ast.Value.Declarations)
 	local Start = os.clock()
 	local ServerSource = Generator.Generate("Server", Ast)
 	local ClientSource = Generator.Generate("Client", Ast)
 	local TypesSource = Generator.GenerateShared(Ast)
 	local Elapsed = os.clock() - Start
+
+	--> Measured on its own parse: the harness rewrites options and strips
+	--> access rules so every endpoint accepts the synthetic traffic.
+	local Results = Benchmark.Measure((ParseForUtility(Path, Options)))
+	local Totals = Summarize(Results)
+
 	local BaseEvents = math.max(1, Counts.Event + Counts.Function + Counts.Channel)
-	local SimulatedClients = 200
-	local Traffic = SimulatedClients * BaseEvents
-	local SimulatedPacketBytes = math.floor((#ServerSource + #ClientSource) / 128) + (Traffic * 18)
-	local SimulatedEncodeMs = Traffic * 0.006
-	local SimulatedDecodeMs = Traffic * 0.007
-	local SimulatedDrops = if (FileOptions.MaxQueuedEvents or 256) < Traffic / 4 then math.floor(Traffic / 32) else 0
 	local EndpointHeadroom = math.max(0, BaseEvents - 80)
 	local Thresholds = {
 		ServerBytes = 700_000 + (EndpointHeadroom * 2_250),
 		ClientBytes = 560_000 + (EndpointHeadroom * 1_500),
 		--> The shared artifact embeds the whole runtime, so it tracks runtime size.
-		--> Built-in constraint checks and the unified send path took it past 225 KB.
 		TypesBytes = 250_000,
 		GenerateSeconds = 2,
-		PacketBytes200 = math.max(250_000, math.floor(Traffic * 20)),
-		EncodeMs200 = math.max(80, Traffic * 0.008),
-		DecodeMs200 = math.max(95, Traffic * 0.009),
-		Drops200 = math.max(500, math.floor(Traffic / 24)),
-		AllocationMode = "pooled-runtime",
+		--> Per message, averaged over every measured endpoint. Generous on
+		--> purpose: CI machines are slow and noisy; this catches regressions
+		--> of an order of magnitude, not a few percent.
+		EncodeMicroseconds = 250,
+		DecodeMicroseconds = 250,
 	}
 	local Failures = {}
-
 	local function Check(Name: string, Value: number, Limit: number)
 		if Value > Limit then
 			table.insert(Failures, `{Name}={Value} exceeds {Limit}`)
 		end
 	end
 
+	local Average = if Totals.Measured > 0 then 1 / Totals.Measured else 0
 	Check("serverBytes", #ServerSource, Thresholds.ServerBytes)
 	Check("clientBytes", #ClientSource, Thresholds.ClientBytes)
 	Check("typesBytes", #TypesSource, Thresholds.TypesBytes)
 	Check("generateSeconds", Elapsed, Thresholds.GenerateSeconds)
-	Check("packetBytes200", SimulatedPacketBytes, Thresholds.PacketBytes200)
-	Check("encodeMs200", SimulatedEncodeMs, Thresholds.EncodeMs200)
-	Check("decodeMs200", SimulatedDecodeMs, Thresholds.DecodeMs200)
-	Check("drops200", SimulatedDrops, Thresholds.Drops200)
+	Check("encodeMicroseconds", Round(Totals.Encode * Average, 2), Thresholds.EncodeMicroseconds)
+	Check("decodeMicroseconds", Round(Totals.Decode * Average, 2), Thresholds.DecodeMicroseconds)
+	for _, Result in Results do
+		if not Result.Skipped and Result.Kind ~= "Function" and Result.Delivered < 1 then
+			table.insert(Failures, `{Result.Name} delivered nothing ({Result.Dropped or "no drop recorded"})`)
+		end
+	end
 
-	Message("green", Options, "Cheeto benchmark:")
+	Message("green", Options, "Cheeto benchmark (measured):")
 	print(
-		`generated={FormatTime(Elapsed)} server={#ServerSource} bytes client={#ClientSource} bytes types={#TypesSource} bytes`
+		`generated in {FormatTime(Elapsed)}: server={#ServerSource} bytes client={#ClientSource} bytes types={#TypesSource} bytes`
+	)
+	print(`{Pad("endpoint", 44)}{Pad("direction", 18)}{Pad("bytes/msg", 11)}{Pad("encode µs", 11)}decode µs`)
+	for _, Result in Results do
+		if Result.Skipped then
+			print(`{Pad(Result.Name, 44)}{Pad(Result.Direction, 18)}skipped: {Result.Skipped}`)
+		else
+			print(
+				`{Pad(Result.Name, 44)}{Pad(Result.Direction, 18)}{Pad(tostring(Round(Result.Bytes, 1)), 11)}{Pad(
+					tostring(Round(Result.EncodeMicroseconds, 2)),
+					11
+				)}{Round(Result.DecodeMicroseconds, 2)}`
+			)
+		end
+	end
+	print(
+		`average over {Totals.Measured} endpoints: bytes/msg={Round(Totals.Bytes * Average, 1)} encode={Round(
+			Totals.Encode * Average,
+			2
+		)} µs decode={Round(Totals.Decode * Average, 2)} µs ({Totals.Skipped} skipped)`
 	)
 	print(
-		`sim200 packetBytes={SimulatedPacketBytes} encodeMs={SimulatedEncodeMs} decodeMs={SimulatedDecodeMs} drops={SimulatedDrops}`
-	)
-	print(
-		`thresholds=server<={Thresholds.ServerBytes},client<={Thresholds.ClientBytes},types<={Thresholds.TypesBytes},generate<={Thresholds.GenerateSeconds}s,packetBytes200<={Thresholds.PacketBytes200},encodeMs200<={Thresholds.EncodeMs200},decodeMs200<={Thresholds.DecodeMs200},drops200<={Thresholds.Drops200},allocations={Thresholds.AllocationMode}`
+		`thresholds: server<={Thresholds.ServerBytes} client<={Thresholds.ClientBytes} types<={Thresholds.TypesBytes} generate<={Thresholds.GenerateSeconds}s encode<={Thresholds.EncodeMicroseconds}µs decode<={Thresholds.DecodeMicroseconds}µs`
 	)
 
 	if #Failures > 0 then
@@ -698,35 +742,31 @@ function Utility.Benchmark(Path: string, Options: CompileOptions)
 	end
 end
 
+--> Scales the measured average message to a server at a given number of
+--> clients and messages per client per second (sent and received).
 function Utility.LoadSim(Path: string, Options: CompileOptions)
 	local Ast = ParseForUtility(Path, Options)
 	local FileOptions = Ast.Value.Options
-	local Counts = CountDeclarations(Ast.Value.Declarations)
-	local ServerSource = Generator.Generate("Server", Ast)
-	local ClientSource = Generator.Generate("Client", Ast)
-	local BaseEvents = math.max(1, Counts.Event + Counts.Function + Counts.Channel)
+	local Results = Benchmark.Measure(Ast)
+	local Totals = Summarize(Results)
+	local Average = if Totals.Measured > 0 then 1 / Totals.Measured else 0
+	local Bytes = Totals.Bytes * Average
+	local Cost = (Totals.Encode + Totals.Decode) * Average
 
-	Message("green", Options, "Cheeto load simulation:")
-	print(`schemaVersion={SchemaVersion(FileOptions)}`)
+	Message("green", Options, "Cheeto load projection (from measured per-message costs):")
 	print(
-		"clients,encodeMs,decodeMs,bytes,drops,validationFailures,rateLimitHits,pendingInvokes,queueDepth,stateFlushMs"
+		`schemaVersion={SchemaVersion(FileOptions)} endpoints={Totals.Measured} averageMessage={Round(Bytes, 1)} bytes, {Round(
+			Cost,
+			2
+		)} µs to encode and decode`
 	)
+	print("clients,messagesPerClientPerSecond,kilobytesPerSecond,cpuMillisecondsPerSecond,percentOfOneCore")
 	for _, Clients in { 10, 50, 100, 200 } do
-		local Traffic = Clients * BaseEvents
-		local Bytes = math.floor((#ServerSource + #ClientSource) / 128) + (Traffic * 18)
-		local Drops = if (FileOptions.MaxQueuedEvents or 256) < Traffic / 4 then math.floor(Traffic / 32) else 0
-		local ValidationFailures = math.floor(Traffic / 400)
-		local RateLimitHits = if (FileOptions.RateLimitPerSecond or 0) > 0
-			then math.floor(Traffic / math.max(1, FileOptions.RateLimitPerSecond :: number))
-			else 0
-		local PendingInvokes = math.min(Counts.Function * Clients, FileOptions.MaxPendingInvokes or 256)
-		local QueueDepth = math.min(Traffic, FileOptions.MaxQueuedEvents or 256)
-		local EncodeMs = Traffic * 0.006
-		local DecodeMs = Traffic * 0.007
-		local StateFlushMs = Counts.Channel * Clients * 0.004
-		print(
-			`{Clients},{EncodeMs},{DecodeMs},{Bytes},{Drops},{ValidationFailures},{RateLimitHits},{PendingInvokes},{QueueDepth},{StateFlushMs}`
-		)
+		for _, Rate in { 10, 30, 60 } do
+			local Messages = Clients * Rate
+			local CpuMs = Messages * Cost / 1000
+			print(`{Clients},{Rate},{Round(Messages * Bytes / 1024, 1)},{Round(CpuMs, 2)},{Round(CpuMs / 10, 1)}`)
+		end
 	end
 end
 
@@ -738,7 +778,6 @@ function Utility.CaptureReplay(Path: string, Options: CompileOptions)
 	print(
 		"runtimeApis=Capture.Start,Capture.Stop,Capture.Entries,Capture.Replay,Capture.ReplayRaw,Capture.Redact,Inspector.Snapshot"
 	)
-	print("fixtures=malformed,prediction,invoke,state-channel,rate-limit")
 end
 
 function Utility.GoldenSnapshots(Path: string, Options: CompileOptions)
@@ -749,7 +788,8 @@ function Utility.GoldenSnapshots(Path: string, Options: CompileOptions)
 	local ClientSource = Generator.Generate("Client", Ast)
 	Message("green", Options, "Cheeto golden snapshot metadata:")
 	print(`schemaVersion={SchemaVersion(FileOptions)}`)
-	print(`wireHash={#ServerSource}:{#ClientSource}:{Counts.Type}:{Counts.Event}:{Counts.Function}:{Counts.Channel}`)
+	print(`schemaHash={Wire.Fingerprint(Ast, Wire.Assign(Ast.Value.Declarations, (Ast.Value :: any).Lock))}`)
+	print(`sizes={#ServerSource}:{#ClientSource} types={Counts.Type}`)
 	print(`events={table.concat(DeclarationNames(Ast.Value.Declarations, "Event"), ",")}`)
 	print(`functions={table.concat(DeclarationNames(Ast.Value.Declarations, "Function"), ",")}`)
 	print(`channels={table.concat(DeclarationNames(Ast.Value.Declarations, "Channel"), ",")}`)

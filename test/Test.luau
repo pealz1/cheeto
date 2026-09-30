@@ -2909,6 +2909,29 @@ RunClosure("Large schemas and UseColon compile and load", function()
 	end
 end)
 
+RunClosure("Rate limits can be changed at runtime", function()
+	local Seen = 0
+	local Release = Server.UnconstrainedClient.On(function()
+		Seen += 1
+	end)
+	Server.Security.SetRateLimit("UnconstrainedClient", 1, 1)
+	for _ = 1, 3 do
+		Client.UnconstrainedClient.Fire(1)
+	end
+	Client.StepReplication()
+	task.wait(1 / 30)
+	assert(Seen == 1, `Expected the override to admit one event, got {Seen}.`)
+
+	Server.Security.SetRateLimit("UnconstrainedClient", nil)
+	for _ = 1, 3 do
+		Client.UnconstrainedClient.Fire(1)
+	end
+	Client.StepReplication()
+	task.wait(1 / 30)
+	Release()
+	assert(Seen == 4, `Expected the compiled limit back after clearing the override, got {Seen}.`)
+end)
+
 RunClosure("Fuzz malformed packets", function()
 	Server.Configure({
 		MaxReliablePacketBytes = 256,
