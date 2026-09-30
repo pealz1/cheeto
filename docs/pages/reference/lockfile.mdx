@@ -9,10 +9,14 @@ import { Callout } from 'nextra/components'
 
 `cheeto --write-lock` writes `cheeto.lock` next to the schema. It does two jobs:
 
-- **It keeps endpoint ids stable.** Every compile reads it, and each endpoint keeps the id the lock recorded for its name, kind and channel. Reordering endpoints or removing one no longer renumbers the rest.
+- **It keeps endpoint ids stable.** Every command-line compile reads it, and each endpoint keeps the id the lock recorded for its name, kind and channel. Reordering endpoints or removing one no longer renumbers the rest.
 - **It puts wire changes in review.** `cheeto --check-lock` fails when the schema no longer produces the same lock, listing the lines that changed.
 
 Commit the file next to the schema.
+
+<Callout type="info">
+Only the command-line compiler reads the lock. The Studio plugin compiles without it and numbers endpoints in declaration order, so build releases with the CLI, or pin the ids that matter with [`WireId`](/reference/fields#wireid).
+</Callout>
 
 ```json
 {

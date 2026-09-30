@@ -49,7 +49,7 @@ A function call or a predicted event that the server drops is answered with the 
 
 ### Ids depend on cheeto.lock
 
-Endpoints keep their ids across reorders and removals only while `cheeto.lock` is next to the schema and committed. Without it, ids follow declaration order, as they do the first time a schema is compiled. Pin ids that must never move with [`WireId`](/reference/fields#wireid). See [cheeto.lock format](/reference/lockfile).
+Endpoints keep their ids across reorders and removals only while `cheeto.lock` is next to the schema and committed, and only in builds made with the command-line compiler: the Studio plugin does not read the lock. Without it, ids follow declaration order, as they do the first time a schema is compiled. Pin ids that must never move with [`WireId`](/reference/fields#wireid). See [cheeto.lock format](/reference/lockfile).
 
 ### Mixed schemas are not decoded
 

@@ -31,6 +31,10 @@ local ITERATIONS = 256
 --> Options that would start background work or reject synthetic traffic.
 --> The benchmark measures serialization and the receive pipeline, not policy.
 local OVERRIDES: { [string]: any } = {
+	--> Casing and UseColon only rename members and change the call style; the
+	--> harness calls Pascal names with a dot.
+	Casing = "Pascal",
+	UseColon = false,
 	ManualReplication = true,
 	EnableClientShield = false,
 	EnableClientIntegrity = false,

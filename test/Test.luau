@@ -2882,6 +2882,7 @@ RunClosure("Large schemas and UseColon compile and load", function()
 		'option ClientOutput = "../../Network/CapacityClient.luau"',
 		'option ServerOutput = "../../Network/CapacityServer.luau"',
 		"option UseColon = true",
+		"option Casing = Camel",
 		"struct Shape { A: u8, B: u16, C: string }",
 	}
 	for Index = 1, 12 do
@@ -2899,8 +2900,16 @@ RunClosure("Large schemas and UseColon compile and load", function()
 		{ "run", Compiler, "../../test/Sources/CapacityGenerated", "--", "--yes" },
 		{ cwd = "../src/CLI" }
 	)
+	--> The measured benchmark runs the generated code, so it has to cope with
+	--> any casing and with UseColon.
+	local Measured = process.exec(
+		"lune",
+		{ "run", Compiler, "../../test/Sources/CapacityGenerated", "--", "--benchmark", "--yes" },
+		{ cwd = "../src/CLI" }
+	)
 	fs.removeFile("./Sources/CapacityGenerated.cheeto")
 	assert(Result.ok, `Capacity schema failed to compile:\n{Result.stderr}`)
+	assert(Measured.ok, `--benchmark failed on a Camel-cased UseColon schema:\n{Measured.stdout}{Measured.stderr}`)
 	for _, Name in { "CapacityServer", "CapacityClient" } do
 		local Source = fs.readFile(`../Network/{Name}.luau`)
 		local Compiled, Error = pcall(luau.compile, Source)
@@ -2967,6 +2976,52 @@ RunClosure("Map ranges, type aliases and idempotent Fire", function()
 	task.wait(1 / 30)
 	Release()
 	assert(Seen == 1, `A replayed idempotent packet was delivered again ({Seen} deliveries).`)
+end)
+
+RunClosure("Broadcasts to several players keep every batch intact", function()
+	--> The mock has one player; add a second so batches for two players are
+	--> built in the same frame. Loading one player's batch used to return the
+	--> other's buffer to the pool, and the next allocation overwrote it.
+	local PlayersService = ServerEnvironment.Services.Players
+	local GetPlayers = PlayersService.GetPlayers
+	local Second = { Name = "Second", Parent = {} }
+	PlayersService.GetPlayers = function()
+		return { Shared.Player, Second }
+	end
+
+	local Received = {}
+	local Release = Client.ServerPair.On(function(Text, Tag)
+		table.insert(Received, { Text = Text, Tag = Tag })
+	end)
+	local MalformedBefore = Client.Stats().DroppedPackets.MalformedPacket or 0
+	for Round = 1, 24 do
+		Server.ServerPair.Fire(Shared.Player, string.rep("p", Round * 7), "one")
+		Server.ServerPair.FireAll(string.rep("b", Round * 11), "all")
+		Server.ServerPair.Fire(Second :: any, string.rep("s", Round * 5), "two")
+	end
+	Server.StepReplication()
+	task.wait(1 / 30)
+
+	PlayersService.GetPlayers = GetPlayers
+	PlayersService.PlayerRemoving:Fire(Second)
+	task.wait(1 / 30)
+	Release()
+
+	local Counts = { one = 0, all = 0, two = 0 }
+	for _, Entry in Received do
+		local Expected = if Entry.Tag == "one" then "p" elseif Entry.Tag == "all" then "b" else "s"
+		assert(Counts[Entry.Tag] ~= nil, `Received a corrupted tag: {tostring(Entry.Tag)}`)
+		assert(Entry.Text == string.rep(Expected, #Entry.Text), `A {Entry.Tag} payload arrived corrupted.`)
+		Counts[Entry.Tag] += 1
+	end
+	assert(
+		Counts.one == 24 and Counts.all == 48 and Counts.two == 24,
+		`Expected 24/48/24 deliveries, got {Counts.one}/{Counts.all}/{Counts.two}.`
+	)
+	assert(
+		(Client.Stats().DroppedPackets.MalformedPacket or 0) == MalformedBefore,
+		"A player's batch was corrupted by another player's."
+	)
 end)
 
 RunClosure("Fuzz malformed packets", function()

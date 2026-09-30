@@ -10,6 +10,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 This release fixes defects found while rebuilding the documentation against the compiler, and makes every documented feature do what it says. The wire format changed; regenerate both modules together, as always.
 
+### Upgrading from 1.0
+
+Some fixes make code that worked by accident stop working. Check these before you publish:
+
+1. **Register every policy name.** Unregistered policies now drop every packet on their endpoints. The built-in names such as `damage` and `admin` no longer exist. Run `cheeto --doctor` to list every policy, policy group and auth name your schema uses, and register each one with `Security.RegisterPolicy`, `Security.RegisterPolicyGroup` or `UseAuth`.
+2. **Swap `CFrame` components if you followed the old docs.** `CFrame<A, B>` now means position `A`, rotation `B`. The 1.0 docs said to write `CFrame<f16, i16>` for an integer position; that now gives integer rotations and a half-precision position. Write `CFrame<i16, f16>` instead. This one fails silently, so search your schema for `CFrame<`.
+3. **Delete `ProtocolVersion`, `ProtocolMode` and `AcceptProtocolVersion1`.** These lines no longer compile.
+4. **Move access fields off server-sent endpoints.** `Auth`, `Policy`, `PolicyGroup`, `CooldownSeconds`, `Idempotency` and the constraint fields on `From: Server` events and on channels are now compile errors. They never worked there: the client dropped every packet.
+5. **Keep integers in range.** A value outside its type, such as `300` for a `u8`, now raises at the call site instead of arriving wrapped.
+6. **Commit `cheeto.lock`.** Endpoint ids now come from it. Run `--write-lock` once after upgrading; the 1.0 lock format is ignored until you do.
+7. **Expect answers to dropped calls.** `Invoke` now raises `The server rejected "Name": <reason>` for a call the server drops, instead of waiting for its timeout. Handler errors raise `HandlerError`.
+
 ### Security
 
 - Unregistered policies and policy groups now drop every packet and warn once. The built-in policy names (`admin`, `currency`, `damage` and the rest), which admitted every connected player, are gone: register a rule for each name your schema uses. `--doctor` lists them.
@@ -81,7 +93,7 @@ The first public release.
 
 ### Runtime
 
-- Strict protocol v2 framing with a capability handshake that checks protocol, schema version and schema hash.
+- Length-prefixed, batched framing with a capability handshake that checks the schema version and hash.
 - Batched, buffer-packed reliable and unreliable transport with fragmentation, priority lanes, backpressure and latest-only events.
 - Size caps, decode budgets and payload canonicalization before any listener runs.
 - Policies, auth rules, rate limits, cooldowns, idempotency, replay protection, honeypot events and a post-decode `Validate` hook.
