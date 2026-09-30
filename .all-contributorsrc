@@ -1,0 +1,34 @@
+{
+  "projectName": "cheeto",
+  "projectOwner": "pealz1",
+  "repoType": "github",
+  "repoHost": "https://github.com",
+  "files": ["README.md"],
+  "imageSize": 80,
+  "commit": false,
+  "commitConvention": "angular",
+  "contributorsPerLine": 4,
+  "contributors": [
+    {
+      "login": "pealz1",
+      "name": "pealz1",
+      "avatar_url": "https://github.com/pealz1.png?size=100",
+      "profile": "https://github.com/pealz1",
+      "contributions": ["code", "doc", "design", "infra", "maintenance", "security"]
+    },
+    {
+      "login": "1Axen",
+      "name": "1Axen",
+      "avatar_url": "https://github.com/1Axen.png?size=100",
+      "profile": "https://github.com/1Axen",
+      "contributions": ["code"]
+    },
+    {
+      "login": "ArvidSilverlock",
+      "name": "ArvidSilverlock",
+      "avatar_url": "https://github.com/ArvidSilverlock.png?size=100",
+      "profile": "https://github.com/ArvidSilverlock",
+      "contributions": ["code"]
+    }
+  ]
+}
