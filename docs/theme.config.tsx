@@ -11,8 +11,9 @@ const description =
 
 const Logo = () => (
   <span className="cheeto-logo">
-    <img src={`${basePath}/cheeto.svg`} width={30} height={30} alt="" />
+    <img src={`${basePath}/cheeto.svg`} width={26} height={26} alt="" />
     <span>Cheeto</span>
+    <small>1.0</small>
   </span>
 )
 
@@ -31,8 +32,8 @@ const Head = () => {
       <meta property="og:type" content="website" />
       <meta property="og:image" content={`${siteUrl}/og.png`} />
       <meta name="twitter:card" content="summary_large_image" />
-      <meta name="theme-color" media="(prefers-color-scheme: light)" content="#fbf8f4" />
-      <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#0b0a09" />
+      <meta name="theme-color" media="(prefers-color-scheme: light)" content="#f3efe6" />
+      <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#13120f" />
       <link rel="icon" href={`${basePath}/cheeto.svg`} type="image/svg+xml" />
     </>
   )
@@ -54,14 +55,6 @@ const config: DocsThemeConfig = {
     }
     return { title: 'Cheeto: typed, secure networking for Roblox' }
   },
-  banner: {
-    key: 'cheeto-1.0.0',
-    text: (
-      <a href={`${repository}/releases/tag/v1.0.0`} target="_blank" rel="noreferrer">
-        Cheeto 1.0 is here. Read the release notes →
-      </a>
-    )
-  },
   sidebar: {
     defaultMenuCollapseLevel: 1,
     toggleButton: true
@@ -73,7 +66,7 @@ const config: DocsThemeConfig = {
     text: 'Edit this page on GitHub →'
   },
   feedback: {
-    content: 'Question? Give us feedback →',
+    content: 'Open an issue about this page →',
     labels: 'documentation'
   },
   search: {
