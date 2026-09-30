@@ -1,108 +1,74 @@
-# Cheeto Security
+# Security toolkit
 
-For newly generated Cheeto networks, prefer the built-in `SecurityPreset = Maximum` integrity runtime documented in [Maximum Security](../../docs/pages/getting-started/8-maximum-security.mdx). It carries one-time client liveness challenges over Cheeto's typed transport and performs server-observed character reconciliation, so it does not add a second raw RemoteEvent channel. This folder remains the standalone detector package for projects that have not migrated their network schema.
+Standalone client and server detectors that run alongside any networking setup. Two detectors share one signed report channel with a heartbeat-timeout fallback:
 
-Client/server security layer for Cheeto. It runs two detectors over one shared,
-signed report channel with a heartbeat-timeout fallback:
+- **Infinite Yield detection** fingerprints the [Infinite Yield](https://github.com/EdgeIY/infiniteyield) admin script and removes the player.
+- **Movement anti-cheat** catches speed, fly, noclip, infinite jump, mass, void teleport, anti-gravity and anti-knockback, and rolls the player back well before it ever reports them.
 
-- **Infinite Yield detection** — fingerprints the [Infinite Yield](https://github.com/EdgeIY/infiniteyield)
-  admin/exploit script and kicks the player.
-- **Movement anti-cheat** — speed / fly / noclip / infinite-jump / mass / void-teleport
-  / anti-gravity detection with self-correcting rollback before it ever escalates.
+> [!TIP]
+> If your game already uses a Cheeto schema, start with [`SecurityPreset = Maximum`](https://pealz1.github.io/cheeto/guides/maximum-security) instead. It runs liveness challenges and server-side character checks over Cheeto's own transport, without a second RemoteEvent. This toolkit is for games that have not moved their networking to Cheeto yet, or that want an extra layer.
 
 ## Files
 
-| File | Role |
-|------|------|
-| `IYSignatures.luau` | Pure IY fingerprint matcher. Given a GUI container, reports whether Infinite Yield is present and which signal matched. No side effects — a tested core. |
-| `SuspicionScore.luau` | Pure suspicion-scoring engine for the movement anti-cheat — the false-positive safety. A tested core. |
-| `KnockbackForce.luau` | Pure horizontal-force summation over `Terrain` VectorForces for the anti-knockback detector. A tested core. |
-| `SecureReport.luau` | Signing helpers (`sign` / `verify`) for the report channel. |
-| `SecureChannel.luau` | Shared client channel: one handshake + heartbeat + signed `send`, used by every detector. |
-| `Config.luau` | Shared channel constants (remote name, intervals, timeouts). |
-| `MovementConfig.luau` | Movement-detector tuning, grouped per detector. |
-| `IYDetector.client.luau` | LocalScript. Sweeps readable GUI containers, reports IY hits. `StarterPlayerScripts`. |
-| `MovementAnticheat.client.luau` | LocalScript. Runs the movement detectors, self-corrects, reports. `StarterPlayerScripts`. |
-| `IYGuard.server.luau` | Server Script. Issues session secrets, verifies reports, kicks on detection or heartbeat timeout. `ServerScriptService`. |
+Every script requires its dependencies from `script.Parent`, so keep the modules next to the scripts that use them.
+
+| File | Kind | Where | Role |
+| --- | --- | --- | --- |
+| `IYDetector.client.luau` | LocalScript | `StarterPlayerScripts` | Scans readable GUI containers and reports Infinite Yield hits |
+| `MovementAnticheat.client.luau` | LocalScript | `StarterPlayerScripts` | Runs the movement detectors, corrects the player and reports |
+| `IYGuard.server.luau` | Script | `ServerScriptService` | Issues session secrets, verifies reports, removes players on a verified detection or a missed heartbeat |
+| `SecureChannel.luau` | ModuleScript | shared | Client side of the channel: handshake, heartbeat and signed `send` |
+| `SecureReport.luau` | ModuleScript | shared | `sign` and `verify` helpers |
+| `IYSignatures.luau` | ModuleScript | shared | Pure fingerprint matcher, no side effects |
+| `SuspicionScore.luau` | ModuleScript | shared | Pure scoring engine behind every movement detector |
+| `KnockbackForce.luau` | ModuleScript | shared | Pure horizontal force summation for the anti-knockback detector |
+| `Config.luau` | ModuleScript | shared | Channel constants: remote name, intervals, timeouts |
+| `MovementConfig.luau` | ModuleScript | shared | Movement tuning, grouped per detector |
 
 ## How it works
 
-1. **Handshake** — the client sends `hello`; the server issues a per-session
-   `secret` + `nonce` and stores them.
-2. **Scan** — every few seconds the client runs `IYSignatures.scan` over every GUI
-   container it can read and, on a hit, sends a signed `detect` report.
-3. **Verify + kick** — the server verifies the signature and the strictly
-   increasing sequence number (which blocks replay), then kicks.
-4. **Heartbeat fallback** — the client sends signed heartbeats; if a client that
-   finished the handshake goes silent past `HeartbeatTimeout` (detector removed or
-   its reports blocked), the server kicks it too. Lag hitches are forgiven and a
-   join grace applies, so legitimate players are never falsely kicked.
+1. **Handshake.** The client sends `hello` and the server answers with a per-session `secret` and `nonce`.
+2. **Scan.** Every few seconds the client runs `IYSignatures.scan` over every GUI container it can read and sends a signed `detect` report on a hit.
+3. **Verify.** The server checks the signature and a strictly increasing sequence number, which blocks replay, then removes the player.
+4. **Heartbeat.** The client also sends signed heartbeats. If a client that completed the handshake goes quiet for longer than `HeartbeatTimeout`, because the detector was deleted or its reports are being blocked, the server removes it too. A join grace period and lag-hitch forgiveness keep loading or lagging players safe.
 
 ## Detection signals
 
-Each is individually high-confidence — a single match is a kick, with effectively
-zero false positives, because each keys off something IY renders that legitimate
-games do not:
+Each signal keys off something Infinite Yield renders and ordinary games do not, so a single match is enough:
 
-- **`brand-text`** — any GUI text containing `Infinite Yield` (matches the substring,
-  so it survives version bumps and the seasonal emoji injected into the title).
-- **`credits-text`** — IY's verbatim credits line.
-- **`cmdbar-textbox`** — a `TextBox` named `Cmdbar` whose placeholder is `Command Bar`.
-- **`holder-cmdbar-structure`** — a `Frame` named `Holder` containing a descendant
-  `TextBox` named `Cmdbar` (catches the command bar even if the placeholder changes).
+- **`brand-text`**: any GUI text containing `Infinite Yield`. It matches a substring, so version bumps and the seasonal emoji in the title do not matter.
+- **`credits-text`**: the script's verbatim credits line.
+- **`cmdbar-textbox`**: a `TextBox` named `Cmdbar` with the placeholder `Command Bar`.
+- **`holder-cmdbar-structure`**: a `Frame` named `Holder` containing a `TextBox` named `Cmdbar`, which still matches if the placeholder changes.
 
-Multiple independent signals mean IY randomizing its root `ScreenGui` name does not
-defeat detection — the inner text and structure stay constant.
+Because the signals are independent, renaming the root `ScreenGui` does not defeat detection.
 
 ## Movement anti-cheat
 
-Runs per character. Each detector computes a per-tick "cheating right now?" boolean
-and feeds it to `SuspicionScore`, which ramps a score while the condition holds and
-decays it otherwise. Crossing a low **rollback** threshold self-corrects the player
-(resets the offending property + CFrame); crossing a much higher **report** threshold
-reports over the secure channel and the server kicks. A teleport-grace window and a
-lag-skip guard mean legitimate physics glitches, lag spikes, and server teleports
-never accumulate suspicion — that gap between rollback and report is what keeps it
-free of false kicks.
+Each detector computes a per-tick "is this happening right now?" condition and feeds it to `SuspicionScore`. The score ramps while the condition holds and decays when it clears.
 
-Ported detectors: walkspeed / jump-power / hip-height / illegal humanoid state /
-infinite-jump, CFrame walk-fly mismatch, mass-density, panic void-teleport,
-frozen-Y anti-gravity, and **anti-knockback** (ignoring a strong `VectorForce`
-knockback aura in `Terrain`, or shoving straight through it). Following the
-reference, the disabled-force / missing-force variants are deliberately not flagged —
-they have too many legitimate triggers.
+- Crossing the low **rollback** threshold corrects the player by resetting the offending property and CFrame.
+- Crossing the much higher **report** threshold sends a signed report and the server removes the player.
 
-## Honest limitations
+The gap between the two thresholds, together with a teleport grace window and a lag-skip guard, is what keeps physics glitches, lag spikes and server teleports from ever reaching a report.
 
-Read this before trusting it as a guarantee — it is not one:
+Detectors: walk speed, jump power, hip height, illegal humanoid states, infinite jump, CFrame walk-fly mismatch, mass density, void teleport, frozen-Y anti-gravity and anti-knockback (ignoring or pushing through a strong `VectorForce` under `Terrain`). Disabled or missing knockback forces are deliberately not flagged because they have too many legitimate causes.
 
-- **It only sees IY in containers a game script may read.** Modern IY parents its UI
-  into protected `CoreGui` via `gethui()` and marks itself on `getgenv().IY_LOADED`,
-  both invisible to a normal-privilege LocalScript. When IY's UI lands somewhere
-  readable (common on many executors, older IY, or a misconfigured `gethui`) it is
-  caught with zero false positives and an instant kick. A fully cloaked executor
-  that also neuters this script evades it — **no game-side Luau can beat
-  higher-privilege code.** This raises the bar hard against stock IY; it is not
-  absolute.
-- **The session secret lives in client memory**, so an exploiter who reads this
-  script can reproduce a signature. The signing is defence in depth; the
-  load-bearing fallback is the heartbeat-timeout kick.
+Tune everything in `MovementConfig.luau`.
+
+## Limitations
+
+This raises the bar considerably, but it is not a guarantee:
+
+- **Only readable containers are scanned.** Recent versions of Infinite Yield parent their UI to protected `CoreGui` through `gethui()`, which a normal LocalScript cannot see. When the UI lands somewhere readable, as it does on many executors and older versions, detection is immediate and has no false positives. An executor that hides the UI and also disables this script will not be caught by the scan; the heartbeat timeout is the fallback for that case. No game-side Luau can fully defend against code running at a higher privilege level.
+- **The session secret lives in client memory.** Someone who reads the script can reproduce a signature. Signing is defence in depth; the heartbeat timeout is what carries the weight.
 
 ## Tests
 
-- `test/Security.luau` builds real instance trees with `@lune/roblox`: asserts every
-  IY-shaped tree is detected with the right signal, asserts legitimate GUIs (including
-  one with a `Holder` frame and a `Cmdbar`-adjacent search box) are **not** detected —
-  the false-positive guard — and checks tampered / replayed / malformed signatures are
-  rejected.
-- `test/Movement.luau` drives the `SuspicionScore` engine deterministically: scores
-  ramp only under sustained conditions and decay when clean, the grace window
-  suppresses scoring and actions, per-action cooldowns hold, and the rollback
-  threshold trips well before the report threshold.
-- `test/Knockback.luau` builds real `VectorForce` instances with `@lune/roblox` and
-  asserts the horizontal-force summation: world- and attachment-relative forces,
-  disabled forces (a bypass signal, not counted), wrong-attachment and non-force
-  children ignored, and vertical-only forces contributing no horizontal push.
+The pure modules are covered by the main test suite:
 
-Both run inside the CI `Test` suite; run individually with `lune run Security` /
-`lune run Movement` from `test/`.
+- `test/Security.luau` builds real instance trees with `@lune/roblox`, checks that every Infinite Yield shape is detected with the right signal, checks that lookalike legitimate GUIs are not, and rejects tampered, replayed and malformed signatures.
+- `test/Movement.luau` drives `SuspicionScore` deterministically: ramp and decay, grace windows, cooldowns, and rollback firing well before report.
+- `test/Knockback.luau` checks force summation for world and attachment relative forces, disabled forces, unrelated children and vertical-only forces.
+
+Run them with the rest of the suite (`lune run Test` from `test/`), or individually with `lune run Security`, `lune run Movement` and `lune run Knockback`.

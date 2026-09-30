@@ -1,12 +1,6 @@
 {
-    "1-installation": "Installation",
-    "2-introduction": "Introduction",
-    "3-cli": "Command-Line Usage",
-    "4-plugin": "Roblox Studio Plugin",
-    "5-production-upgrades": "Production Upgrades",
-    "6-protocol-v2": "Protocol v2 Guide",
-    "8-maximum-security": "Maximum Security",
-    "9-networking-comparison": "Networking Library Comparison",
-    "10-controller-connections": "Controller Connections",
-    "11-integrating-a-game": "Integrating a Game"
+  "installation": "Installation",
+  "quick-start": "Quick Start",
+  "cli": "Command Line",
+  "studio-plugin": "Studio Plugin"
 }

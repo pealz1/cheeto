@@ -1,10 +1,10 @@
-# Production Upgrades
+# Production Hardening
 
-Cheeto can now generate hardened v2 networking and operations helpers alongside the normal client, server, and type files.
+Alongside the client, server and type modules, Cheeto generates hardened v2 networking and a set of operational helpers. This page tours them in the order you will usually reach for them.
 
 ## Strict v2 protocol
 
-This fork is v2-only. It does not generate v1 readers, v1 writers, legacy protocol negotiation, or `AcceptProtocolVersion1` fallback. Schemas that request `ProtocolVersion < 2`, `ProtocolMode`, or `AcceptProtocolVersion1` fail compilation.
+Cheeto is v2-only. It does not generate v1 readers, v1 writers, legacy protocol negotiation, or `AcceptProtocolVersion1` fallback. Schemas that request `ProtocolVersion < 2`, `ProtocolMode`, or `AcceptProtocolVersion1` fail compilation.
 
 ```cheeto
 option ProtocolVersion = 2
@@ -119,7 +119,7 @@ Remote spying cannot be fully prevented because clients can observe traffic addr
 
 The server surface is `Security.ChallengeIntegrity`, `Security.GrantIntegrityGrace`, `Security.ClientIntegrity`, `Security.CharacterIntegrity`, `Security.GrantMovementGrace`, `Security.ReconcileCharacter`, `Security.TeleportCharacter`, and the pure `Security.EvaluateMovement` classifier. Clients register game-specific checks with `Security.OnIntegritySample`.
 
-Character enforcement progresses through `Observe`, `Report`, `Correct`, and `Kick`. The `Kick` mode additionally requires `CharacterIntegrityKick = true`, making accidental enforcement during tuning less likely. Maximum security selects `Correct` but leaves character kicks disabled. See [Maximum Security](./8-maximum-security) for configuration and examples.
+Character enforcement progresses through `Observe`, `Report`, `Correct`, and `Kick`. The `Kick` mode additionally requires `CharacterIntegrityKick = true`, making accidental enforcement during tuning less likely. Maximum security selects `Correct` but leaves character kicks disabled. See [Maximum Security](/guides/maximum-security) for configuration and examples.
 
 ## Packet capture and replay
 
@@ -257,10 +257,4 @@ cheeto config --ci --yes
 
 `--ci` runs doctor, benchmark, load-sim, capture-replay, golden-snapshots, compatibility, schema-docs, and lockfile verification in one noninteractive pass. `--load-sim` reports generated traffic estimates for 10, 50, 100, and 200 clients. `--golden-snapshots` prints schema and wire-hash metadata for snapshot review. Runtime tests should still lock exact bytes for representative exported serializers and wire features such as nested structs, maps and sets, optionals, dictionaries, invokes, prediction acks, fragmentation, stale packet rejection, and state deltas.
 
-In this repository, the full noninteractive validation command is:
-
-```sh
-lune run Test -- --ci
-```
-
-Run it from the `test` directory. It compiles the fixtures, runs the runtime tests, and verifies every CI report mode.
+Contributors can run the same checks against the compiler itself; see [CONTRIBUTING.md](https://github.com/pealz1/cheeto/blob/main/CONTRIBUTING.md).

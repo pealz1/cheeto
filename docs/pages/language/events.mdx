@@ -40,15 +40,15 @@ Determines the listening API exposed on the receiving side.
 </Callout>
 
 #### `Data`
-Determines the data that is sent through the event, can be any [type](./4-types.mdx).<br/>
+Determines the data that is sent through the event, can be any [type](/language/types).<br/>
 This field can be omitted if no data is required.
 
 #### `Auth`
-Names an auth rule for generated middleware. Register the rule at runtime with `cheeto.UseAuth(name, callback)`.
+Names an auth rule for generated middleware. Register the rule at runtime with `Network.UseAuth(name, callback)`.
 If an auth rule returns false, the incoming event is dropped before the listener runs.
 
 ```lua filename="server.luau" copy
-cheeto.UseAuth("AlivePlayer", function(context)
+Network.UseAuth("AlivePlayer", function(context)
     return context.Source.Character ~= nil
 end)
 ```
@@ -118,7 +118,7 @@ Which rule depends on *what the constraint describes*:
 returning `false` drops the packet with reason `ConstraintRejected`:
 
 ```lua filename="server.luau" copy
-cheeto.Use("Validate", function(Context)
+Network.Use("Validate", function(Context)
     -- Context = { Name, Source, Channel, Size, Constraints, Payload }
     local MaxDistance = Context.Constraints.MaxDistance
     if MaxDistance and MaxDistance > 0 then
@@ -160,8 +160,8 @@ event Attack {
 
 ##### Type Packs
 Multiple data values are supported through the usage of a type pack (commonly referred to as a tuple).
-Type packs can be defined as a list of [types](./4-types.mdx) seperated by a comma within parenthesis.<br/>
-For example, a type pack of different [number types](./4-types#numbers) can be written like so:
+Type packs can be defined as a list of [types](/language/types) seperated by a comma within parenthesis.<br/>
+For example, a type pack of different [number types](/language/types#numbers) can be written like so:
 ```cheeto  copy
 event MyTypePackEvent {
     From: Server,

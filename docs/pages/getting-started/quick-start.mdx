@@ -1,0 +1,67 @@
+import { Callout, Steps } from 'nextra/components'
+
+# Quick Start
+
+This guide walks through writing, compiling and using your first network description. It uses the command-line compiler, but the language is identical in the Studio plugin.
+
+<Steps>
+
+### Describe your network
+
+Create a file called `network.cheeto` and add an event:
+
+```cheeto copy filename="network.cheeto"
+-- Output paths are relative to this file. In the Studio plugin they are
+-- relative to the instance you choose to generate into.
+option ClientOutput = "src/shared/Network/Client.luau"
+option ServerOutput = "src/shared/Network/Server.luau"
+
+event Announce {
+    From: Server,
+    Type: Reliable,
+    Call: SingleSync,
+    Data: string
+}
+```
+
+Every event declares who sends it (`From`), how it travels (`Type`), how listeners are called (`Call`) and what it carries (`Data`). The [Events](/language/events) reference covers every field.
+
+### Compile it
+
+From the directory that contains the file, run:
+
+```sh copy
+cheeto network
+```
+
+Cheeto finds `network.cheeto`, validates it and writes two modules: `Client.luau` and `Server.luau`. Add `--watch` to recompile automatically whenever the file or any of its imports change.
+
+### Use the generated modules
+
+Each module returns a frozen table containing your events and functions, fully typed.
+
+```lua copy filename="Server.server.luau" {3}
+local Network = require(ReplicatedStorage.Network.Server)
+
+Network.Announce.FireAll("Hello from the server!")
+```
+
+```lua copy filename="Client.client.luau" {3-5}
+local Network = require(ReplicatedStorage.Network.Client)
+
+Network.Announce.On(function(message)
+    print(message)
+end)
+```
+
+</Steps>
+
+<Callout type="info">
+  Generated files are build output. Commit the `.cheeto` source and regenerate instead of editing the modules by hand.
+</Callout>
+
+## Where to go next
+
+- Learn the full language in the [Language Reference](/language/options).
+- Send data from clients safely with [Production Hardening](/guides/production).
+- Turn on every protection at once with [Maximum Security](/guides/maximum-security).

@@ -1,5 +1,29 @@
 {
-  "index": "Home",
+  "index": {
+    "title": "Home",
+    "type": "page",
+    "display": "hidden",
+    "theme": {
+      "layout": "raw",
+      "sidebar": false,
+      "toc": false,
+      "breadcrumb": false,
+      "pagination": false,
+      "timestamp": false
+    }
+  },
   "getting-started": "Getting Started",
-  "language": "Cheeto's Language"
+  "guides": "Guides",
+  "language": "Language Reference",
+  "docs": {
+    "title": "Docs",
+    "type": "page",
+    "href": "/getting-started/installation"
+  },
+  "releases": {
+    "title": "Releases",
+    "type": "page",
+    "href": "https://github.com/pealz1/cheeto/releases",
+    "newWindow": true
+  }
 }

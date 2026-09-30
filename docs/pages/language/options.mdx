@@ -201,7 +201,7 @@ Generated client and server modules expose:
 
 Server-origin events also expose `FireGroup(groupName, ...)`. Client-origin events expose `Predict(...)`, which sends the event and returns a local prediction id.
 
-This fork only emits and accepts protocol v2. `ProtocolVersion` must be `2`; `ProtocolMode`, `AcceptProtocolVersion1`, and protocol v1 schemas fail compilation. V2 framing includes length-prefixed event frames, per-event recovery inside a packed reliable packet, prediction sequence ids and acks, reliable fragmentation and reassembly, optional integer varints, bit-packed booleans/optional presence, optional string dictionaries, and buffer pooling. Set individual `Use...` flags to disable a v2 wire optimization only when you deliberately want the simpler v2 encoding.
+Cheeto only emits and accepts protocol v2. `ProtocolVersion` must be `2`; `ProtocolMode`, `AcceptProtocolVersion1`, and protocol v1 schemas fail compilation. V2 framing includes length-prefixed event frames, per-event recovery inside a packed reliable packet, prediction sequence ids and acks, reliable fragmentation and reassembly, optional integer varints, bit-packed booleans/optional presence, optional string dictionaries, and buffer pooling. Set individual `Use...` flags to disable a v2 wire optimization only when you deliberately want the simpler v2 encoding.
 
 `CaptureRedactions` is a comma-separated default list of payload field names to hide in capture summaries. `NoRawCaptureInProduction` removes raw packet buffers from production captures so exports can be shared for diagnostics without enabling raw replay.
 

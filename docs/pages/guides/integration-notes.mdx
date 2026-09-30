@@ -1,4 +1,4 @@
-# Integrating a Game
+# Integration Notes
 
 Hard-won notes from putting Cheeto into real places. Everything here cost a
 debugging session to learn once; none of it should cost one twice.
@@ -75,7 +75,7 @@ decoding and before your listener; returning false drops the packet as
 `ConstraintRejected`:
 
 ```lua
-cheeto.Use("Validate", function(Context)
+Network.Use("Validate", function(Context)
     -- { Name, Source, Channel, Size, Constraints, Payload }
     local Max = Context.Constraints.MaxDistance
     return not (Max and Max > 0) or WithinRange(Context.Source, Context.Payload[1], Max)

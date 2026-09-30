@@ -1,0 +1,84 @@
+import { Callout, Steps, Tabs } from 'nextra/components'
+
+# Installation
+
+Cheeto ships as a single self-contained binary for Windows, macOS and Linux, as a [pesde](https://pesde.dev) package, and as a Roblox Studio plugin. Pick whichever fits your workflow; every option compiles the same language.
+
+## Command-line compiler
+
+<Tabs items={['Rokit', 'pesde', 'Manual']}>
+<Tabs.Tab>
+
+[Rokit](https://github.com/rojo-rbx/rokit) is the recommended toolchain manager for Roblox projects. It pins the compiler version in your project's `rokit.toml` so every contributor builds with the same version.
+
+<Steps>
+
+### Add Cheeto to your project
+
+Run this from your project root:
+
+```sh copy
+rokit add pealz1/cheeto
+```
+
+### Update later
+
+```sh copy
+rokit update pealz1/cheeto
+```
+
+</Steps>
+
+</Tabs.Tab>
+<Tabs.Tab>
+
+Install Cheeto as a development dependency with [pesde](https://pesde.dev):
+
+```sh copy
+pesde add --dev pealz1/cheeto
+pesde install
+```
+
+pesde runs the compiler through Lune, so you do not need a separate binary.
+
+</Tabs.Tab>
+<Tabs.Tab>
+
+Download the archive for your platform from the [latest release](https://github.com/pealz1/cheeto/releases/latest), extract it, and put the `cheeto` binary somewhere on your `PATH`.
+
+| Platform | Archive |
+| --- | --- |
+| Windows (x64) | `cheeto-windows-x86_64.tar.gz` |
+| macOS (Apple Silicon) | `cheeto-macos-aarch64.tar.xz` |
+| macOS (Intel) | `cheeto-macos-x86_64.tar.xz` |
+| Linux (x64) | `cheeto-linux-x86_64.tar.xz` |
+| Linux (ARM64) | `cheeto-linux-aarch64.tar.xz` |
+
+</Tabs.Tab>
+</Tabs>
+
+Check that it works:
+
+```sh copy
+cheeto --version
+```
+
+## Studio plugin
+
+The companion plugin lets you write and generate network descriptions inside Roblox Studio, without any external tooling.
+
+1. Download `cheeto-plugin.rbxm` from the [latest release](https://github.com/pealz1/cheeto/releases/latest).
+2. In Studio, open the **Plugins** tab and click **Plugins Folder**.
+3. Drop the file into that folder and restart Studio.
+
+<Callout type="info">
+  The plugin is covered in detail on the [Studio Plugin](/getting-started/studio-plugin) page.
+</Callout>
+
+## Editor support
+
+Definition files use the `.cheeto` extension. A TextMate grammar for syntax highlighting lives in the repository at [`docs/public/syntax/cheeto.tmLanguage.json`](https://github.com/pealz1/cheeto/blob/main/docs/public/syntax/cheeto.tmLanguage.json) and can be loaded by any editor that understands TextMate grammars.
+
+## Next steps
+
+Head to the [Quick Start](/getting-started/quick-start) to write and compile your first network description.
