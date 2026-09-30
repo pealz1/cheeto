@@ -10,4 +10,5 @@
 /**/temp
 /**/out
 /**/.next
-/**/.envtsconfig.tsbuildinfo
+/**/.env
+tsconfig.tsbuildinfo
