@@ -43,7 +43,8 @@ event Ping {
 
 ## Endpoints
 
-- [ ] Every client-sent event and function has a `Policy`, and every policy name has a real rule registered with `Security.RegisterPolicy`. None of the [built-in placeholder names](/security/policies#the-built-in-names) is left unregistered.
+- [ ] Every client-sent event and function has a `Policy`, `PolicyGroup` or `Auth`, and every name [`--doctor`](/reference/cli#--doctor) lists is registered. Unregistered names drop everything, so test every endpoint once.
+- [ ] `cheeto.lock` is committed and CI runs `--check-lock`.
 - [ ] Every client-sent endpoint has a cooldown or rate limit that fits real play.
 - [ ] Types are tight: bounded strings and arrays, ranged numbers, classes on instances, no `unknown` from clients.
 - [ ] Clients send intent (`BuyItem(itemId)`), never results (`SetCoins(amount)`).

@@ -7,7 +7,7 @@ import { Callout } from 'nextra/components'
 
 # Wire protocol
 
-Cheeto has exactly one wire protocol. Internally it is numbered 2 because it replaced an older format from the project Cheeto grew out of; there is no version 1 to fall back to, nothing to negotiate, and nothing to configure. The `ProtocolVersion` option only accepts `2`, and the old `ProtocolMode` and `AcceptProtocolVersion1` options fail compilation.
+Cheeto has one wire format. There is nothing to negotiate and nothing to configure; what the two sides do compare is the [schema fingerprint](/reference/options/versioning#the-schema-fingerprint), which changes whenever an endpoint's id, channel or payload does.
 
 You do not need this page to use Cheeto. It is here for debugging captures and for contributors.
 
@@ -28,7 +28,7 @@ The buffer is a sequence of **frames**, one per event, function call, reply or c
 | Prediction id | varint | Only when flag bit 0 is set |
 | Payload | *length* bytes | The values, encoded per the schema |
 
-Endpoint indexes are assigned in declaration order, separately for reliable and unreliable endpoints. Because every frame states its length, a receiver can skip a frame it rejects and continue with the next, which is how one bad event never affects the others in its packet.
+Reliable and unreliable endpoints are numbered separately. An endpoint keeps the index pinned by [`WireId`](/reference/fields#wireid) or recorded in [`cheeto.lock`](/reference/lockfile); new endpoints take the lowest free index in declaration order. Because every frame states its length, a receiver can skip a frame it rejects and continue with the next, which is how one bad event never affects the others in its packet.
 
 ## Example
 
@@ -51,19 +51,24 @@ Values are written in schema order with no field names or type tags:
 - `u8`/`i8` as one byte; 16 and 32-bit integers as LEB128 varints (zig-zag for signed) when [`UseVarints`](/reference/options/encoding#usevarints) is on, otherwise little-endian fixed width.
 - `f16`, `f32`, `f64` as IEEE floats, little-endian.
 - Booleans and optional presence flags as bits, eight per byte, when [`UseBitPacking`](/reference/options/encoding#usebitpacking) is on.
-- Strings and buffers as a length then the bytes; exact-length types have no length.
-- Arrays and maps as a count then the elements.
+- Strings and buffers as a length then the bytes; exact-length types have no length. With [`UseStringDictionaries`](/reference/options/encoding#usestringdictionaries), each string starts with a varint marker: `0` for a literal, `1` for a literal the receiver remembers for the rest of the packet, `n ≥ 2` for the (n−1)th remembered string.
+- Arrays and maps as a count then the elements; a ranged map's count uses only the bytes its maximum needs.
+- `Sequenced` and `Idempotency` endpoints start their payload with a 16-bit sequence number.
 - Unit enums as a one-byte index; tagged enums as the index then the variant's fields.
 - Instances and `unknown` values in the instance array, not the buffer.
 
 See [Types](/reference/types/numbers) for each type's layout.
+
+## Function replies
+
+A reply frame uses the function's index. Its payload is the invocation id (`u8`), then a success byte: `1` followed by the return values, or `0` followed by the reason (a string with a one-byte length). The reason is the drop reason when the call never reached the handler, or `HandlerError`.
 
 ## Control frames
 
 | Index | Purpose | Contents |
 | --- | --- | --- |
 | 255 | Prediction reply | Prediction id (varint), accepted (bit), reason (string) |
-| 254 | Capability handshake | Marker `02`, protocol `02`, schema version (`u16`), minimum version (`u16`), hash length (`u8`), hash |
+| 254 | Capability handshake | Format marker (`u8`), format (`u8`), schema version (`u16`), minimum version (`u16`), fingerprint length (`u8`), fingerprint |
 | 253 | Fragment | Fragment id, index, count and original size (varints), then a slice of the original packet |
 | 252 | Shield and integrity | A kind byte (0 shield report, 1 challenge, 2 receipt) and its fields |
 

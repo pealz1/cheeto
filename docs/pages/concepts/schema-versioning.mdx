@@ -13,43 +13,58 @@ The server and its clients must run modules compiled from the same schema. Norma
 
 Anything that changes the bytes of a message:
 
-- adding, removing or reordering events, functions or channels (endpoints are numbered by position);
-- changing a field's type, order, range or optionality;
+- changing an endpoint's id: removing or reordering endpoints without a lockfile, or editing a [`WireId`](/reference/fields#wireid);
+- changing a field's type, order, range or optionality, or an endpoint's channel or delivery mode;
 - changing [encoding options](/reference/options/encoding).
 
-Changes that do not affect the wire: renaming a type alias, adding options that only affect limits or security, editing comments.
+Changes that do not affect the wire: whitespace, comments, renaming a type alias, reordering endpoints while `cheeto.lock` is present, and options that only affect limits or security.
+
+## The fingerprint and the handshake
+
+Every build carries a [fingerprint](/reference/options/versioning#the-schema-fingerprint) of its wire layout. With the [handshake](/reference/options/versioning#enableprotocolhandshake) on, both sides exchange it, and the server stops decoding a player whose fingerprint differs from its own, because those packets would be read against the wrong layout. Set [`IncompatiblePeerAction = Kick`](/reference/options/versioning#incompatiblepeeraction) to kick them with a message asking them to rejoin.
+
+```cheeto copy
+option IncompatiblePeerAction = Kick
+```
+
+`Protocol.Info(player).Peer` shows what a player reported, for logging:
+
+```lua copy
+local peer = Network.Protocol.Info(player).Peer
+if peer and not peer.Compatible then
+    warn(player.Name, "runs schema", peer.SchemaHash, "; the server runs", Network.Schema.Hash)
+end
+```
 
 ## Version numbers
 
-Set [`Version`](/reference/options/versioning#version) and increase it for every wire change. Set [`MinimumSchemaVersion`](/reference/options/versioning#minimumschemaversion) to the oldest version this build can still talk to, which is almost always the same number.
+[`Version`](/reference/options/versioning#version) is a number you choose, sent in the handshake and stamped on captures and saved state. You do not need to raise it for the handshake to notice a wire change, but it gives you a readable number in logs and lets [`MinimumSchemaVersion`](/reference/options/versioning#minimumschemaversion) turn away old builds explicitly.
 
 ```cheeto copy
 option Version = 7
 option MinimumSchemaVersion = 7
 ```
 
-With the [handshake](/reference/options/versioning#enableprotocolhandshake) on, every client reports its version to the server. Check it to catch stale clients:
+## Keeping ids stable
 
-```lua copy
-local function check(player)
-    local peer = Network.Protocol.Info(player).Peer
-    if peer and not peer.Compatible then
-        player:Kick("A new version is available. Please rejoin.")
-    end
-end
+Commit [`cheeto.lock`](/reference/lockfile). The compiler reads it and gives every endpoint the id it had before, so reordering endpoints or removing one does not renumber the rest; a removed endpoint stays in the lock as retired and its id is never reused. For ids that must never move, pin them with [`WireId`](/reference/fields#wireid).
+
+To rename or renumber an endpoint without breaking builds that still use the old id, give it a [`DeprecatedId`](/reference/fields#deprecatedid): the endpoint is sent under its new id but still accepted on the old one.
+
+```cheeto copy
+event Purchase {
+    From: Client,
+    Type: Reliable,
+    Call: SingleAsync,
+    WireId: 12,
+    DeprecatedId: 4,
+    Data: u32
+}
 ```
-
-<Callout type="warning">
-The handshake records a mismatch but does not block the peer; that is your call to make. See [Limitations](/limitations#the-handshake-does-not-block-mismatched-peers).
-</Callout>
 
 ## Reviewing changes
 
-Commit [`cheeto.lock`](/reference/lockfile) and run `cheeto --check-lock` in CI. Any added, removed, renamed or reordered endpoint then fails CI until someone deliberately regenerates the lockfile, which puts the change in front of a reviewer. The lockfile does not see changes inside types, so review those in the schema diff.
-
-## Adding endpoints safely
-
-Add new endpoints at the **end** of the schema. Existing endpoints keep their numbers, so an old client talking to a new server still decodes everything it knows about.
+Run `cheeto --check-lock` in CI. It fails, listing the lines that changed, whenever an endpoint is added, removed or renumbered, or a payload type changes shape, until someone regenerates the lockfile with `--write-lock`. That puts every wire change in front of a reviewer.
 
 ## Stored data
 

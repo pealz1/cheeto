@@ -1,147 +1,103 @@
 ---
 title: "Limitations"
-description: "Known limits of Cheeto, things that are accepted but have no effect, and behaviour that surprises people."
+description: "What Cheeto does not do, where its checks stop, and the trade-offs behind its defaults."
 ---
 
 import { Callout } from 'nextra/components'
 
 # Limitations
 
-This page lists what Cheeto does not do, or does differently from what you might expect. Each entry says what happens and what to do about it. Items marked **Known issue** are defects that are expected to be fixed; the workaround applies until then.
+This page lists what Cheeto does not do, and where its checks stop. Each entry says what happens and what to do about it. Everything here is a design limit or a property of Roblox, not a known defect.
 
 ## Security
 
-### Built-in policies allow everyone
+### Clients can always see and send traffic
 
-The policy names `damage`, `currency`, `trade`, `inventory`, `teleport`, `admin`, `crafting`, `marketplace` and `moderation` are registered at startup, but each one only checks that the sender is a connected player. Writing `Policy: "admin"` protects nothing until you call [`Security.RegisterPolicy("admin", ...)`](/reference/api/security#registerpolicy) with a real rule.
-
-### Constraint fields are not enforced
-
-`MaxDistance`, `RequireOwnership`, `RequireTeam`, `RequireZone`, `RequireMatch`, `RequireInventoryOwnership`, `RequireCharacterState`, `RequireObjectHandle` and `RequireServerKnownId` are passed to your policies and `Validate` hooks, and nothing else reads them. See [Constraints and Validate](/security/constraints).
-
-### Replay protection and idempotency need `Predict`
-
-[`ReplayWindowSize`](/reference/options/limits#replaywindowsize), [`ReplayStaleSeconds`](/reference/options/limits#replaystaleseconds) and [`Idempotency`](/reference/fields#idempotency) key on a sequence number that only [`Predict`](/reference/api/event#predict) sends. For events sent with `Fire`, and for function calls, they do nothing. Use [`CooldownSeconds`](/reference/fields#cooldownseconds) or [`Security.CheckIdempotency`](/reference/api/security#checkidempotency) with your own key.
-
-### Access-control fields on server-sent endpoints
-
-`Auth`, `Policy`, `PolicyGroup`, `CooldownSeconds` and rate-limit fields are checked by whichever side receives the endpoint. On a `From: Server` event or a channel, that is the client, where your server-registered rules do not exist, so every packet is dropped. Only put them on client-sent endpoints.
-
-### `RequirePolicies`
-**Known issue.** At runtime only a `Policy` field satisfies [`RequirePolicies`](/reference/options/security#requirepolicies). Client-sent endpoints that declare only `Auth` or only `PolicyGroup` are dropped on every call, although `--doctor` and `--strict` accept them. Give every client-sent endpoint a `Policy`.
-
-### The handshake does not block mismatched peers
-
-A peer with the wrong schema version or hash is recorded as incompatible and its handshake frame is dropped, but its later packets are still decoded. Check `Protocol.Info(player).Peer.Compatible` yourself if you want to kick outdated clients. See [Protocol](/reference/api/protocol#info).
-
-### The schema hash is the version number
-
-The runtime hash is `schema-<Version>`, not a hash of the schema's contents. Two different schemas with the same `Version` look identical to the handshake. Increase [`Version`](/reference/options/versioning#version) for every change that affects the wire.
-
-### Remote names and decoys are visible to clients
-
-[Name rotation](/security/remote-hardening) renames the same RemoteEvent instances, and publishes the current names as attributes that every client can read. Decoy remotes are named with a `D` where real ones have `R` or `U`. Rotation and decoys catch generic tools that look remotes up by fixed names or fire every remote they find. They do not stop someone who reads the generated client module.
+Anything the server sends to a client can be read by that client, and anything a client can send, an exploiter can send with any values. No networking library changes this. Validate every client request on the server with [policies](/security/policies), [constraints](/security/constraints) and your own checks, and never send secrets to clients.
 
 ### Client-side detection is best-effort
 
 The [client shield](/security/client-shield) runs on the exploiter's machine, which they control: it can be removed, hooked or fed false results. [Client integrity](/security/client-integrity) receipts use a checksum anyone can compute from the client module. Treat both as evidence and tripwires, not proof. Keep authority on the server.
 
-### Remote traffic can always be observed
+### Remote names are visible to clients
 
-Anything the server sends to a client can be read by that client, and anything a client can send, an exploiter can send with any values. No networking library changes this. Validate every client request on the server, and never send secrets to clients.
+[Name rotation](/security/remote-hardening) renames the same RemoteEvent instances and publishes the current names as attributes, which is how the legitimate client module finds them. Decoys share the real remotes' name format and classes, so a generic "fire everything" tool cannot tell them apart. A script written against your game's client module can still find the real pair.
+
+### Idempotency stops replays, not new requests
+
+[`Idempotency`](/reference/fields#idempotency) stamps every client send with a sequence number, and the server drops a packet whose number is not newer than the last one it accepted. A captured packet sent again is dropped. A fabricated packet with a fresh number is an ordinary new request: bound those with [`CooldownSeconds`](/reference/fields#cooldownseconds), rate limits and server state.
+
+### What the payload constraints examine
+
+The built-in [payload constraints](/security/constraints) look at the arguments and at the fields of table arguments, one level deep:
+
+| Constraint | Examines |
+| --- | --- |
+| `MaxDistance` | Every `Vector3`, `CFrame`, `BasePart`, `Model` and `Attachment`; a sender without a character is rejected when any is present |
+| `RequireOwnership` | Every Instance |
+| `RequireObjectHandle` | The first number |
+| `RequireServerKnownId` | The first number or string |
+| `RequireInventoryOwnership` | Whatever your [resolver](/reference/api/security#setinventoryresolver) checks |
+
+Deeper values, and conditions these do not express, belong in a [`Validate` hook](/reference/api/hooks#validate).
+
+### Dropped events without a prediction get no answer
+
+A function call or a predicted event that the server drops is answered with the drop reason. A plain `Fire` is not answered, because nothing on the client is waiting for it. If the client needs to know, make it a function or send it with `Predict`.
 
 ## Transport
 
-### Wire IDs
+### Ids depend on cheeto.lock
 
-**Known issue.** Endpoints are numbered by their position in the schema. `WireId`, `ReservedId` and `DeprecatedId` are written to `cheeto.lock` but not used by the generated code, so removing or reordering an endpoint still changes the numbering of those after it. Both sides are always compiled from the same schema, so this only matters when old and new clients meet, which the handshake does not prevent. Add new endpoints at the end of the schema, and increase `Version` when you remove or reorder.
+Endpoints keep their ids across reorders and removals only while `cheeto.lock` is next to the schema and committed. Without it, ids follow declaration order, as they do the first time a schema is compiled. Pin ids that must never move with [`WireId`](/reference/fields#wireid). See [cheeto.lock format](/reference/lockfile).
 
-### Backpressure accounting
+### Mixed schemas are not decoded
 
-**Known issue.** The per-peer queued-byte counter behind [`MaxQueuedBytes`](/reference/options/limits#maxqueuedbytes) is increased for unreliable sends and broadcasts (`FireAll`, `FireList`, `FireExcept`, `FireGroup`) but never decreased for them. On a long-running server this eventually sheds every `Cosmetic` and `Background` broadcast with `Backpressure`. Until fixed, use `Gameplay` or `Critical` priority for broadcasts, or set `LowPriorityShedding = false`.
+The handshake compares [schema fingerprints](/reference/options/versioning#the-schema-fingerprint), and the server stops decoding a player whose fingerprint differs from its own. There is no translation between two layouts: any change to an endpoint's id, channel or payload makes old and new builds incompatible. In Roblox both sides normally come from the same place version, so this only matters for modified clients and during updates.
 
-### Invoke timeouts
+### Batching adds up to a frame
 
-**Known issue.** Generated `Invoke` calls use the timeout written in the schema (per function, or the `InvokeTimeoutSeconds` option) and default to none. The 10 s and 5 s defaults of the Production and Competitive profiles are not applied, and `Configure` cannot change the timeout. Write `option InvokeTimeoutSeconds = 10` explicitly.
+Reliable events, and unreliable events with [`BatchUnreliable`](/reference/options/runtime#batchunreliable) (the default), leave at the next replication step, which runs on `Heartbeat`. [`Latest`](/reference/fields#reliabilitymode) events leave then too, keeping only the last value. Turn batching off for unreliable events that must leave immediately.
 
-### Prediction ids wrap
+### Unreliable delivery is unreliable
 
-**Known issue.** Prediction ids count to 65,535 and wrap to 1. After a client has made 65,536 predictions in one session, predicted events on endpoints whose highest seen id is near the top of the range are dropped as `ReplayStale` until the counter catches up again. Heavy prediction users (several predictions per second for hours) should reset by rejoining, or avoid `Predict` on high-frequency events.
+Unreliable events can be lost or arrive out of order, and a lost batch loses every event in it. Use [`Sequenced`](/reference/fields#reliabilitymode) to drop out-of-order arrivals, and reliable events for anything that must arrive.
 
-### Dropped requests never get an answer
+### Priority only affects shedding
 
-A function call or predicted event that the server drops before decoding, because of a policy, auth rule, cooldown, rate limit, honeypot or kill switch, receives no reply. `Invoke` waits until its timeout (forever without one) and the prediction stays pending. Set timeouts, and expire old entries in [`Prediction.Pending`](/reference/api/prediction#pending).
-
-### Per-endpoint packet caps measure the whole packet
-
-An endpoint's [`MaxPacketBytes`](/reference/fields#maxpacketbytes) is compared with the size of the entire received packet, which can include many batched events. A small cap on one endpoint can drop it when it happens to share a packet with large events.
-
-### Limits the profile does not change
-
-[`MaxQueuedEvents`](/reference/options/limits#maxqueuedevents) and the per-endpoint rate limits are compiled from what the schema writes. `SecurityProfile` only changes the per-remote-call rate limit, not per-endpoint ones, and `Configure` cannot change compiled values.
-
-### Unreliable events are not batched
-
-Each unreliable `Fire` is its own remote call, and clients also apply the per-call rate limit to what they receive. A server sending many unreliable events per second to one player can exceed a Production or Competitive client's limit. Batch data into fewer, larger events, or raise `RateLimitPerSecond`.
+[`Priority`](/reference/fields#priority) decides which events are dropped when a peer's queued bytes exceed [`MaxQueuedBytes`](/reference/options/limits#maxqueuedbytes): `Cosmetic` and `Background` go first, `Critical` and `Gameplay` never. It does not reorder a batch or change when it is sent.
 
 ### Payload checks apply to everything
 
-The [decode budgets](/reference/options/limits#decode-budgets) apply to every endpoint in both directions. Strings over 8,192 bytes and tables over 2,048 keys are dropped by default, even when the schema allows them.
+The [decode budgets](/reference/options/limits#decode-budgets) apply to every endpoint in both directions. Strings over 8,192 bytes and tables over 2,048 keys are dropped by default, even when the schema allows them. Raise the budget options when a schema legitimately needs more.
 
 ### Endpoint and invoke counts
 
-Endpoint numbers are one byte with four values reserved, so a module supports at most 252 reliable endpoints and 252 unreliable endpoints. The compiler does not check this. At most 255 invokes can be outstanding per module.
+Endpoint ids are one byte with four values reserved for control frames, so a schema supports at most 252 reliable and 252 unreliable endpoints; the compiler rejects more. At most 256 invokes can be outstanding per module.
 
 ### Studio's script size limit
 
-Studio rejects scripts over 200,000 characters. Each generated module contains the runtime (about 135 KB) unless you use [`RuntimeOutput`](/reference/options/output#runtimeoutput). Split large surfaces across several schemas with a shared runtime. See [Large schemas](/operations/large-schemas).
+Studio rejects scripts over 200,000 characters. Each generated module contains the runtime (about 200 KB) unless you use [`RuntimeOutput`](/reference/options/output#runtimeoutput). Split large surfaces across several schemas with a shared runtime. See [Large schemas](/operations/large-schemas).
 
 ## Schema language
 
-### CFrame encoding order
+### Delta channels need a struct
 
-**Known issue.** `CFrame<A, B>` encodes rotation with `A` and position with `B`, the reverse of what earlier docs described. `CFrame<i16, f16>` therefore produces integer rotations. See [CFrame](/reference/types/cframes).
+A channel sends patches only when its data is a struct, because a patch names fields. Any other data type is always sent whole.
 
-### Out-of-range numbers wrap on the sender
+### Generic types cannot be exported
 
-Values that do not fit their declared number type are written modulo its size: `300` as a `u8` arrives as `44`. Unranged types accept the wrapped value. Declare ranges on numbers that matter, and use [`WriteValidations`](/reference/options/runtime#writevalidations) in development.
-
-### No size range on maps
-
-`map X = {...}(1..50)` is a syntax error. Maps are limited only by `MaxTableKeys`. Use an array of structs when you need a bound.
-
-### `type` cannot alias a struct
-
-`type X = SomeStruct` fails with `Cannot cast "Struct" to "Primitive"`, and a generic struct cannot be given a new name. Use the struct name directly.
-
-### Accepted but ignored
-
-| What | Status |
-| --- | --- |
-| `option UseColon` | Parsed, ignored |
-| `ReliabilityMode` field | Parsed, ignored; delivery follows `Type` |
-| `CoalesceKey` field | Records the latest payload per key; does not merge or suppress sends |
-| `Priority` field | Only affects backpressure shedding, not send order or timing |
-| Channel `Interest: Party`, `Match`, `Team`, `Cell`, `Owner` | Behave like `None` |
-| `option ProtocolVersion` | Must be `2`; has no other effect |
-
-### TypeScript definitions
-
-The `.d.ts` files generated by [`Typescript`](/reference/options/output#typescript) cover events, functions and declared types only. They do not describe `Predict`, `FireGroup`, channel endpoints, the runtime namespaces, or `Future`/`Promise` return types, and `Instance` is typed as `number`. Add declarations for those by hand.
+An `export` declaration cannot be generic. Export a concrete instantiation through an alias, for example `type Pair = Generic<u8, u8>`.
 
 ## Tooling
 
-### `--benchmark` and `--load-sim` are estimates
+### Benchmarks run in Lune
 
-The traffic figures these print are computed from the number of endpoints and your limits, not measured. The size and generation-time checks in `--benchmark` are real.
+[`--benchmark`](/reference/cli#--benchmark) and [`--load-sim`](/reference/cli#--load-sim) run the generated modules in Lune against stub remotes, with generated sample payloads and the schema's access rules removed. The byte counts are exact; the timings are Lune on your machine, which is close to but not the same as a Roblox server. Endpoints whose types have no sample (for example `DateTime`) are reported as skipped.
 
-### `cheeto.lock` does not see type contents
+### TypeScript types for the runtime are structural
 
-The lockfile records names and ids, not what types contain. See [cheeto.lock format](/reference/lockfile).
-
-### `--strict` needs `SyncValidation = false`
-
-`SyncValidation` defaults to `true`, and strict mode rejects it, so every strict build must set it to `false` explicitly.
+The generated `.d.ts` files describe every endpoint precisely. The runtime namespaces (`Security`, `Transport` and the rest) are typed from the reference, with `unknown` where a value depends on the schema. Roblox types such as `Instance` and `Vector3` come from `@rbxts/types`.
 
 <Callout type="info">
 Found something missing from this page? [Open an issue](https://github.com/pealz1/cheeto/issues).

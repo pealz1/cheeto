@@ -68,7 +68,7 @@ Subtracts a sent packet from the peer's tracked queue and updates its sent count
 
 <Sig side="both">{"Coalesce(peer: any, key: string, priority: string, payload: any): ()"}</Sig>
 
-Stores `payload` under `key` in the peer's coalesce bucket, replacing any earlier one. Events with [`CoalesceKey`](/reference/fields#coalescekey) call this on every send.
+Stores `payload` under `key` in the peer's coalesce bucket, replacing any earlier one, for your own last-value-wins bookkeeping. It does not send anything. For events whose sends should coalesce on the wire, use [`CoalesceKey`](/reference/fields#coalescekey) or `ReliabilityMode: Latest`.
 
 ## FlushCoalesced
 

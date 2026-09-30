@@ -49,7 +49,7 @@ A copy of the recorded entries, oldest first. Each entry has:
 | `PayloadSummary` | Readable summary of the values, with redacted fields shown as `[redacted]` |
 | `Buffer`, `Instances` | Copy of the raw bytes and instances, when kept |
 | `Redaction` | `{ Raw: boolean, Fields: {[string]: true} }` |
-| `Time`, `ProtocolVersion`, `SchemaVersion`, `SchemaHash` | Metadata |
+| `Time`, `WireFormat`, `SchemaVersion`, `SchemaHash` | Metadata |
 
 Raw buffers are not kept when the profile is not `Development` and [`NoRawCaptureInProduction`](/reference/options/diagnostics#norawcaptureinproduction) is on.
 

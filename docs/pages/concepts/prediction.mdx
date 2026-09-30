@@ -42,7 +42,7 @@ end
 The acknowledgement is sent when the event **decodes**, before your server listener runs. It confirms that the server accepted the data, not that your game logic succeeded. If your listener can still refuse the action, send your own result event and roll back from it.
 
 <Callout type="warning">
-Events dropped before decoding, by a policy, auth rule, cooldown, rate limit or kill switch, get no reply at all, so their predictions stay pending. Roll back predictions older than a timeout yourself; see [`Prediction.Pending`](/reference/api/prediction#pending).
+A predicted event the server drops, by a policy, auth rule, constraint, cooldown, rate limit, kill switch or replay check, is answered with the reason, and the prediction rolls back with it. A [`Latest`](/reference/fields#reliabilitymode) prediction replaced before it was sent rolls back with `Superseded`. Only a lost connection leaves a prediction pending; [`Prediction.Pending`](/reference/api/prediction#pending) lists them.
 </Callout>
 
 ## Sequence numbers

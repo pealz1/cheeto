@@ -14,7 +14,13 @@ map Owners = { [u16]: Instance(Player) }
 
 ## Size
 
-Maps cannot be given a size range. The entry count is sent as a length prefix, so a map holds at most 65,535 entries, and the runtime drops any received table with more than [`MaxTableKeys`](/reference/options/limits#maxtablekeys) keys (2,048 by default). To bound a collection tightly, use an [array](/reference/types/arrays) of structs with a range instead.
+A range after the braces bounds the number of entries. Sending a map outside it raises an error; receiving one drops the event as malformed. The entry count uses only the bytes the maximum needs, so a map of at most 255 entries spends one byte on it.
+
+```cheeto copy
+map Scores = {[string(1..20)]: u32}(0..50)
+```
+
+Without a range, a map holds at most 65,535 entries, and the runtime drops any received table with more than [`MaxTableKeys`](/reference/options/limits#maxtablekeys) keys (2,048 by default).
 
 ## Generics
 

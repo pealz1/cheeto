@@ -6,6 +6,61 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-09-30
+
+This release fixes defects found while rebuilding the documentation against the compiler, and makes every documented feature do what it says. The wire format changed; regenerate both modules together, as always.
+
+### Security
+
+- Unregistered policies and policy groups now drop every packet and warn once. The built-in policy names (`admin`, `currency`, `damage` and the rest), which admitted every connected player, are gone: register a rule for each name your schema uses. `--doctor` lists them.
+- `RequirePolicies` accepts `Policy`, `PolicyGroup` or `Auth`, as `--doctor` and `--strict` always did.
+- Constraints are enforced by the runtime: `RequireTeam`, `RequireZone`, `RequireMatch` and `RequireCharacterState` before decoding; `MaxDistance`, `RequireOwnership`, `RequireObjectHandle`, `RequireServerKnownId` and `RequireInventoryOwnership` after. New `Security.SetZone`, `GetZone`, `RegisterKnownId`, `ForgetKnownId` and `SetInventoryResolver`.
+- The handshake carries a fingerprint of the wire layout instead of `schema-<Version>`, the server sends it to every player, and the server stops decoding players on another schema. `IncompatiblePeerAction = Kick` kicks them.
+- `Idempotency` works without `Predict`: client events and functions carry a sequence number, and replayed packets are dropped.
+- `Auth`, `Policy`, constraint and idempotency fields on server-sent events and channels are compile errors instead of rules the client could never satisfy.
+- Decoy remotes share the real remotes' name format and both classes.
+- `Security.SetRateLimit` changes an endpoint's or a remote's rate limit at runtime.
+
+### Fixed
+
+- A broadcast could hand one player's pending batch buffer to another and overwrite its unsent messages.
+- A server module with two or more state channels exceeded Luau's 200-local limit and failed to load.
+- Backpressure counted bytes for broadcasts and unreliable sends that were never released, eventually shedding every low-priority broadcast.
+- A send whose serialization raised left half a frame in the batch.
+- Generated invokes ignored the security profile's timeout and `Configure`; they now use the runtime value.
+- A call or prediction the server dropped was never answered. It now gets the drop reason, so `Invoke` fails fast and predictions roll back.
+- Prediction ids wrapping past 65,535 were dropped as stale.
+- `CFrame<A, B>` applied position and rotation the wrong way round.
+- Integers outside their type's range were silently wrapped (300 as a `u8` arrived as 44); they now raise. `Color3` channels clamp.
+- `f16` NaN decoded as a large finite number.
+- Per-endpoint `MaxPacketBytes` measured the whole packet instead of the event.
+- String dictionaries desynchronized when a broadcast was copied into players' batches.
+- Polled events were queued before their payload checks ran.
+- Canonicalization rejected legitimate map keys (struct, negative, fractional and sparse keys).
+- `--check-lock` failed on CRLF checkouts.
+
+### Added
+
+- `WireId`, `ReservedId` and `DeprecatedId` are honoured, and `cheeto.lock` keeps ids stable across reorders and removals, with removed endpoints kept as retired.
+- `ReliabilityMode = Latest` and `CoalesceKey` send only the last value per recipient per frame; `ReliabilityMode = Sequenced` drops out-of-order packets (`OutOfOrder`).
+- Unreliable events are batched per recipient per frame (`BatchUnreliable`).
+- Channel `Interest` and `Scope` values `Party`, `Match`, `Team`, `Cell` and `Owner` work, with `SetScope`, `PatchScope` and `FlushScope`.
+- `UseColon` makes endpoint methods callable with `:`.
+- `map {[K]: V}(Min..Max)` bounds a map's entry count; `type X = SomeStruct` aliases any declared type.
+- A function's `On` returns a function that unbinds the handler.
+- TypeScript definitions cover channels, `Predict`, `FireGroup`, `Future` results and the runtime API, and are type-checked in CI.
+- `--benchmark` and `--load-sim` measure the generated code instead of estimating it.
+- New drop reasons `Cooldown` and `OutOfOrder`.
+
+### Removed
+
+- The `ProtocolVersion`, `ProtocolMode` and `AcceptProtocolVersion1` options, which now fail with "was removed". Cheeto has one wire format.
+- `Protocol.Info()` no longer reports `LocalProtocolVersion` or `ProtocolMode`; it reports `WireFormat` and `SchemaHash`.
+
+### Changed
+
+- `SyncValidation` is on by default only in the `Development` profile.
+
 ## [1.0.0] - 2026-09-30
 
 The first public release.
@@ -41,5 +96,6 @@ The first public release.
 - Standalone Infinite Yield detection and movement anti-cheat in `extras/security`.
 - Prebuilt binaries for Windows, macOS and Linux, and a pesde package.
 
-[Unreleased]: https://github.com/pealz1/cheeto/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/pealz1/cheeto/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/pealz1/cheeto/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/pealz1/cheeto/releases/tag/v1.0.0

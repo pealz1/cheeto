@@ -23,6 +23,7 @@ In the signatures, `T` is the channel's `Data` type and `Patch` is a table of ch
 | `SetGroup`, `PatchGroup`, `FlushGroup` | A [group](/reference/api/module#setgroup) |
 | `SetZone`, `PatchZone`, `FlushZone` | Players in a zone for this channel |
 | `SetDistance`, `PatchDistance`, `FlushDistance` | Players near a position |
+| [`SetScope`](#setscope), `PatchScope`, `FlushScope` | Players in a party, match, team, cell or owner set |
 | [`SetInterestZone`](#setinterestzone), [`SetInterestPosition`](#setinterestposition) | Interest bookkeeping |
 | [`Get`](#get-server), [`Clear`](#clear) | Read or forget stored state |
 
@@ -37,7 +38,7 @@ In the signatures, `T` is the channel's `Data` type and `Patch` is a table of ch
 
 Stores a full value for each targeted player and marks them for a **full snapshot** at the next flush. `SetAll` also stores the value as the channel's global value, returned by `Get()` with no player. Players who have left are skipped.
 
-`Set` without a suffix is `SetPlayer` for `Scope: Player` (the default), `SetAll` for `Scope: Global`, `SetGroup` for `Scope: Group`, `SetZone` for `Interest: Zone` and `SetDistance` for `Interest: Distance`.
+`Set` without a suffix is `SetPlayer` for `Scope: Player` (the default), `SetAll` for `Scope: Global`, `SetGroup` for `Scope: Group`, `SetZone` for `Scope: Zone` or `Interest: Zone`, `SetDistance` for `Interest: Distance`, and `SetScope` with the declared kind for `Party`, `Match`, `Team`, `Cell` and `Owner`, called as `Set(key, value)`.
 
 ```lua copy
 Network.PlayerState.Set(player, { Health = 100, Stamina = 100 })
@@ -76,6 +77,19 @@ Writes pending state into the targeted players' batches now, instead of waiting 
 `Flush` without a suffix is `FlushAll`.
 
 Automatic flushing happens every replication step, limited by [`TickRate`](/reference/fields#tickrate), with a full snapshot forced every [`KeyframeRate`](/reference/fields#keyframerate) when set.
+
+### SetScope
+
+<Sig side="server">{"SetScope(kind: string, key: any, value: T): ()"}</Sig>
+<Sig side="server">{"PatchScope(kind: string, key: any, patch: Patch): ()"}</Sig>
+<Sig side="server">{"FlushScope(kind: string, key: any, forceFull: boolean?): ()"}</Sig>
+
+Targets every player in a membership kept by [`Network.Replication`](/reference/api/replication): `kind` is `"Party"`, `"Match"`, `"Team"`, `"Cell"` or `"Owner"`, and `key` names the party, match, team, cell or owned object. `"Team"` also includes every player whose Roblox `Team` has that name. Available on every channel, whatever its `Scope`.
+
+```lua copy
+Network.Replication.SetParty(partyId, player, true)
+Network.SquadState.SetScope("Party", partyId, { Objective = "Hold B", Score = 12 })
+```
 
 ### SetInterestZone
 

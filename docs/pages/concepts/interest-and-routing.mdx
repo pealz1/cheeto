@@ -51,7 +51,26 @@ for _, member in Network.Replication.GetInterestPlayers("Party", partyId) do
 end
 ```
 
-These do not have dedicated fire methods; loop over the players, or pass the list to `FireList`.
+`Team` also includes every player whose Roblox `Team` has that name, so `SetTeam` is only needed for teams that are not Roblox teams.
+
+Events have no dedicated fire method for these; pass the list to `FireList`. Channels do: a channel with [`Interest`](/reference/fields#interest) or [`Scope`](/reference/fields#scope) set to `Party`, `Match`, `Team`, `Cell` or `Owner` maps its `Set`, `Patch` and `Flush` to that membership, and every channel has `SetScope`, `PatchScope` and `FlushScope` for any kind:
+
+```cheeto copy
+struct SquadData {
+    Objective: string,
+    Score: u16
+}
+
+channel SquadState {
+    Interest: Party,
+    Data: SquadData
+}
+```
+
+```lua copy
+Network.SquadState.Set(partyId, { Objective = "Hold B", Score = 12 })
+Network.SquadState.SetScope("Match", matchId, { Objective = "Final round", Score = 0 })
+```
 
 ## Routing graphs
 

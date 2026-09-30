@@ -82,7 +82,7 @@ option SecurityPreset = Maximum
 Makes every endpoint the server receives from clients require a [`Policy`](/reference/fields#policy). A client-sent event or function call on an endpoint without one is dropped with `PolicyRejected`.
 
 <Callout type="warning">
-At runtime only a `Policy` field satisfies this check. An endpoint that declares only `Auth` or only `PolicyGroup` is dropped on every call while `RequirePolicies` is on, even though `--doctor` and `--strict` accept those fields. Give every client-sent endpoint a `Policy`. See [Limitations](/limitations#requirepolicies).
+Any of `Policy`, `PolicyGroup` or `Auth` satisfies it, the same rule `--doctor` and `--strict` apply. Endpoints with none of them are dropped with `PolicyRejected`.
 </Callout>
 
 ```cheeto copy

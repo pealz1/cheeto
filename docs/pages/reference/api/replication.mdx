@@ -79,7 +79,7 @@ end)
 
 <Sig side="both">{"MessagingService(topic: string, service: MessagingService?): MessagingAdapter"}</Sig>
 
-Wraps `MessagingService` for one topic. Messages are tables `{ Channel, Payload, SchemaVersion, ProtocolVersion }`, so receivers can reject payloads from servers running a different schema. Use it on the server; the services are not available to clients. Errors when [`EnableReplicationAdapters`](/reference/options/runtime#enablereplicationadapters) is off.
+Wraps `MessagingService` for one topic. Messages are tables `{ Channel, Payload, SchemaVersion, SchemaHash }`, so receivers can reject payloads from servers running a different schema. Use it on the server; the services are not available to clients. Errors when [`EnableReplicationAdapters`](/reference/options/runtime#enablereplicationadapters) is off.
 
 | Method | Publishes to channel |
 | --- | --- |
@@ -95,7 +95,7 @@ Payloads are not encoded with the schema; MessagingService's own size limits and
 
 <Sig side="both">{"MemoryStore(name: string, service: MemoryStoreService?): MemoryStoreAdapter"}</Sig>
 
-Wraps one MemoryStore sorted map. Values are stored as `{ Payload, SchemaVersion, ProtocolVersion }`.
+Wraps one MemoryStore sorted map. Values are stored as `{ Payload, SchemaVersion, SchemaHash }`.
 
 | Method | Key |
 | --- | --- |

@@ -15,7 +15,7 @@ Network.Security.Kill("TradeRequest", "dupe investigation")
 Network.Security.Unkill("TradeRequest")
 ```
 
-While killed, events arriving on the endpoint are dropped with `KillSwitch` before decoding, and sends on it are dropped too. Function requests to a killed function get no reply, so clients' `Invoke` calls time out.
+While killed, events arriving on the endpoint are dropped with `KillSwitch` before decoding, and sends on it are dropped too. Function requests to a killed function are answered with `KillSwitch`, so clients' `Invoke` calls fail straight away.
 
 ## Killing a group
 

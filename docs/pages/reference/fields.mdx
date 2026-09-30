@@ -10,8 +10,8 @@ import { Spec } from '../../components/Reference'
 
 Fields go inside an [`event`](/reference/declarations/event), [`function`](/reference/declarations/function) or [`channel`](/reference/declarations/channel) block as `Name: Value`, separated by commas. Field names are also accepted in all lowercase, so `from: Client` works too. An unknown field, a repeated field, or a value outside a field's allowed set is a compile error.
 
-<Callout type="warning">
-**Receive-side checks run where the data arrives.** `Auth`, `Policy`, `PolicyGroup`, `CooldownSeconds`, the rate limits and `Honeypot` are evaluated by the receiver. For client-to-server events and functions that is the server. For server-to-client events and channels it is the **client**, where rules you registered on the server do not exist, so the client drops everything. Only put access-control fields on endpoints that clients send.
+<Callout type="info">
+**Access fields belong on what clients send.** `Auth`, `Policy`, `PolicyGroup`, `CooldownSeconds`, `Idempotency` and the constraint fields are checked where a packet arrives, and rules are registered on the server. On a server-sent event or a channel they are a compile error (`Field "Policy" cannot be used here`). Rate limits and size caps are allowed everywhere: they bound work on whichever side receives.
 </Callout>
 
 ## Summary
@@ -32,28 +32,28 @@ Fields go inside an [`event`](/reference/declarations/event), [`function`](/refe
 | [`KeyframeRate`](#keyframerate) | | | ✓ | Channel |
 | [`Interest`](#interest) | | | ✓ | Channel |
 | [`InterestRadius`](#interestradius) | | | ✓ | Channel |
-| [`Auth`](#auth) | ✓ | ✓ | ✓ | Access |
-| [`Policy`](#policy) | ✓ | ✓ | ✓ | Access |
-| [`PolicyGroup`](#policygroup) | ✓ | ✓ | | Access |
-| [`Honeypot`](#honeypot) | ✓ | ✓ | | Access |
-| [`CooldownSeconds`](#cooldownseconds) | ✓ | ✓ | | Limit |
+| [`Auth`](#auth) | client-sent | ✓ | | Access |
+| [`Policy`](#policy) | client-sent | ✓ | | Access |
+| [`PolicyGroup`](#policygroup) | client-sent | ✓ | | Access |
+| [`Honeypot`](#honeypot) | client-sent | ✓ | | Access |
+| [`CooldownSeconds`](#cooldownseconds) | client-sent | ✓ | | Limit |
 | [`RateLimitPerSecond`](#ratelimitpersecond) | ✓ | ✓ | ✓ | Limit |
 | [`RateLimitBurst`](#ratelimitburst) | ✓ | ✓ | ✓ | Limit |
 | [`MaxPacketBytes`](#maxpacketbytes) | ✓ | ✓ | ✓ | Limit |
 | [`MaxQueuedEvents`](#maxqueuedevents) | ✓ | ✓ | ✓ | Limit |
 | [`MaxPendingInvokes`](#maxpendinginvokes) | | ✓ | | Limit |
 | [`InvokeTimeoutSeconds`](#invoketimeoutseconds) | | ✓ | | Limit |
-| [`Idempotency`](#idempotency) | ✓ | ✓ | | Replay |
+| [`Idempotency`](#idempotency) | client-sent | ✓ | | Replay |
 | [`Risk`](#risk) | ✓ | ✓ | ✓ | Constraint |
-| [`MaxDistance`](#maxdistance) | ✓ | ✓ | | Constraint |
-| [`RequireOwnership`](#requireownership) | ✓ | ✓ | | Constraint |
-| [`RequireTeam`](#requireteam) | ✓ | ✓ | | Constraint |
-| [`RequireZone`](#requirezone) | ✓ | ✓ | | Constraint |
-| [`RequireMatch`](#requirematch) | ✓ | ✓ | | Constraint |
-| [`RequireInventoryOwnership`](#requireinventoryownership) | ✓ | ✓ | | Constraint |
-| [`RequireCharacterState`](#requirecharacterstate) | ✓ | ✓ | | Constraint |
-| [`RequireObjectHandle`](#requireobjecthandle) | ✓ | ✓ | | Constraint |
-| [`RequireServerKnownId`](#requireserverknownid) | ✓ | ✓ | | Constraint |
+| [`MaxDistance`](#maxdistance) | client-sent | ✓ | | Constraint |
+| [`RequireOwnership`](#requireownership) | client-sent | ✓ | | Constraint |
+| [`RequireTeam`](#requireteam) | client-sent | ✓ | | Constraint |
+| [`RequireZone`](#requirezone) | client-sent | ✓ | | Constraint |
+| [`RequireMatch`](#requirematch) | client-sent | ✓ | | Constraint |
+| [`RequireInventoryOwnership`](#requireinventoryownership) | client-sent | ✓ | | Constraint |
+| [`RequireCharacterState`](#requirecharacterstate) | client-sent | ✓ | | Constraint |
+| [`RequireObjectHandle`](#requireobjecthandle) | client-sent | ✓ | | Constraint |
+| [`RequireServerKnownId`](#requireserverknownid) | client-sent | ✓ | | Constraint |
 | [`Priority`](#priority) | ✓ | ✓ | ✓ | Scheduling |
 | [`ReliabilityMode`](#reliabilitymode) | ✓ | | | Scheduling |
 | [`CoalesceKey`](#coalescekey) | ✓ | | | Scheduling |
@@ -148,7 +148,17 @@ Client-origin events get a [`Predict`](/reference/api/event#predict) method by d
 
 <Spec type="identifier" default={<code>Player</code>} values={<><code>Player</code>, <code>Global</code>, <code>Group</code>, <code>Zone</code>, <code>Party</code>, <code>Match</code>, <code>Team</code>, <code>Cell</code>, <code>Owner</code></>} on="channel" />
 
-Chooses what the shorthand `Set` and `Patch` methods target. `Global` maps them to `SetAll` and `PatchAll`, `Group` to `SetGroup` and `PatchGroup`, and every other value to the per-player `SetPlayer` and `PatchPlayer`. All targeted variants are generated regardless.
+Chooses what the shorthand `Set`, `Patch` and `Flush` target:
+
+| Value | `Set(...)` means |
+| --- | --- |
+| `Player` | `SetPlayer(player, value)` |
+| `Global` | `SetAll(value)` |
+| `Group` | `SetGroup(group, value)` |
+| `Zone` | `SetZone(zone, value)` |
+| `Party`, `Match`, `Team`, `Cell`, `Owner` | `SetScope(kind, key, value)`: every player in that party, match, team, cell or owner set |
+
+All targeted variants are generated regardless. Party, match, cell and owner membership comes from [`Replication.SetParty`](/reference/api/replication#setparty) and its siblings; `Team` also includes every player whose Roblox `Team` has that name. [`Interest`](#interest) wins when both are set.
 
 ### `TickRate`
 
@@ -172,7 +182,7 @@ How often a full snapshot is forced even when only deltas are pending, so a clie
 
 <Spec type="identifier" default={<code>None</code>} values={<><code>None</code>, <code>Zone</code>, <code>Distance</code>, <code>Party</code>, <code>Match</code>, <code>Team</code>, <code>Cell</code>, <code>Owner</code></>} on="channel" />
 
-`Zone` maps `Set`/`Patch` to `SetZone`/`PatchZone`, and `Distance` maps them to `SetDistance`/`PatchDistance`. Other values currently behave like `None`. See [Audiences and routing](/concepts/interest-and-routing).
+`Zone` maps `Set`/`Patch` to `SetZone`/`PatchZone`, and `Distance` maps them to `SetDistance`/`PatchDistance`. `Party`, `Match`, `Team`, `Cell` and `Owner` map them to `SetScope`/`PatchScope` with that kind, as for [`Scope`](#scope). `None` leaves `Scope` in charge. See [Audiences and routing](/concepts/interest-and-routing).
 
 ### `InterestRadius`
 
@@ -184,7 +194,7 @@ Default radius for the `Distance` variants when no radius is passed.
 
 ### `Auth`
 
-<Spec type="string" default="none" on="event, function, channel" />
+<Spec type="string" default="none" on="client-sent event, function" />
 
 Names an [auth rule](/security/auth-rules) that must return `true` for each received event. Register rules with [`UseAuth`](/reference/api/module#useauth). The built-in rules are `AlivePlayer` (sender is a player still in the game) and `ServerOnly` (sender is the server).
 
@@ -203,21 +213,17 @@ event UseItem {
 
 ### `Policy`
 
-<Spec type="string" default="none" on="event, function, channel" />
+<Spec type="string" default="none" on="client-sent event, function" />
 
 Names a [policy](/security/policies) that must allow the sender. Policies run before the payload is decoded and receive a context with the sender, endpoint name, constraints and packet size. Register them with [`Security.RegisterPolicy`](/reference/api/security#registerpolicy).
 
-An unregistered policy name drops every packet with `PolicyRejected`. A policy can return a reason string as its second value, which becomes the drop reason.
-
-<Callout type="error">
-The built-in names `damage`, `currency`, `trade`, `inventory`, `teleport`, `admin`, `crafting`, `marketplace` and `moderation` are **placeholders that allow every connected player**. They exist so schemas compile and run; they check nothing. Replace each one you use with `Security.RegisterPolicy`.
-</Callout>
+Policies fail closed: a name nobody registered drops every packet on the endpoint with `PolicyRejected` and warns once. A policy can return a reason string as its second value, which becomes the drop reason and, for functions and predictions, the reason the client is told.
 
 ### `PolicyGroup`
 
 <Spec type="string" default="none" on="event, function" />
 
-Names a group registered with [`Security.RegisterPolicyGroup`](/reference/api/security#registerpolicygroup). Every policy in the group must allow the sender. A group that was never registered adds no checks. The group name is also the unit for [`Security.KillPolicyGroup`](/reference/api/security#killpolicygroup).
+Names a group registered with [`Security.RegisterPolicyGroup`](/reference/api/security#registerpolicygroup). Every policy in the group must allow the sender. A group that was never registered drops every packet with `PolicyRejected` and warns once, like an unregistered policy. The group name is also the unit for [`Security.KillPolicyGroup`](/reference/api/security#killpolicygroup).
 
 ### `Honeypot`
 
@@ -231,7 +237,7 @@ Marks an endpoint that no legitimate code calls. Traffic on it is dropped before
 
 <Spec type="number (seconds)" default={<><code>0</code> (off)</>} on="event, function" />
 
-Minimum time between two accepted calls from the same sender on this endpoint. Calls inside the window are dropped with `PolicyRejected` before decoding. Enforced by the runtime; no rule needed.
+Minimum time between two accepted calls from the same sender on this endpoint. Calls inside the window are dropped with `Cooldown` before decoding. Enforced by the runtime; no rule needed.
 
 Set it looser than the client's own retry interval, or legitimate retries are dropped.
 
@@ -251,7 +257,7 @@ Bucket capacity for this endpoint.
 
 <Spec type="number (bytes)" default={<>the schema's <code>MaxPacketBytes</code> option if written, else no per-endpoint check</>} on="event, function, channel" />
 
-Drops this endpoint's event with `MaxPacketBytes` when the **received packet** it arrived in is larger than this. The check uses the whole packet's size, which includes any other events batched with it.
+Drops this endpoint's event with `MaxPacketBytes` when its own frame is larger than this many bytes. Other events batched in the same packet do not count against it; the packet as a whole is bounded by [`MaxReliablePacketBytes`](/reference/options/limits#maxreliablepacketbytes) and [`MaxUnreliablePacketBytes`](/reference/options/limits#maxunreliablepacketbytes).
 
 ### `MaxQueuedEvents`
 
@@ -261,93 +267,102 @@ Maximum events waiting for a listener (or for `Iter`) on this endpoint before ne
 
 ### `MaxPendingInvokes`
 
-<Spec type="number" default={<>the schema option, else <code>256</code></>} on="function" />
+<Spec type="number" default={<>the runtime's <code>MaxPendingInvokes</code></>} on="function" />
 
-Maximum invokes of this function waiting for a reply on one client. `Invoke` raises an error beyond it.
+Maximum invokes of this function waiting for a reply on one client. `Invoke` raises an error beyond it, before anything is sent.
 
 ### `InvokeTimeoutSeconds`
 
-<Spec type="number (seconds)" default={<>the schema option, else <code>0</code> (never)</>} on="function" />
+<Spec type="number (seconds)" default={<>the runtime's <code>InvokeTimeoutSeconds</code></>} on="function" />
 
-How long `Invoke` waits before raising `Invoke timed out after N seconds.`
+How long `Invoke` waits before raising `Invoke timed out after N seconds.` Without this field the runtime value applies, which is the security profile's default (10 s for Production, 5 s for Competitive, none for Development), the schema option when written, or whatever [`Configure`](/reference/api/module#configure) set last.
 
 ## Replay
 
 ### `Idempotency`
 
-<Spec type="boolean" default={<code>false</code>} on="event, function" />
+<Spec type="boolean" default={<code>false</code>} on="client-sent event, function" />
 
-Drops a second packet with the same sequence number on this endpoint from the same sender within 120 seconds, with reason `ReplayDuplicate`.
+Every send carries a 16-bit sequence number, and the server drops a packet whose number is not newer than the last one it accepted from that sender, with reason `OutOfOrder`. A captured packet sent a second time is therefore never delivered twice. Predicted sends are also deduplicated by prediction id for 120 seconds, with `ReplayDuplicate`.
 
-<Callout type="warning">
-Only packets sent with [`Predict`](/reference/api/event#predict) carry a sequence number. On anything sent with `Fire` or `Invoke` this field does nothing. See [Replay and idempotency](/security/replay-and-idempotency).
-</Callout>
+This stops replays. A packet built from scratch with a fresh number is a new request; see [Replay and idempotency](/security/replay-and-idempotency).
 
 ## Constraints
 
-Constraint fields are **not enforced by the runtime**. They are copied into a `Constraints` table and handed to your policies and to the [`Validate`](/reference/api/hooks#validate) hook. Declaring one without a rule that reads it does nothing. See [Constraints and Validate](/security/constraints).
+Constraints are enforced by the runtime, on the server, before your handler runs. The **sender** constraints (`RequireTeam`, `RequireZone`, `RequireMatch`, `RequireCharacterState`) are checked before the payload is decoded; the **payload** constraints (`MaxDistance`, `RequireOwnership`, `RequireObjectHandle`, `RequireServerKnownId`, `RequireInventoryOwnership`) after it, looking at the arguments and the fields of table arguments one level deep. A rejected packet is dropped with `ConstraintRejected`.
 
-The `Validate` hook only runs for endpoints that declare at least one payload constraint (`MaxDistance`, `RequireOwnership`, `RequireTeam`, `RequireZone`, `RequireMatch`, `RequireInventoryOwnership`, `RequireObjectHandle`, `RequireServerKnownId`).
+Every constraint is also passed to your policies and to the [`Validate`](/reference/api/hooks#validate) hook as `Constraints`, so you can add conditions of your own. `Validate` runs for endpoints that declare a payload constraint. See [Constraints and Validate](/security/constraints).
 
 ### `Risk`
 
 <Spec type="identifier" default="none" on="event, function, channel" />
 
-A free-form tag, such as `Damage` or `Currency`, passed as `Constraints.Risk`. Does not trigger `Validate`.
+A free-form tag, such as `Damage` or `Currency`, passed as `Constraints.Risk`. It checks nothing and does not trigger `Validate`.
 
 ### `MaxDistance`
 
-<Spec type="number (studs)" default={<code>0</code>} on="event, function" />
+<Spec type="number (studs)" default={<><code>0</code> (off)</>} on="client-sent event, function" />
 
-Passed as `Constraints.MaxDistance`.
+Every `Vector3`, `CFrame`, `BasePart`, `Model` and `Attachment` in the payload must be within this distance of the sender's `HumanoidRootPart` (or character pivot). When the payload contains a position and the sender has no character, the packet is rejected. Payloads without positions pass.
+
+```cheeto copy
+event PlaceBlock {
+    From: Client,
+    Type: Reliable,
+    Call: SingleAsync,
+    Policy: "building",
+    MaxDistance: 24,
+    Data: vector
+}
+```
 
 ### `RequireOwnership`
 
-<Spec type="boolean" default={<code>false</code>} on="event, function" />
+<Spec type="boolean" default={<code>false</code>} on="client-sent event, function" />
 
-Passed as `Constraints.RequireOwnership`.
+Every Instance in the payload must belong to the sender: registered to them with [`Replication.SetObjectOwner`](/reference/api/replication#setobjectowner), inside their character, or carrying an `OwnerUserId` attribute equal to their `UserId`. Ancestors count, so a part of an owned model is owned.
 
 ### `RequireTeam`
 
-<Spec type="string" default="none" on="event, function" />
+<Spec type="string" default="none" on="client-sent event, function" />
 
-Passed as `Constraints.RequireTeam`.
+The sender's Roblox `Team` must have this name, or the sender must have been added to it with [`Replication.SetTeam`](/reference/api/replication#setteam).
 
 ### `RequireZone`
 
-<Spec type="string" default="none" on="event, function" />
+<Spec type="string" default="none" on="client-sent event, function" />
 
-Passed as `Constraints.RequireZone`.
+The sender must be in this zone, as set with [`Security.SetZone`](/reference/api/security#setzone).
 
 ### `RequireMatch`
 
-<Spec type="string" default="none" on="event, function" />
+<Spec type="string" default="none" on="client-sent event, function" />
 
-Passed as `Constraints.RequireMatch`.
+The sender must be in this match, as set with [`Replication.SetMatch`](/reference/api/replication#setmatch).
 
 ### `RequireInventoryOwnership`
 
-<Spec type="boolean" default={<code>false</code>} on="event, function" />
+<Spec type="boolean" default={<code>false</code>} on="client-sent event, function" />
 
-Passed as `Constraints.RequireInventoryOwnership`.
+Calls the resolver set with [`Security.SetInventoryResolver`](/reference/api/security#setinventoryresolver) with the sender and the decoded arguments, and rejects unless it returns `true`. Until a resolver is set, every packet is rejected and one warning is logged.
 
 ### `RequireCharacterState`
 
-<Spec type="string" default="none" on="event, function" />
+<Spec type="string" default="none" on="client-sent event, function" />
 
-Passed as `Constraints.RequireCharacterState`. It describes the sender, not the payload, so check it in a policy. Does not trigger `Validate`.
+`Alive` requires a character whose Humanoid has health above 0, `Dead` the opposite. Any other value is compared with the name of the Humanoid's current state, for example `Running` or `Freefall`.
 
 ### `RequireObjectHandle`
 
-<Spec type="boolean" default={<code>false</code>} on="event, function" />
+<Spec type="boolean" default={<code>false</code>} on="client-sent event, function" />
 
-Passed as `Constraints.RequireObjectHandle`. Pair it with [handles](/security/handles-and-capabilities).
+The first number in the payload must be a [handle](/security/handles-and-capabilities) that resolves for the sender with [`Handles.Resolve`](/reference/api/handles#resolve).
 
 ### `RequireServerKnownId`
 
-<Spec type="boolean" default={<code>false</code>} on="event, function" />
+<Spec type="boolean" default={<code>false</code>} on="client-sent event, function" />
 
-Passed as `Constraints.RequireServerKnownId`.
+The first number or string in the payload must be an id registered with [`Security.RegisterKnownId`](/reference/api/security#registerknownid), for this sender or for anyone.
 
 ## Scheduling
 
@@ -359,32 +374,46 @@ Decides which outgoing events may be shed under backpressure: `Cosmetic` and `Ba
 
 ### `ReliabilityMode`
 
-<Spec type="identifier" default="no effect" values={<><code>Reliable</code>, <code>Unreliable</code>, <code>Sequenced</code>, <code>Latest</code></>} on="event" />
+<Spec type="identifier" default={<>follows <code>Type</code></>} values={<><code>Reliable</code>, <code>Unreliable</code>, <code>Sequenced</code>, <code>Latest</code></>} on="event" />
 
-Accepted and ignored. Delivery is decided by [`Type`](#type) alone.
+| Value | Delivery |
+| --- | --- |
+| `Reliable`, `Unreliable` | Same as `Type`; a value that contradicts `Type` is a compile error |
+| `Sequenced` | Every send carries a 16-bit sequence number; the receiver drops anything not newer than the last one it accepted from that peer, with `OutOfOrder`. Use it on unreliable events where a stale value is worse than none, such as positions |
+| `Latest` | Only the last send per recipient in each replication step is delivered; earlier ones are discarded before they are sent. A replaced prediction rolls back with the reason `Superseded` |
+
+```cheeto copy
+event AimDirection {
+    From: Client,
+    Type: Unreliable,
+    Call: ManyAsync,
+    ReliabilityMode: Latest,
+    Data: vector
+}
+```
 
 ### `CoalesceKey`
 
 <Spec type="string" default="none" on="event" />
 
-Each send also stores its payload under this key in a per-peer bucket, replacing the previous one, which you can read with [`Transport.FlushCoalesced`](/reference/api/transport#flushcoalesced). The event is still sent every time; this does not merge or suppress sends.
+`Latest` delivery with a shared slot: every event with the same key replaces the previous one queued for the same recipient in this replication step, whichever endpoint it came from. Use it when several endpoints describe one piece of state and only the newest matters.
 
 ## Identity
 
 ### `WireId`
 
-<Spec type="number" default="declaration order" on="event, function, channel" />
+<Spec type="number (0–251)" default={<>the lock's id, else the lowest free one</>} on="event, function, channel" />
 
-Recorded in `cheeto.lock`. The generated modules do **not** use it: endpoints are numbered by declaration order. Reordering or removing endpoints changes the wire layout whatever `WireId` says. See [Limitations](/limitations#wire-ids).
+Pins the id this endpoint is sent under on its channel. Two endpoints on one channel with the same id is a compile error. Without it, the endpoint keeps the id recorded in [`cheeto.lock`](/reference/lockfile), or takes the lowest free id in declaration order. See [Keeping ids stable](/concepts/schema-versioning#keeping-ids-stable).
 
 ### `ReservedId`
 
-<Spec type="number" default="none" on="event, function, channel" />
+<Spec type="number (0–251)" default="none" on="event, function, channel" />
 
-Recorded in `cheeto.lock` as reserved. Same caveat as [`WireId`](#wireid).
+Reserves an id on this endpoint's channel so nothing else is assigned it, for example the id of an endpoint you removed before the project had a lockfile.
 
 ### `DeprecatedId`
 
-<Spec type="number" default="none" on="event, function, channel" />
+<Spec type="number (0–251)" default="none" on="event, function, channel" />
 
-Recorded in `cheeto.lock` as deprecated. Same caveat as [`WireId`](#wireid).
+The id this endpoint used before. It is sent under its current id but still accepted on this one, so builds from before a renumbering keep working, and the old id is reserved. Remove it once no such build can be running.

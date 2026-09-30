@@ -68,5 +68,5 @@ The server must still decide everything that matters:
 - Never send secrets, other players' private data, or anything you would not want an exploiter to read.
 
 <Callout type="warning">
-Several protections have preconditions that are easy to miss: built-in policy names allow everyone, constraint fields do nothing on their own, and replay checks need `Predict`. Read [Limitations](/limitations#security) before relying on them.
+Every protection fails closed: an unregistered policy, policy group, auth rule or inventory resolver drops the packets it guards. Read [Limitations](/limitations#security) for where each check stops.
 </Callout>

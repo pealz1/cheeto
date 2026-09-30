@@ -25,7 +25,7 @@ A `type` generates a Luau type alias in the generated modules, and in the [`Type
 
 ## What a type can name
 
-`type` names primitives and anything built from them with ranges, encodings, arrays and optionals. It cannot alias a `struct`: the compiler reports `Cannot cast "Struct" to "Primitive"`. Use the struct's own name, or use it inside another struct:
+`type` names primitives and anything built from them with ranges, encodings, arrays and optionals. It can also alias any declared type, including a struct, map or enum, or a generic type with its parameters filled in:
 
 ```cheeto copy
 struct Item {
@@ -33,10 +33,17 @@ struct Item {
     Count: u8
 }
 
-struct Loadout {
-    Items: Item[..8]
+type Reward = Item
+
+struct Pair<A, B> {
+    First: A,
+    Second: B
 }
+
+export type Coordinates = Pair<i16, i16>
 ```
+
+An alias of a generic type with its parameters filled in is how you [export](/reference/declarations/export) a generic type, which cannot be exported directly.
 
 `map` and `enum` aliases use their own keyword: `map Scores = Dictionary<string, u32>`, `enum Outcome = Result<u32>`.
 

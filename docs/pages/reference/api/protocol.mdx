@@ -17,12 +17,12 @@ Returns this module's versions and what a peer reported:
 
 ```lua
 {
-    LocalProtocolVersion: number,  -- always 2
+    WireFormat: number,
     LocalSchemaVersion: number,
     MinimumSchemaVersion: number,
-    ProtocolMode: "StrictV2Only",
+    SchemaHash: string,
     Peer: {
-        ProtocolVersion: number,
+        WireFormat: number,
         SchemaVersion: number,
         MinimumSchemaVersion: number,
         SchemaHash: string,

@@ -68,24 +68,27 @@ Checking `Damage` against `0..500`, enforcing the cooldown, running the policy a
 ## Features
 
 **Fast by construction**
-- Every field is written at its declared width. Integers are varint-encoded, booleans bit-pack, and events are batched into one buffer per frame.
+- Every field is written at its declared width. Integers are varint-encoded, booleans bit-pack, and reliable and unreliable events are batched into one remote call per recipient per frame.
 - 30+ Roblox datatypes with purpose-built encodings, including `CFrame`, `Color3`, `UDim2`, `NumberSequence`, `Font` and `EnumItem`.
-- Reliable fragmentation, priority lanes and latest-only unreliable events for high-frequency state.
+- `Latest` and `Sequenced` delivery for high-frequency state, reliable fragmentation and priority-based shedding.
+- `--benchmark` measures the bytes, encode and decode time of every endpoint in your schema.
 
 **Typed end to end**
 - Generated Luau types for the client and the server, with full autocomplete.
-- Optional TypeScript definitions for roblox-ts projects.
+- TypeScript definitions for roblox-ts projects, covering every endpoint and the runtime API, checked with `tsc --strict`.
 - Structs, enums, tagged enums, maps, sets, optionals, generics and imports.
 
 **Hard to abuse**
 - Size caps, decode budgets and payload canonicalization drop malformed data before a listener runs.
-- Per-event policies, auth rules, rate limits, cooldowns and idempotency.
-- Honeypot endpoints, kill switches, replay protection for predicted events, and a version handshake.
+- Per-event policies, auth rules, rate limits, cooldowns and idempotency, all failing closed when a rule is missing.
+- Constraints the runtime enforces: distance, ownership, team, zone, match, character state, handles and server-issued ids.
+- Honeypot endpoints, kill switches, replay protection, and a schema-fingerprint handshake that stops decoding mismatched clients.
+- Dropped calls and predictions are answered with the reason, so `Invoke` never hangs on a rejection.
 - `SecurityPreset = Maximum` adds a client shield, integrity challenges, server-side movement checks, rotating remote names and decoy remotes.
 
 **Built for production**
 - `--doctor`, `--strict` and `--hardening-checklist` catch unsafe configuration before release.
-- `cheeto.lock` turns every change to the schema's surface into a reviewed diff.
+- `cheeto.lock` keeps endpoint ids stable across edits and turns every wire change into a reviewed diff.
 - Packet capture and replay, metrics and an inspector.
 - State channels with delta replication, and client prediction with server acknowledgement.
 
@@ -135,7 +138,7 @@ Read the [security model](https://pealz.cc/cheeto/security/overview) and the [li
 | [Reference](https://pealz.cc/cheeto/reference) | Every option, field, type and generated function |
 | [Security model](https://pealz.cc/cheeto/security/overview) | Policies, honeypots, rate limits and the optional client checks |
 | [Production checklist](https://pealz.cc/cheeto/operations/production-checklist) | What to check before a schema goes live |
-| [Limitations](https://pealz.cc/cheeto/limitations) | What Cheeto does not do, and known issues |
+| [Limitations](https://pealz.cc/cheeto/limitations) | What Cheeto does not do, and where its checks stop |
 | [Comparison](https://pealz.cc/cheeto/guides/comparison) | How Cheeto relates to Zap |
 
 ## Repository layout

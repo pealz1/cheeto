@@ -95,7 +95,7 @@ task.delay(60, stop)
 Changes runtime options on this module only. Keys are option names from the schema, such as `RateLimitPerSecond` or `EnableHoneypots`.
 
 - An unknown key errors with `Unknown runtime option`.
-- `ProtocolVersion` other than 2, `ProtocolMode` and `AcceptProtocolVersion1` error.
+- Unknown keys error, including the removed `ProtocolVersion`, `ProtocolMode` and `AcceptProtocolVersion1`.
 - `CharacterIntegrityMode` must be `Observe`, `Report`, `Correct` or `Kick` (any case).
 - Options that only affect code generation, such as `MaxQueuedEvents`, per-endpoint limits or function timeouts, are accepted but change nothing.
 

@@ -57,7 +57,7 @@ end)
 
 <Sig side="both">{"RegisterPolicy(name: string, rule: (context: PolicyContext) -> (boolean, string?)): ()"}</Sig>
 
-Defines the [policy](/security/policies) that endpoints name in their `Policy` field, replacing any previous rule with that name, including the built-in placeholders.
+Defines the [policy](/security/policies) that endpoints name in their `Policy` field, replacing any previous rule with that name. Passing `nil` removes it, after which its endpoints drop everything again.
 
 The rule runs **before the payload is decoded**, so it cannot see the data. It receives:
 
@@ -85,7 +85,7 @@ end)
 ```
 
 <Callout type="error">
-The built-in policies `damage`, `currency`, `trade`, `inventory`, `teleport`, `admin`, `crafting`, `marketplace` and `moderation` allow any connected player. Register a real rule for each one your schema uses.
+There are no built-in policies: a name that is not registered denies every packet and warns once. [`--doctor`](/reference/cli#--doctor) lists every name your schema uses.
 </Callout>
 
 ## RegisterPolicyGroup
@@ -260,7 +260,7 @@ Network.Security.GrantIntegrityGrace(player, 15, "loading-dungeon")
 
 <Sig side="client">{"OnIntegritySample(sampler: (context) -> (boolean | { Healthy: boolean } | nil)): () -> ()"}</Sig>
 
-Adds a check that runs for every integrity challenge. The context is `{ ChallengeId, Nonce, Completion, Sweep, ProtocolVersion, SchemaVersion, ReceivedAt }`. The receipt reports unhealthy if any sampler errors, returns `false`, or returns a table whose `Healthy` is not `true`. `nil` and `true` count as healthy. Returns a function that removes the sampler.
+Adds a check that runs for every integrity challenge. The context is `{ ChallengeId, Nonce, Completion, Sweep, WireFormat, SchemaVersion, ReceivedAt }`. The receipt reports unhealthy if any sampler errors, returns `false`, or returns a table whose `Healthy` is not `true`. `nil` and `true` count as healthy. Returns a function that removes the sampler.
 
 ```lua copy
 local remove = Network.Security.OnIntegritySample(function()

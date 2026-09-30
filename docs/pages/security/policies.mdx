@@ -1,6 +1,6 @@
 ---
 title: "Policies"
-description: "Per-endpoint permission rules, policy groups, and the built-in placeholder names."
+description: "Per-endpoint permission rules and policy groups, and why an unregistered name drops everything."
 ---
 
 import { Callout } from 'nextra/components'
@@ -36,16 +36,20 @@ end)
 
 ## How a policy runs
 
-- It runs before the payload is decoded, after auth, cooldown and replay checks. See [The receive pipeline](/concepts/receive-pipeline).
+- It runs before the payload is decoded, after auth, cooldown, replay and sender-constraint checks. See [The receive pipeline](/concepts/receive-pipeline).
 - It receives a context: `Source`, `Name`, `Channel`, `Policy`, `PolicyGroup`, `Constraints`, `UserId` and `Size`. It does **not** receive the payload.
-- Return `true` to allow. Return `false`, optionally with a reason string, to deny. The reason becomes the drop reason in violation reports, which makes logs far easier to read than a generic `PolicyRejected`.
-- A policy that errors, or a name that is not registered, denies.
+- Return `true` to allow. Return `false`, optionally with a reason string, to deny. The reason becomes the drop reason in violation reports, and for functions and predicted events it is the reason the client's `Invoke` fails with or its prediction rolls back with.
+- A policy that errors denies.
 
-## The built-in names
+## Unregistered names fail closed
 
-<Callout type="error">
-`damage`, `currency`, `trade`, `inventory`, `teleport`, `admin`, `crafting`, `marketplace` and `moderation` are registered at startup as **placeholders that allow any connected player**. They exist so a new schema runs out of the box. They check nothing. Register a real rule for every one your schema uses, in the same change that adds the endpoint.
-</Callout>
+A policy name that nothing registered denies every packet on its endpoints, and the first one logs:
+
+```
+[Cheeto]: Policy "trade" is not registered, so every packet on "TradeAccept" is dropped. Register it with Security.RegisterPolicy.
+```
+
+There are no built-in policies. A name in the schema is a promise that a rule exists, and the runtime holds you to it: a typo or a forgotten registration shows up as a drop in testing, not as an open endpoint in production.
 
 ## Policy groups
 
@@ -55,15 +59,11 @@ A group is a named list of policies that all must pass, in addition to the endpo
 Network.Security.RegisterPolicyGroup("economy", { "profile-loaded", "not-trade-locked" })
 ```
 
-A group that is never registered adds no checks. A policy listed in a registered group that is not itself registered denies.
+A group that is never registered denies, like an unregistered policy. A policy listed in a group that is not itself registered also denies.
 
 ## Requiring policies
 
-[`RequirePolicies = true`](/reference/options/security#requirepolicies) drops any client-sent endpoint that has no `Policy`. Turn it on so a forgotten policy fails closed instead of open.
-
-<Callout type="warning">
-Under `RequirePolicies`, an endpoint with only `Auth` or only `PolicyGroup` is also dropped. Give every client-sent endpoint a `Policy`. See [Limitations](/limitations#requirepolicies).
-</Callout>
+[`RequirePolicies = true`](/reference/options/security#requirepolicies) drops any client-sent endpoint that declares none of `Policy`, `PolicyGroup` or `Auth`. Turn it on so an endpoint added without any rule fails closed instead of open. `--doctor` and `--strict` report those endpoints at compile time.
 
 ## Checking the payload
 

@@ -40,7 +40,7 @@ Both libraries have:
 | State channels with delta patches | Not documented | Yes |
 | Client prediction with server acknowledgement | Not documented | Yes |
 | Reliable fragmentation of large batches | Not documented | Yes |
-| Version handshake and lockfile | Not documented | Yes (see [limitations](/limitations#the-handshake-does-not-block-mismatched-peers)) |
+| Version handshake and lockfile | Not documented | Yes: a schema fingerprint the server enforces, and a lockfile that keeps ids stable |
 | Packet capture and replay | Tooling integration for external inspectors | Built-in capture, replay and inspector |
 | Metrics | Not documented | Built-in counters |
 | Option to remove `FireAll` | `disable_fire_all` | No |

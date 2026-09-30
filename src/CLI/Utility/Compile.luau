@@ -625,6 +625,25 @@ function Utility.Doctor(Path: string, Options: CompileOptions)
 	local Ast, Source, FilePath = ParseForUtility(Path, Options)
 	local Warnings, Errors = CollectProductionDiagnostics(Ast, false, Source, FilePath)
 	PrintDiagnostics("Doctor", Options, Warnings, Errors, Source)
+
+	--> Every rule the schema names must be registered on the server, or its
+	--> endpoints drop everything. List them so none is forgotten.
+	local Rules: { [string]: { [string]: true } } = { Policy = {}, PolicyGroup = {}, Auth = {} }
+	for _, Endpoint in Wire.Endpoints(Ast.Value.Declarations) do
+		local Value = Endpoint.Declaration.Value :: any
+		for Kind, Names in Rules do
+			if type(Value[Kind]) == "string" then
+				Names[Value[Kind]] = true
+			end
+		end
+	end
+	for _, Kind in { "Policy", "PolicyGroup", "Auth" } do
+		local Names = SortedKeys(Rules[Kind])
+		if #Names > 0 then
+			local Register = if Kind == "Auth" then "UseAuth" else `Security.Register{Kind}`
+			print(`- {Kind} names to register with {Register}: {table.concat(Names, ", ")}`)
+		end
+	end
 end
 
 function Utility.Strict(Path: string, Options: CompileOptions)

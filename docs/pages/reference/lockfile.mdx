@@ -1,54 +1,74 @@
 ---
 title: "cheeto.lock format"
-description: "What the lockfile records, and what it does and does not guarantee."
+description: "What the lockfile records, how the compiler uses it to keep ids stable, and what --check-lock catches."
 ---
 
 import { Callout } from 'nextra/components'
 
 # cheeto.lock format
 
-`cheeto --write-lock` writes `cheeto.lock` next to the schema. `cheeto --check-lock` fails when the file no longer matches the schema. Together they make every change to the schema's surface show up as a reviewed diff.
+`cheeto --write-lock` writes `cheeto.lock` next to the schema. It does two jobs:
+
+- **It keeps endpoint ids stable.** Every compile reads it, and each endpoint keeps the id the lock recorded for its name, kind and channel. Reordering endpoints or removing one no longer renumbers the rest.
+- **It puts wire changes in review.** `cheeto --check-lock` fails when the schema no longer produces the same lock, listing the lines that changed.
+
+Commit the file next to the schema.
 
 ```json
 {
-	"protocol": 2,
 	"schemaVersion": 7,
 	"minimumSchemaVersion": 7,
-	"schemaHash": "schema-7",
-	"compatibility": "strict-v2-schema-hash",
+	"schemaHash": "9c41d27a0b5e83f1",
 	"options": {
 		"securityProfile": "Production",
 		"requirePolicies": true,
 		"maxReliablePacketBytes": 65536,
 		"maxUnreliablePacketBytes": 900
 	},
-	"wireIds": {
-		"DealDamage": { "id": 1, "kind": "Event", "deprecated": false, "reserved": false },
-		"GetInventory": { "id": 2, "kind": "Function", "deprecated": false, "reserved": false }
+	"endpoints": {
+		"DealDamage": { "kind": "Event", "channel": "Reliable", "id": 0, "shape": "5d0c8e17a4b2f963" },
+		"GetInventory": { "kind": "Function", "channel": "Reliable", "id": 1, "deprecatedId": 4, "shape": "e2a90b4c7d1f5836" },
+		"OldTrade": { "kind": "Event", "channel": "Reliable", "id": 2, "retired": true }
 	},
-	"typeHashes": {
-		"Hit": "Struct:Hit"
+	"types": {
+		"Hit": "0b7e2d91c4a8f356"
 	}
 }
 ```
 
 | Field | Contents |
 | --- | --- |
-| `protocol` | Always `2` |
 | `schemaVersion`, `minimumSchemaVersion` | From the options |
-| `schemaHash` | `schema-<Version>` |
+| `schemaHash` | The [schema fingerprint](/reference/options/versioning#the-schema-fingerprint) the handshake compares |
 | `options` | Security profile, `RequirePolicies`, and the two packet caps as written in the schema (defaults shown when unset) |
-| `wireIds` | Every event, function and channel with its `WireId`, `ReservedId` or `DeprecatedId`, or its position in the schema when none is set |
-| `typeHashes` | Every declared type as `Kind:Name` |
+| `endpoints` | Every event, function and channel by scope-qualified name, with its kind, channel, id, `deprecatedId` and `reservedId` when set, and a hash of its payload shape |
+| `types` | A hash of every declared type's shape |
 
-## What it catches
+## How ids are assigned
 
-`--check-lock` fails when an endpoint is added, removed, renamed or reordered, when a type is added, removed or renamed, and when the version, profile, `RequirePolicies` or packet caps change.
+Reliable and unreliable endpoints are numbered separately, from 0 to 251. For each endpoint, in this order:
 
-<Callout type="warning">
-It does **not** notice a change to what a type or endpoint contains: changing `Damage: u16` to `Damage: u32` leaves the lockfile identical, although it changes the wire format. `typeHashes` records names, not contents. Increase `Version` for any change to data layout, and review schema diffs directly.
-</Callout>
+1. an explicit [`WireId`](/reference/fields#wireid);
+2. the id the lock records for the same name, kind and channel;
+3. the lowest free id, in declaration order.
 
-<Callout type="warning">
-The lockfile records `WireId`s, but the generated code numbers endpoints by position regardless. See [Limitations](/limitations#wire-ids).
+`ReservedId` and `DeprecatedId` values, and the ids of retired endpoints, are never handed out. Two endpoints claiming one id is a compile error that names both.
+
+## Retired endpoints
+
+When an endpoint leaves the schema, `--write-lock` keeps its entry with `"retired": true`. Its id stays taken, so a new endpoint can never reuse it and be misread by a build that still has the old one. Delete a retired entry by hand only when no build using it can still be running.
+
+## What --check-lock catches
+
+`--check-lock` fails when:
+
+- an endpoint is added, removed, renamed or renumbered;
+- an endpoint's payload changes shape: a field's type, range, order, name or optionality, a channel's delta mode, or an event's delivery mode;
+- a type is added, removed or changes shape;
+- the version, fingerprint, profile, `RequirePolicies` or packet caps change.
+
+The error lists the lines the schema now produces. Run `--write-lock` only when the change is intentional.
+
+<Callout type="info">
+The file may be checked out with CRLF line endings on Windows; `--check-lock` ignores the difference. A lock written by Cheeto 1.0, which had no `endpoints` section, is ignored until it is rewritten.
 </Callout>

@@ -1,34 +1,51 @@
 ---
 title: "Replay and idempotency"
-description: "Rejecting duplicate and replayed packets, and what it takes for that to work."
+description: "Rejecting duplicated and replayed packets, and what that does and does not protect."
 ---
 
 import { Callout } from 'nextra/components'
 
 # Replay and idempotency
 
-A replay attack resends a packet the attacker captured earlier, for example a valid `ClaimReward` request, hoping the server processes it twice. Cheeto can detect duplicates, but **only for packets that carry a sequence number**.
+A replay attack resends a packet the attacker captured earlier, for example a valid `ClaimReward` request, hoping the server processes it twice. Cheeto rejects replayed packets on endpoints that ask for it.
 
-## Where sequence numbers come from
+## Idempotency
 
-A packet carries a sequence number only when it was sent with [`Predict`](/reference/api/event#predict); the prediction id is the sequence number. Events sent with `Fire`, and function calls, have none.
+Set [`Idempotency: true`](/reference/fields#idempotency) on a client-sent event or function. Every send then carries a 16-bit sequence number, and the server drops any packet whose number is not newer than the last one it accepted from that sender, with reason `OutOfOrder`. The client does nothing different: `Fire` and `Invoke` stamp the number themselves.
 
-| Protection | Needs | Drop reason |
-| --- | --- | --- |
-| Duplicate sequence number | `Predict` | `ReplayDuplicate` |
-| Sequence far behind the newest ([`ReplayWindowSize`](/reference/options/limits#replaywindowsize)) | `Predict` | `ReplayStale` |
-| [`Idempotency: true`](/reference/fields#idempotency), same sequence within 120 s | `Predict` | `ReplayDuplicate` |
+```cheeto copy
+event ClaimReward {
+    From: Client,
+    Type: Reliable,
+    Call: SingleAsync,
+    Policy: "rewards",
+    Idempotency: true,
+    Data: u16
+}
+```
+
+A captured `ClaimReward` packet sent again is dropped, however many times it is sent.
+
+## Predicted events
+
+Events sent with [`Predict`](/reference/api/event#predict) also carry their prediction id, and two more checks apply to every predicted packet:
+
+| Check | Drop reason |
+| --- | --- |
+| The same prediction id was already accepted | `ReplayDuplicate` |
+| The id is more than [`ReplayWindowSize`](/reference/options/limits#replaywindowsize) behind the newest one | `ReplayStale` |
+| With `Idempotency`, the same id within 120 seconds | `ReplayDuplicate` |
+
+Prediction ids are 16-bit and wrap after 65,535; the window uses serial-number arithmetic, so the wrap is invisible. A dropped prediction is rolled back on the client with the reason.
+
+## What replay protection does not cover
 
 <Callout type="warning">
-On an endpoint whose clients use `Fire`, `ReplayWindowSize`, `ReplayStaleSeconds` and `Idempotency` do nothing at all. An exploiter replaying such a request is indistinguishable from a player clicking twice.
+A sequence number proves a packet is not a copy of an earlier one. It does not prove the request makes sense: an exploiter can build a new `ClaimReward` packet with a fresh number, and that is an ordinary request. Protect the action itself too.
 </Callout>
 
-## Protecting unsequenced actions
-
-For events sent with `Fire` and for functions, use one of these instead:
-
-- **A cooldown.** [`CooldownSeconds`](/reference/fields#cooldownseconds) is enforced by the runtime before decoding and needs nothing from the client.
-- **A server-side key.** Put an id the server issued, such as an offer id, trade id or [handle](/security/handles-and-capabilities), in the request, and reject ids the server has already consumed. [`Security.CheckIdempotency`](/reference/api/security#checkidempotency) does the bookkeeping:
+- **A cooldown.** [`CooldownSeconds`](/reference/fields#cooldownseconds) is enforced before decoding and needs nothing from the client.
+- **A server-issued key.** Put an id the server issued in the request, such as an offer id or a [handle](/security/handles-and-capabilities), check it with [`RequireServerKnownId`](/reference/fields#requireserverknownid) or [`RequireObjectHandle`](/reference/fields#requireobjecthandle), and forget it once used. [`Security.CheckIdempotency`](/reference/api/security#checkidempotency) does the bookkeeping for keys you choose:
 
 ```lua copy
 Network.AcceptOffer.On(function(player, offerId)
@@ -39,25 +56,4 @@ Network.AcceptOffer.On(function(player, offerId)
 end)
 ```
 
-- **Server state.** Most duplicate-effect bugs are really state bugs: grant a reward only if it has not been granted, not only if the request is new.
-
-## Using Predict for replay protection
-
-For endpoints where prediction fits the gameplay (placing, crafting, using an item), sending with `Predict` gets you replay protection and idempotency for free:
-
-```cheeto copy
-event UseItem {
-    From: Client,
-    Type: Reliable,
-    Call: SingleAsync,
-    Policy: "inventory",
-    Idempotency: true,
-    Data: u16
-}
-```
-
-```lua copy
-Network.UseItem.Predict(itemId)
-```
-
-See [Limitations](/limitations#prediction-ids-wrap) for a known issue with very long sessions.
+- **Server state.** Most duplicate-effect bugs are state bugs: grant a reward only if it has not been granted, not only if the request is new.

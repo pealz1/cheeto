@@ -29,7 +29,7 @@ Errors with `Inspector is disabled` unless the inspector is enabled. Returns:
 | `Capture` | Same as [`Capture.Entries()`](/reference/api/capture#entries) |
 | `ClientIntegrity` | Same as [`Security.ClientIntegrity()`](/reference/api/security#clientintegrity) |
 | `CharacterIntegrity` | Same as [`Security.CharacterIntegrity()`](/reference/api/security#characterintegrity) |
-| `Runtime` | `{ ProtocolVersion, ProtocolMode, SchemaVersion, SecurityProfile }` |
+| `Runtime` | `{ WireFormat, SchemaVersion, SchemaHash, SecurityProfile }` |
 
 ```lua copy
 Network.Inspector.Enable(true)

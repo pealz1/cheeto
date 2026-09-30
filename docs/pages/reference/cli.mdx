@@ -23,7 +23,7 @@ Flags can go in any order. Only one **mode** runs per invocation; if you pass se
 | *(none)* | Mode: compile | Yes | The schema is invalid |
 | [`--doctor`](#--doctor) | Mode | No | Never (reports only) |
 | [`--strict`](#--strict) | Mode | No | Any production check fails |
-| [`--benchmark`](#--benchmark) | Mode | No | Generated size or an estimate exceeds its threshold |
+| [`--benchmark`](#--benchmark) | Mode | No | A size, generation time or measured cost exceeds its threshold, or an endpoint delivers nothing |
 | [`--load-sim`](#--load-sim) | Mode | No | Never |
 | [`--capture-replay`](#--capture-replay) | Mode | No | Never |
 | [`--golden-snapshots`](#--golden-snapshots) | Mode | No | Never |
@@ -57,8 +57,14 @@ Checks the schema for risky settings without writing anything, and prints each f
 - reliable packet cap above 1 MiB;
 - rate limiting off outside the `Development` profile;
 - missing `ClientOutput` or `ServerOutput`;
-- client-origin events and functions with none of `Auth`, `Policy` or `PolicyGroup`;
-- the removed options `ProtocolMode` and `AcceptProtocolVersion1`, and any `ProtocolVersion` below 2.
+- client-origin events and functions with none of `Auth`, `Policy` or `PolicyGroup`.
+
+It then lists every policy, policy group and auth rule name the schema uses, so you can check each one is registered: an unregistered name drops every packet on its endpoints.
+
+```
+- Policy names to register with Security.RegisterPolicy: shop, trade
+- Auth names to register with UseAuth: AlivePlayer
+```
 
 ## `--strict`
 
@@ -73,9 +79,7 @@ Runs the doctor checks as errors, plus these, and exits with an error if any fai
 - `SyncValidation` and `WriteValidations` are off;
 - output paths are relative and contain no `..`.
 
-<Callout type="warning">
-`SyncValidation` defaults to `true`, so strict mode fails until you write `option SyncValidation = false`.
-</Callout>
+`SyncValidation` is only on by default in the `Development` profile, so a `Production` or `Competitive` schema passes that check without writing it.
 
 ## `--hardening-checklist`
 
@@ -87,17 +91,28 @@ The release gate: everything `--strict` checks, plus `RequirePolicies = true`, a
 
 <Sig side="cli">{"cheeto network --benchmark"}</Sig>
 
-Generates the modules in memory and prints their sizes and generation time, then fails if the server module is over about 700 KB, the client module over about 520 KB, the types module over 225 KB, or generation took over 2 seconds. The thresholds grow for schemas with more than 80 endpoints.
+Generates the modules and measures them:
 
-<Callout type="warning">
-It also prints `sim200` figures for packet bytes, encode and decode time. Those are **estimates computed from the endpoint count**, not measurements of the generated code. For real encode and decode timings, run the in-Studio harness in `benchmark/`.
-</Callout>
+1. **Size and generation time** of the server, client and types modules.
+2. **Every endpoint, for real.** Both modules are loaded in Lune against stub remotes. Each event, function and channel sends 256 generated sample payloads (200 for functions); the bytes that reach the remote are counted, and encoding (the sends plus the replication step) and decoding (the receiver's full pipeline, through to the listener) are timed.
+
+```
+endpoint             direction         bytes/msg  encode µs  decode µs
+DealDamage           client → server   6          3.1        4.2
+Inventory            server → client   84         9.8        12.6
+...
+average over 76 endpoints: bytes/msg=17.4 encode=8.19 µs decode=11.1 µs (0 skipped)
+```
+
+The harness removes the schema's access rules, because it measures serialization and the receive pipeline rather than your policies. An endpoint whose payload type has no generated sample (such as `DateTime`) is listed as skipped.
+
+It fails when the server module exceeds 220 KB plus 8 KB per endpoint, the client module 220 KB plus 6 KB per endpoint, the types module 250 KB, generation takes over 2 seconds, the average encode or decode cost exceeds 250 µs, or any endpoint delivers nothing. The drop reasons are printed for an endpoint that delivers nothing, which usually means its payload does not round-trip.
 
 ## `--load-sim`
 
 <Sig side="cli">{"cheeto network --load-sim"}</Sig>
 
-Prints a CSV of estimated traffic for 10, 50, 100 and 200 clients: encode and decode time, bytes, drops, validation failures, rate-limit hits, pending invokes, queue depth and state flush time. Like the benchmark's `sim200` line, these are formula estimates from the endpoint count and your limits, useful for comparing schema changes, not as measurements.
+Runs the same measurement as `--benchmark`, then scales the average message to 10, 50, 100 and 200 clients sending and receiving 10, 30 and 60 messages per second each. The CSV gives bandwidth in KB/s, CPU milliseconds per second, and the share of one core. It is a projection from measured costs, so it is as accurate as the assumption that your traffic looks like the schema's average endpoint.
 
 ## `--capture-replay`
 
@@ -109,31 +124,31 @@ Prints the schema's event, function and channel counts and the capture and repla
 
 <Sig side="cli">{"cheeto network --golden-snapshots"}</Sig>
 
-Prints the schema version, the protocol, a `wireHash` built from the generated module sizes and declaration counts, and the sorted names of every event, function and channel. Commit the output and diff it in review to notice surface changes.
+Prints the schema version, the [schema fingerprint](/reference/options/versioning#the-schema-fingerprint), the generated module sizes, and the sorted names of every event, function and channel. Commit the output and diff it in review to notice surface changes.
 
 ## `--compatibility`
 
 <Sig side="cli">{"cheeto network --compatibility"}</Sig>
 
-Prints a table of which peer versions the handshake accepts: a peer on an old protocol, a peer below `MinimumSchemaVersion`, a peer with a different hash, and a matching peer.
+Prints a table of which peers the handshake accepts: a peer below `MinimumSchemaVersion`, a peer with a different fingerprint, and a matching peer.
 
 ## `--schema-docs`
 
 <Sig side="cli">{"cheeto network --schema-docs"}</Sig>
 
-Prints a Markdown summary: schema version, protocol, capture redactions, and the names of every event, function and channel.
+Prints a Markdown summary: schema version, capture redactions, and the names of every event, function and channel.
 
 ## `--write-lock`
 
 <Sig side="cli">{"cheeto network --write-lock"}</Sig>
 
-Writes [`cheeto.lock`](/reference/lockfile) next to the schema. Run it deliberately when you mean to change the schema's surface, and commit the result.
+Writes [`cheeto.lock`](/reference/lockfile) next to the schema, keeping the ids already recorded and marking removed endpoints as retired. Run it deliberately when you mean to change the wire layout, and commit the result.
 
 ## `--check-lock`
 
 <Sig side="cli">{"cheeto network --check-lock"}</Sig>
 
-Regenerates the lockfile in memory and fails if `cheeto.lock` is missing or differs. Use it in CI so a schema change cannot land without an updated lockfile.
+Regenerates the lockfile in memory and fails if `cheeto.lock` is missing or differs, printing the lines the schema now produces. Use it in CI so a wire change cannot land without an updated lockfile.
 
 ## `--ci`
 

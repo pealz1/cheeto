@@ -98,9 +98,7 @@ Also writes `.d.ts` declaration files next to the client and server outputs, for
 option Typescript = true
 ```
 
-<Callout type="warning">
-The declaration files cover events, functions and declared types. They do not yet describe `Predict`, `FireGroup`, channel endpoints, the runtime namespaces, or `Future`/`Promise` return types, and `Instance` is declared as `number`. See [Limitations](/limitations#typescript-definitions).
-</Callout>
+The declaration files describe every event (including `Predict` and `FireGroup`), function (with `Promise` and `Future` results), channel and declared type, and the runtime namespaces (`Security`, `Transport`, `Protocol` and the rest). Every declaration is exported, and the output type-checks under `tsc --strict` against the roblox-ts globals. With [`UseColon`](#usecolon), endpoint members are declared as methods.
 
 ## `RuntimeOutput`
 
@@ -161,6 +159,16 @@ option PromiseLibrary = "ReplicatedStorage.Packages.Promise"
 
 ## `UseColon`
 
-<Spec type="boolean" default="no effect" />
+<Spec type="boolean" default={<code>false</code>} />
 
-Accepted by the parser for compatibility and ignored by the generator. Setting it changes nothing.
+Makes every endpoint method accept the endpoint table as its first argument, so you call them with `:`. The generated methods ignore that argument. The runtime namespaces (`Security`, `Transport` and the rest) are unaffected and still use `.`.
+
+```cheeto copy
+option UseColon = true
+```
+
+```lua copy
+Network.Damage:Fire(target, 25)
+Network.Damage:On(function(player, target, amount) end)
+local stock = Network.GetShopStock:Invoke()
+```

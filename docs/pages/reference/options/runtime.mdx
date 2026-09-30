@@ -12,7 +12,7 @@ import { Spec } from '../../../components/Reference'
 | --- | --- | --- | --- |
 | [`UsePolling`](#usepolling) | boolean | `false` | No |
 | [`ManualReplication`](#manualreplication) | boolean | `false` | No |
-| [`SyncValidation`](#syncvalidation) | boolean | `true` | No |
+| [`SyncValidation`](#syncvalidation) | boolean | `true` in `Development`, else `false` | No |
 | [`WriteValidations`](#writevalidations) | boolean | `false` | No |
 | [`ExposeMetrics`](#exposemetrics) | boolean | `true` | Yes |
 | [`EnableMiddleware`](#enablemiddleware) | boolean | `true` | Yes |
@@ -49,13 +49,9 @@ RunService.PostSimulation:Connect(Network.StepReplication)
 
 ## `SyncValidation`
 
-<Spec type="boolean" default={<code>true</code>} />
+<Spec type="boolean" default={<><code>true</code> in the <code>Development</code> profile, <code>false</code> in <code>Production</code> and <code>Competitive</code></>} />
 
-For events with `Call: SingleSync` or `ManySync`, warns when a listener yields: `Yielded in a Sync call. Event "X" uses a Sync call, consider using an Async call instead.` The check only reports; it never closes the yielded thread.
-
-<Callout type="warning">
-Because the default is `true`, [`--strict`](/reference/cli#--strict) and [`--hardening-checklist`](/reference/cli#--hardening-checklist) fail until you set `option SyncValidation = false` explicitly.
-</Callout>
+For events with `Call: SingleSync` or `ManySync`, warns when a listener yields: `Yielded in a Sync call. Event "X" uses a Sync call, consider using an Async call instead.` The check only reports; it never closes the yielded thread. It costs a coroutine check per Sync dispatch, so it is a development aid: [`--strict`](/reference/cli#--strict) rejects it, and the production profiles leave it off.
 
 ## `WriteValidations`
 

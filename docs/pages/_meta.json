@@ -17,16 +17,8 @@
   "security": "Security",
   "operations": "Operations",
   "guides": "Guides",
+  "reference": "Reference",
   "limitations": "Limitations",
-  "docs": {
-    "title": "Docs",
-    "type": "page",
-    "href": "/getting-started/introduction"
-  },
-  "reference": {
-    "title": "Reference",
-    "type": "page"
-  },
   "releases": {
     "title": "Releases",
     "type": "page",

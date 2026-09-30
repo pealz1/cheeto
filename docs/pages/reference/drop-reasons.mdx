@@ -62,7 +62,7 @@ These discard one event. They are listed in the order the receive path checks th
 | Reason | Trigger |
 | --- | --- |
 | `MalformedHandshake` | The handshake frame could not be read |
-| `IncompatibleProtocol` | The peer's protocol, schema version or schema hash did not match. Only the handshake frame is dropped; see [Limitations](/limitations#the-handshake-does-not-block-mismatched-peers) |
+| `IncompatibleProtocol` | The peer's handshake named another schema fingerprint or a version below `MinimumSchemaVersion`. On the server, that handshake and every later packet from the player are dropped; see [`IncompatiblePeerAction`](/reference/options/versioning#incompatiblepeeraction) |
 
 ## Security reports
 

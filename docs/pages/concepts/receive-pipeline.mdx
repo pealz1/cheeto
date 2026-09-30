@@ -16,6 +16,7 @@ For each remote call:
 | Step | Check | On failure |
 | --- | --- | --- |
 | 1 | The first argument is a buffer | `InvalidBuffer` |
+| 1b | The sender's handshake did not name another schema | `IncompatibleProtocol` |
 | 2 | Its size is within [`MaxReliablePacketBytes`](/reference/options/limits#maxreliablepacketbytes) or [`MaxUnreliablePacketBytes`](/reference/options/limits#maxunreliablepacketbytes) | `MaxPacketBytes` |
 | 3 | The sender is within the per-call [`RateLimitPerSecond`](/reference/options/limits#ratelimitpersecond) for this remote | `RateLimit` |
 | 4 | The second argument, if any, is a table of instances | `InvalidInstances` |
@@ -30,33 +31,38 @@ The packet is then read one frame at a time. Control frames (handshake, predicti
 
 | Step | Check | On failure |
 | --- | --- | --- |
-| 1 | The frame header can be read | `MalformedPacket` |
-| 2 | The packet size is within the endpoint's own [`MaxPacketBytes`](/reference/fields#maxpacketbytes), if set | `MaxPacketBytes` |
+| 1 | The frame header can be read; for a function, the invocation id too | `MalformedPacket` |
+| 2 | The frame is within the endpoint's own [`MaxPacketBytes`](/reference/fields#maxpacketbytes), if set | `MaxPacketBytes` |
 | 3 | The endpoint is not a [honeypot](/security/honeypots) | `Honeypot` |
 | 4 | The sender is within the endpoint's [`RateLimitPerSecond`](/reference/fields#ratelimitpersecond), if set | `RateLimit` |
 | 5 | Per-event [`BeforeReceive`](/reference/api/hooks#beforereceive) hooks allow it | `MiddlewareRejected` |
 | 6 | The [`Auth`](/reference/fields#auth) rule returns `true`, if set | `AuthRejected` |
 | 7 | The endpoint and its policy group are not [killed](/security/kill-switches) | `KillSwitch` |
-| 8 | The sender's [`CooldownSeconds`](/reference/fields#cooldownseconds) has elapsed | `PolicyRejected` |
-| 9 | Predicted events only: the sequence number is new and recent | `ReplayDuplicate`, `ReplayStale` |
-| 10 | Predicted events with [`Idempotency`](/reference/fields#idempotency): the sequence number was not used in the last 120 s | `ReplayDuplicate` |
-| 11 | The [`Policy`](/reference/fields#policy) allows the sender, or with [`RequirePolicies`](/reference/options/security#requirepolicies) a policy exists | `PolicyRejected` or the policy's reason |
-| 12 | Every policy in the [`PolicyGroup`](/reference/fields#policygroup) allows the sender | `PolicyRejected` or the policy's reason |
-| 13 | The payload **decodes**: types, ranges and instance classes all match | `MalformedPacket` |
-| 14 | The decoded payload passes the [payload checks](/security/payload-validation) | `Canonicalization`, `DecodeBudget` |
-| 15 | [`Validate`](/reference/api/hooks#validate) hooks allow it, if the endpoint declares a payload constraint | `ConstraintRejected` |
-| 16 | [`AfterReceive`](/reference/api/hooks#afterreceive) hooks run; predicted events are acknowledged | |
-| 17 | The listener runs, or the event is queued if no listener is connected yet | `QueueFull` when the queue is full |
+| 8 | The sender's [`CooldownSeconds`](/reference/fields#cooldownseconds) has elapsed | `Cooldown` |
+| 9 | Predicted events only: the prediction id is new and recent | `ReplayDuplicate`, `ReplayStale` |
+| 10 | Predicted events with [`Idempotency`](/reference/fields#idempotency): the prediction id was not used in the last 120 s | `ReplayDuplicate` |
+| 11 | The sender [constraints](/security/constraints) hold: team, zone, match, character state | `ConstraintRejected` |
+| 12 | The [`Policy`](/reference/fields#policy) allows the sender, or with [`RequirePolicies`](/reference/options/security#requirepolicies) the endpoint has a policy, group or auth rule | `PolicyRejected` or the policy's reason |
+| 13 | Every policy in the [`PolicyGroup`](/reference/fields#policygroup) allows the sender | `PolicyRejected` or the policy's reason |
+| 14 | The payload **decodes**: types, ranges and instance classes all match | `MalformedPacket` |
+| 15 | [`Sequenced`](/reference/fields#reliabilitymode) and [`Idempotency`](/reference/fields#idempotency) endpoints: the sequence number is newer than the last accepted | `OutOfOrder` |
+| 16 | The decoded payload passes the [payload checks](/security/payload-validation) | `Canonicalization`, `DecodeBudget` |
+| 17 | The payload [constraints](/security/constraints) hold: distance, ownership, handles, known ids, inventory | `ConstraintRejected` |
+| 18 | [`Validate`](/reference/api/hooks#validate) hooks allow it, if the endpoint declares a payload constraint | `ConstraintRejected` |
+| 19 | [`AfterReceive`](/reference/api/hooks#afterreceive) hooks run; predicted events are acknowledged | |
+| 20 | The listener runs, or the event is queued if no listener is connected yet | `QueueFull` when the queue is full |
+
+When the server drops a function call or a predicted event at any of these steps (except a honeypot), it answers with the reason: `Invoke` raises it and the prediction rolls back with it.
 
 A failed frame is skipped using its length prefix, and the next frame is processed normally.
 
 ## What this means for your code
 
-- **Policies and auth rules cannot see the payload.** Steps 6 to 12 run before step 13. Check "who" in a policy and "what" in a `Validate` hook or in the listener.
+- **Policies and auth rules cannot see the payload.** Steps 6 to 13 run before step 14. Check "who" in a policy and "what" in a `Validate` hook or in the listener.
 - **Honeypots report even rate-limited senders.** Step 3 comes before the rate limit, so a flood of honeypot traffic is fully reported.
 - **Cooldowns cost almost nothing.** A request inside its cooldown is rejected before any decoding work.
-- **Your listener only sees valid data.** By step 17, the payload matches the schema's types and ranges and passed your rules.
+- **Your listener only sees valid data.** By step 20, the payload matches the schema's types and ranges and passed your rules.
 
-<Callout type="warning">
-Everything in step 2 runs on whichever side receives the endpoint, including the client for server-sent events and channels. Only put `Auth`, `Policy`, cooldowns and rate limits on endpoints that clients send.
+<Callout type="info">
+The frame steps run on whichever side receives the endpoint. That is why `Auth`, `Policy`, cooldowns, idempotency and constraints are compile errors on server-sent events and channels: the client has none of the server's rules.
 </Callout>

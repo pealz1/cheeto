@@ -3,7 +3,7 @@
   "receive-pipeline": "The receive pipeline",
   "wire-protocol": "Wire protocol",
   "batching-and-flushing": "Batching and flushing",
-  "reliability-and-priority": "Reliability and priority",
+  "reliability-and-priority": "Reliability and delivery",
   "functions-and-invokes": "Functions and invokes",
   "prediction": "Prediction",
   "state-channels": "State channels",

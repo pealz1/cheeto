@@ -97,7 +97,7 @@ This value is compiled into the endpoints. Security profiles do not change it an
 Bytes of outgoing data tracked per peer. When the tracked amount is over this value and [`LowPriorityShedding`](#lowpriorityshedding) is on, newly queued events with `Priority: Cosmetic` or `Priority: Background` are dropped with `Backpressure`. Critical and Gameplay events are never shed. At half of this value the flush step sends the peer's batch immediately.
 
 <Callout type="warning">
-The tracked amount is not reduced for unreliable sends or for broadcasts (`FireAll`, `FireList`, `FireExcept`, `FireGroup`). On a long-running server this can shed Cosmetic and Background broadcasts that are not actually backed up. See [Limitations](/limitations#backpressure-accounting).
+The tracked amount is the bytes waiting in the peer's reliable batch: it grows as events are copied in, broadcasts counted per recipient, and resets when the batch is sent. Unreliable sends leave within the step and never add to it.
 </Callout>
 
 ### `MaxBurstBytes`
@@ -129,7 +129,7 @@ Independently of this option, invocation ids are one byte, so at most 255 invoke
 How long `Invoke` waits for a reply before it raises `Invoke timed out after N seconds.` `0` waits forever. Timeouts are checked by the flush step, so with [`ManualReplication`](/reference/options/runtime#manualreplication) they only fire when you call `StepReplication`.
 
 <Callout type="warning">
-Each function's timeout is compiled from its own `InvokeTimeoutSeconds` field or this option when written in the schema. The security profiles list 10 s (Production) and 5 s (Competitive), but that runtime value is **not** used by generated invokes, and `Configure` cannot change it. Set this option explicitly in production. See [Limitations](/limitations#invoke-timeouts).
+Applies to every function without its own [`InvokeTimeoutSeconds`](/reference/fields#invoketimeoutseconds) field. It is read when `Invoke` is called, so the profile default (10 s for Production, 5 s for Competitive, none for Development), the value written in the schema, and later changes through [`Configure`](/reference/api/module#configure) all take effect.
 </Callout>
 
 ```cheeto copy

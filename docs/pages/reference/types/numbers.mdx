@@ -43,5 +43,5 @@ type Temperature = f32(-50..60)
 A received value outside the range drops the event with `MalformedPacket`. See [Ranges](/reference/types/ranges).
 
 <Callout type="warning">
-Out-of-range values are **silently corrupted** on the sender, not rejected: `300` sent as a `u8` arrives as `44`, and `2.7` arrives as `2`. Declare a range (`u8(0..100)`) so the receiver rejects bad values, and turn on [`WriteValidations`](/reference/options/runtime#writevalidations) while developing to get an error at the call site instead.
+An integer outside its type's range raises an error at the call site instead of being sent: `Fire(300)` on a `u8` raises `u8 must be between 0 and 255, got 300`, and nothing is written into the batch. Fractions are truncated: `2.7` arrives as `2`. Declare a range (`u8(0..100)`) to narrow the accepted values further; the receiver drops anything outside it, and [`WriteValidations`](/reference/options/runtime#writevalidations) checks ranges at the call site too.
 </Callout>

@@ -14,27 +14,30 @@ A [`function`](/reference/declarations/function) is a request a client makes and
 1. The client calls `Invoke`. The request is written into the client's reliable batch with a one-byte invocation id, and the calling thread yields (or a Future or Promise is returned).
 2. At the next replication step the batch is sent.
 3. The server receives the request, runs it through the [receive pipeline](/concepts/receive-pipeline), and calls the function's `On` handler in a new thread.
-4. The handler's return values, or an error flag if it errored, are written into that player's batch and sent at the server's next step.
+4. The handler's return values are written into that player's batch and sent at the server's next step. If the handler errors, or its return value cannot be encoded, a failure reply is sent instead.
 5. The client matches the reply to the invocation id and resumes the caller.
 
 A round trip therefore takes at least one frame on each side plus the network latency.
 
 ## Failures
 
-| What happened | The client sees |
-| --- | --- |
-| The handler errored | `Invoke` raises `There was an exception while processing "Name".` |
-| No reply within [`InvokeTimeoutSeconds`](/reference/fields#invoketimeoutseconds) | `Invoke` raises `Invoke timed out after N seconds.` |
-| The server dropped the request (policy, auth, cooldown, rate limit, kill switch, honeypot) | **Nothing.** No reply is sent |
-| Too many invokes pending | `Invoke` raises immediately |
-| [`CancelInvocations`](/reference/api/module#cancelinvocations) was called | `Invoke` raises with the given reason |
+Every request gets an answer: a reply, a failure reply with a reason, or a timeout.
 
-<Callout type="error">
-A dropped request is never answered. Without a timeout, the calling thread waits forever. Set `InvokeTimeoutSeconds` on every function that has access control, and set the option explicitly: the security profile's default timeout is not applied to generated invokes ([Limitations](/limitations#invoke-timeouts)).
-</Callout>
+| What happened | `Invoke` raises |
+| --- | --- |
+| The server dropped the request before the handler ran (policy, auth, constraint, cooldown, rate limit, kill switch, replay, malformed payload, queue full) | `[Cheeto]: The server rejected "Name": <reason>`, with the drop reason, or the reason your policy returned |
+| The handler errored, or returned something that does not fit the `Return` type | `[Cheeto]: The server rejected "Name": HandlerError` |
+| No reply within the timeout | `[Cheeto]: Invoke timed out after N seconds.` |
+| Too many invokes pending | Immediately, before anything is sent |
+| The request could not be encoded (a value out of range, a wrong enum) | Immediately, with the encoding error |
+| [`CancelInvocations`](/reference/api/module#cancelinvocations) was called | The reason you passed |
+
+The one exception is [`Honeypot`](/reference/fields#honeypot) functions: nothing legitimate calls them, so the server stays silent and the caller times out.
+
+The timeout is the function's [`InvokeTimeoutSeconds`](/reference/fields#invoketimeoutseconds) field if it has one, otherwise the runtime's [`InvokeTimeoutSeconds`](/reference/options/limits#invoketimeoutseconds): 10 seconds under `Production`, 5 under `Competitive`, none under `Development`, or what `Configure` last set.
 
 ```cheeto copy
-option InvokeTimeoutSeconds = 10
+option SecurityProfile = Production
 
 function GetShopStock {
     Yield: Coroutine,
@@ -42,6 +45,13 @@ function GetShopStock {
     CooldownSeconds: 1,
     Return: u16[..64]
 }
+```
+
+```lua copy
+local ok, result = pcall(Network.GetShopStock.Invoke)
+if not ok then
+    warn("Shop unavailable:", result)
+end
 ```
 
 ## Choosing a yield style
@@ -55,5 +65,5 @@ function GetShopStock {
 ## Limits
 
 - At most [`MaxPendingInvokes`](/reference/fields#maxpendinginvokes) outstanding per function and per module.
-- At most 255 outstanding per module, because invocation ids are one byte.
+- At most 256 outstanding per module, because invocation ids are one byte.
 - Replies are discarded if the player leaves before the handler returns.

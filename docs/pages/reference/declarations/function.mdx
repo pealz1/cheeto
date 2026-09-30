@@ -72,5 +72,5 @@ end
 Wrap `Invoke` in `pcall`, or use `Future`/`Promise`, whenever a failure should not stop the calling thread.
 
 <Callout type="warning">
-A request dropped by a policy, auth rule, cooldown or rate limit gets no reply. The client's `Invoke` then waits until its timeout, or forever when `InvokeTimeoutSeconds` is `0`. Always set a timeout on functions that have access control.
+A request the server drops, by a policy, auth rule, constraint, cooldown or rate limit, is answered with the drop reason, and the client's `Invoke` raises it. The timeout covers the rest: a lost connection, or a handler that never returns.
 </Callout>

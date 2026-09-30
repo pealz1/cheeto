@@ -1,32 +1,28 @@
 ---
 title: "Constraints and Validate"
-description: "Declaring payload rules in the schema and enforcing them in a Validate hook."
+description: "Rules declared in the schema that the runtime enforces, and the Validate hook for everything else."
 ---
 
 import { Callout } from 'nextra/components'
 
 # Constraints and Validate
 
-Constraint fields let you write down an endpoint's rules in the schema, next to its data: how far away a target may be, whether the sender must own it, which team they must be on. Cheeto hands them to your code. **It does not enforce any of them by itself.**
+Constraint fields write an endpoint's rules down in the schema, next to its data: how far away a target may be, whether the sender must own it, which team they must be on. The runtime enforces them on the server before your handler runs, and drops a failing packet with `ConstraintRejected`. For functions and predicted events, the client is told the reason.
 
-| Field | Type | Describes |
+| Field | Checked | Rule |
 | --- | --- | --- |
-| [`MaxDistance`](/reference/fields#maxdistance) | number | The payload |
-| [`RequireOwnership`](/reference/fields#requireownership) | boolean | The payload |
-| [`RequireTeam`](/reference/fields#requireteam) | string | The payload |
-| [`RequireZone`](/reference/fields#requirezone) | string | The payload |
-| [`RequireMatch`](/reference/fields#requirematch) | string | The payload |
-| [`RequireInventoryOwnership`](/reference/fields#requireinventoryownership) | boolean | The payload |
-| [`RequireObjectHandle`](/reference/fields#requireobjecthandle) | boolean | The payload |
-| [`RequireServerKnownId`](/reference/fields#requireserverknownid) | boolean | The payload |
-| [`RequireCharacterState`](/reference/fields#requirecharacterstate) | string | The sender |
-| [`Risk`](/reference/fields#risk) | identifier | A tag |
+| [`RequireTeam`](/reference/fields#requireteam) | before decoding | The sender's Roblox team, or [`Replication.SetTeam`](/reference/api/replication#setteam) membership |
+| [`RequireZone`](/reference/fields#requirezone) | before decoding | The zone set with [`Security.SetZone`](/reference/api/security#setzone) |
+| [`RequireMatch`](/reference/fields#requirematch) | before decoding | Membership set with [`Replication.SetMatch`](/reference/api/replication#setmatch) |
+| [`RequireCharacterState`](/reference/fields#requirecharacterstate) | before decoding | `Alive`, `Dead`, or a Humanoid state name |
+| [`MaxDistance`](/reference/fields#maxdistance) | after decoding | Positions and parts in the payload are within range of the sender's character |
+| [`RequireOwnership`](/reference/fields#requireownership) | after decoding | Instances in the payload belong to the sender |
+| [`RequireObjectHandle`](/reference/fields#requireobjecthandle) | after decoding | The first number is a handle the sender may use |
+| [`RequireServerKnownId`](/reference/fields#requireserverknownid) | after decoding | The first number or string is an id the server issued |
+| [`RequireInventoryOwnership`](/reference/fields#requireinventoryownership) | after decoding | Your inventory resolver returns `true` |
+| [`Risk`](/reference/fields#risk) | never | A tag passed to your code |
 
-## Where to enforce them
-
-A constraint about the **sender** (`RequireCharacterState`) can be checked in a [policy](/security/policies), because the sender is known before decoding. A constraint about the **payload** needs the decoded data, which only exists after decoding, so it goes in a `Validate` hook.
-
-The `Validate` hook runs after decoding and before the listener, and only for endpoints that declare at least one payload constraint. Returning `false` drops the event with `ConstraintRejected`.
+Sender constraints run before decoding, so a player who fails them costs the server no decode work. Payload constraints need the decoded values and run right after decoding, before the [`Validate`](/reference/api/hooks#validate) hook and the listener.
 
 ```cheeto copy
 event Interact {
@@ -34,42 +30,68 @@ event Interact {
     Type: Reliable,
     Call: SingleAsync,
     Policy: "interact",
+    RequireCharacterState: "Alive",
     MaxDistance: 12,
     RequireOwnership: true,
     Data: Instance(Model)
 }
 ```
 
+With that schema, a player who is dead, too far from the model, or does not own it never reaches the handler:
+
 ```lua copy
-Network.Use("Validate", function(context)
-    local constraints = context.Constraints
-    local target = context.Payload[1]
-    local character = context.Source.Character
-    if not character then
-        return false
-    end
-
-    if constraints.MaxDistance > 0 then
-        local distance = (target:GetPivot().Position - character:GetPivot().Position).Magnitude
-        if distance > constraints.MaxDistance then
-            return false
-        end
-    end
-
-    if constraints.RequireOwnership and target:GetAttribute("OwnerId") ~= context.Source.UserId then
-        return false
-    end
-
-    return true
+Network.Interact.On(function(player, model)
+    Interactions.Run(player, model)
 end)
 ```
 
-One `Validate` hook serves every endpoint: the context includes `Name`, so you can branch per endpoint, and `Constraints`, so you can write generic rules like the one above once.
+## What they need from you
 
-<Callout type="warning">
-A declared constraint with no rule reading it does nothing. Add the hook in the same change that adds the field.
+Some constraints check state only your game knows. Keep it current:
+
+```lua copy
+-- RequireZone
+Network.Security.SetZone(player, "Arena")
+
+-- RequireMatch
+Network.Replication.SetMatch(matchId, player, true)
+
+-- RequireOwnership: either register the owner or tag the instance
+Network.Replication.SetObjectOwner(house, player, true)
+house:SetAttribute("OwnerUserId", player.UserId)
+
+-- RequireServerKnownId
+Network.Security.RegisterKnownId(offerId, player)
+
+-- RequireInventoryOwnership
+Network.Security.SetInventoryResolver(function(player, payload)
+    return Inventory.Has(player, payload[1])
+end)
+```
+
+`RequireInventoryOwnership` with no resolver set rejects everything and warns once, so a missing resolver fails closed.
+
+## The Validate hook
+
+For conditions the fields cannot express, add a `Validate` hook. It runs after the built-in payload constraints and before the listener, for endpoints that declare a payload constraint. It receives `Name`, `Source`, `Channel`, `Size`, `Constraints` and `Payload` (the arguments, packed with `n`). Returning `false` drops the event with `ConstraintRejected`.
+
+```lua copy
+Network.Use("Validate", function(context)
+    if context.Name ~= "Interact" then
+        return true
+    end
+
+    local model = context.Payload[1]
+    return not model:GetAttribute("Locked")
+end)
+```
+
+One hook serves every endpoint: branch on `Name`, or write generic rules against `Constraints`.
+
+## Where the checks stop
+
+The payload constraints look at the arguments and the fields of table arguments, one level deep. `RequireObjectHandle` and `RequireServerKnownId` check the first number (or string) only. Values nested deeper, and rules like "the target is not the sender", belong in `Validate` or the listener. See [Limitations](/limitations#what-the-payload-constraints-examine).
+
+<Callout type="info">
+The `Validate` hook allocates a context table per event, so it is only generated for endpoints that declare a payload constraint. Endpoints without one pay nothing.
 </Callout>
-
-## Cost
-
-The hook allocates a context table per event, so it is only generated for endpoints that declare a payload constraint. Endpoints without one pay nothing.

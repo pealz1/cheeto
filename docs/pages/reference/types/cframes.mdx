@@ -25,7 +25,7 @@ A `CFrame` is written as its position (three numbers) followed by its orientatio
 | `CFrame<f32, i16>` | `i16` | `f32` |
 
 <Callout type="error">
-The two-parameter form is applied rotation first. Earlier versions of these docs described it the other way round, so `CFrame<i16, f16>` gives an `f16` position and an **integer rotation**, which throws away all rotation except whole radians. Put the integer type second if you want an integer position. See [Limitations](/limitations#cframe-encoding-order).
+The two-parameter form is `CFrame<Position, Rotation>`: `CFrame<i16, f16>` sends a whole-number position and a half-precision rotation. With one parameter, both use it.
 </Callout>
 
 The received CFrame is rebuilt with `CFrame.new(position) * CFrame.fromOrientation(x, y, z)`. Positions more than 10⁹ studs from the origin, and non-finite values, are dropped with `Canonicalization`.

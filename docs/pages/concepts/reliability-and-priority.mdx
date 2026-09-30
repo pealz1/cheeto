@@ -1,31 +1,65 @@
 ---
-title: "Reliability and priority"
-description: "Choosing between reliable and unreliable events, and what Priority does."
+title: "Reliability and delivery"
+description: "Reliable and unreliable events, the Sequenced and Latest delivery modes, batching, and what Priority does."
 ---
 
 import { Callout } from 'nextra/components'
 
-# Reliability and priority
+# Reliability and delivery
 
 ## Reliable or unreliable
 
 | | `Type: Reliable` | `Type: Unreliable` |
 | --- | --- | --- |
 | Arrives | Always, unless dropped by a check | Usually; can be lost |
-| Order | In order with every other reliable event to that peer | Any order |
-| Sent | Batched, once per frame | Immediately, one call per event |
-| Size | Up to `MaxReliablePacketBytes`, fragmented above 48 KB | Up to `MaxUnreliablePacketBytes` (about 1 KB) |
+| Order | In order with every other reliable event to that peer | Any order, unless `Sequenced` |
+| Sent | Batched, once per replication step | Batched per recipient once per step ([`BatchUnreliable`](/reference/options/runtime#batchunreliable)), or immediately with it off |
+| Size | Up to `MaxReliablePacketBytes`, fragmented above 48 KB | Up to `MaxUnreliablePacketBytes` (about 1 KB) per batch |
 | Queued before a listener connects | Yes | No, discarded |
 
 Use **reliable** for anything whose loss would be a bug: purchases, damage, state changes, chat. Use **unreliable** for data that is replaced by the next update anyway: positions, aim, cosmetic effects. Losing one is harmless, and waiting for a retransmission would only deliver stale data.
 
 Functions are always reliable. [Channels](/concepts/state-channels) are reliable unless you set `Type: Unreliable`.
 
+## Delivery modes
+
+[`ReliabilityMode`](/reference/fields#reliabilitymode) refines how an event is delivered:
+
+| Mode | Behaviour | Typical use |
+| --- | --- | --- |
+| *(none)* | Every send is delivered (reliable) or may be (unreliable) | Most events |
+| `Sequenced` | Each send carries a sequence number; anything not newer than the last accepted is dropped with `OutOfOrder` | Unreliable positions, where an old value arriving late is worse than none |
+| `Latest` | Only the last send per recipient in each replication step leaves; the rest are discarded before they cost bandwidth | Aim direction, health bars, anything that is overwritten several times a frame |
+
+[`CoalesceKey`](/reference/fields#coalescekey) is `Latest` with a slot shared by every event that names the same key, for state described by several endpoints.
+
+```cheeto copy
+event AimDirection {
+    From: Client,
+    Type: Unreliable,
+    Call: ManyAsync,
+    ReliabilityMode: Latest,
+    Data: vector
+}
+
+event Position {
+    From: Server,
+    Type: Unreliable,
+    Call: ManyAsync,
+    ReliabilityMode: Sequenced,
+    Data: vector<i16>
+}
+```
+
+## Batching
+
+Reliable events queue in each recipient's batch and leave together at the replication step, which runs on `Heartbeat` unless you use [`ManualReplication`](/reference/options/runtime#manualreplication). Unreliable events do the same by default, one remote call per recipient per step, split so no call exceeds `MaxUnreliablePacketBytes`. Fewer, larger calls cost less and keep high-frequency traffic under the receiver's per-call [rate limit](/reference/options/limits#ratelimitpersecond). The cost is up to one frame of delay.
+
 ## Priority
 
 [`Priority`](/reference/fields#priority) has four levels: `Critical`, `Gameplay` (the default), `Cosmetic` and `Background`.
 
-Priority decides one thing: which events may be **shed** when a peer is backed up. When the bytes tracked for a peer exceed [`MaxQueuedBytes`](/reference/options/limits#maxqueuedbytes) and [`LowPriorityShedding`](/reference/options/limits#lowpriorityshedding) is on, new `Cosmetic` and `Background` events to that peer are dropped with `Backpressure`. `Critical` and `Gameplay` events are never shed.
+Priority decides one thing: which events may be **shed** when a peer is backed up. Each peer's queued bytes are counted as events are copied into its batch and reset when the batch is sent. When they exceed [`MaxQueuedBytes`](/reference/options/limits#maxqueuedbytes) and [`LowPriorityShedding`](/reference/options/limits#lowpriorityshedding) is on, new `Cosmetic` and `Background` events to that peer are dropped with `Backpressure`. `Critical` and `Gameplay` events are never shed.
 
 Priority does not reorder events within a batch or send them sooner.
 
@@ -39,6 +73,6 @@ event HitSpark {
 }
 ```
 
-<Callout type="warning">
-Because of a known accounting issue, broadcasts with `Cosmetic` or `Background` priority can start being shed on long-running servers even when nothing is backed up. See [Limitations](/limitations#backpressure-accounting).
+<Callout type="info">
+Broadcasts are counted per recipient, when they are copied into each player's batch. A player who is falling behind sheds low-priority broadcasts; the others are unaffected.
 </Callout>

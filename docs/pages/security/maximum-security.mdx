@@ -73,7 +73,7 @@ option CharacterIntegrityMode = Report
 
 ### Register real policies and watch violations
 
-Replace every built-in policy name you use, and log violations:
+Register a rule for every policy name you use (unregistered names drop everything), and log violations:
 
 ```lua copy filename="ServerScriptService/Network.server.luau"
 local Network = require(ReplicatedStorage.Network.Server)
