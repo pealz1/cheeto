@@ -123,27 +123,64 @@ end
 
 RuntimeSupport.IsServer = true
 
+--> Appends an encoded event to a player's pending reliable batch, counting
+--> its bytes against that player's backpressure budget.
+function RuntimeSupport.CopyReliable(Player: Player, Source: buffer, Size: number, Instances: {Instance}, Priority: string)
+    if not IsPlayerActive(Player) then
+        return
+    end
+    if not RuntimeSupport.RecordQueuedEvent(Player, "Reliable", Size, Priority) then
+        return
+    end
+
+    Load(PlayersMap[Player], true)
+    local Position = Allocate(Size)
+    buffer.copy(SendBuffer, Position, Source, 0, Size)
+    table.move(Instances, 1, #Instances, #SendInstances + 1, SendInstances)
+    PlayersMap[Player] = Save()
+end
+
 --> Copies the event sitting in the loaded scratch buffer into each
---> recipient's pending reliable batch. Bytes are accounted per recipient,
---> which is what the backpressure limits are defined against.
+--> recipient's pending reliable batch.
 function RuntimeSupport.BroadcastReliable(List: {Player}, Except: Player?, Priority: string)
     local Source = SendBuffer
     local Size = SendCursor
     local Instances = SendInstances
     for _, Player in List do
-        if Player == Except or not IsPlayerActive(Player) then
-            continue
+        if Player ~= Except then
+            RuntimeSupport.CopyReliable(Player, Source, Size, Instances, Priority)
         end
-        if not RuntimeSupport.RecordQueuedEvent(Player, "Reliable", Size, Priority) then
-            continue
-        end
-
-        Load(PlayersMap[Player], true)
-        local Position = Allocate(Size)
-        buffer.copy(SendBuffer, Position, Source, 0, Size)
-        table.move(Instances, 1, #Instances, #SendInstances + 1, SendInstances)
-        PlayersMap[Player] = Save()
     end
+end
+
+function RuntimeSupport.SendUnreliableBatch(Player: Player, Batch: any)
+    if not IsPlayerActive(Player) then
+        return
+    end
+
+    local Packet = buffer.create(Batch.Size)
+    buffer.copy(Packet, 0, Batch.Buffer, 0, Batch.Size)
+    Unreliable:FireClient(Player, Packet, InstancePayload(Batch.Instances))
+    TrackSend("Unreliable", Batch.Size, Player)
+end
+
+--> Queues an encoded unreliable event for one player. With BatchUnreliable
+--> (the default) events for the same player share one remote call per
+--> frame, up to MaxUnreliablePacketBytes.
+function RuntimeSupport.QueueUnreliable(Player: Player, Source: buffer, Size: number, Instances: {Instance}, Priority: string)
+    if not IsPlayerActive(Player) then
+        return
+    end
+    if not RuntimeSupport.AdmitEvent(Player, "Unreliable", Size, Priority) then
+        return
+    end
+
+    if RuntimeConfig.BatchUnreliable then
+        RuntimeSupport.AppendUnreliable(Player, Source, Size, Instances)
+        return
+    end
+
+    RuntimeSupport.SendUnreliableBatch(Player, { Buffer = Source, Size = Size, Instances = Instances })
 end
 
 --> Answers a call or prediction the server dropped before its handler ran,
@@ -168,27 +205,28 @@ end
 
 --> Sends the event in the loaded scratch buffer on the unreliable remote.
 --> Targets is one player, a list of players, or nil for everyone.
-function RuntimeSupport.SendUnreliable(Targets: any, Except: Player?)
+function RuntimeSupport.SendUnreliable(Targets: any, Except: Player?, Priority: string?)
     local Size = SendCursor
     if RuntimeConfig.MaxUnreliablePacketBytes > 0 and Size > RuntimeConfig.MaxUnreliablePacketBytes then
         DropPacket(if type(Targets) == "table" then nil else Targets, "Unreliable", "MaxPacketBytes", Size)
         return
     end
 
-    local Packet = buffer.create(Size)
-    buffer.copy(Packet, 0, SendBuffer, 0, Size)
-    local Instances = InstancePayload(SendInstances)
-    if Targets == nil and Except == nil then
-        Unreliable:FireAllClients(Packet, Instances)
+    local Lane = Priority or "Gameplay"
+    if Targets == nil and Except == nil and not RuntimeConfig.BatchUnreliable then
+        local Packet = buffer.create(Size)
+        buffer.copy(Packet, 0, SendBuffer, 0, Size)
+        Unreliable:FireAllClients(Packet, InstancePayload(SendInstances))
         TrackSend("Unreliable", Size, nil)
         return
     end
 
+    local Source = SendBuffer
+    local Instances = SendInstances
     local List = if Targets == nil then Players:GetPlayers() elseif type(Targets) == "table" then Targets else { Targets }
     for _, Player in List do
         if Player ~= Except then
-            Unreliable:FireClient(Player, Packet, Instances)
-            TrackSend("Unreliable", Size, Player)
+            RuntimeSupport.QueueUnreliable(Player, Source, Size, Instances, Lane)
         end
     end
 end
@@ -221,6 +259,8 @@ local function StepReplication()
     --> the life of the server -- a lost reply, or a peer that simply never
     --> answers, silently leaks a coroutine and hangs that caller forever.
     ExpireInvocations()
+    RuntimeSupport.FlushLatest()
+    RuntimeSupport.FlushUnreliableBatches()
     local ActivePlayers = Players:GetPlayers()
     RuntimeSupport.StepClientIntegrity(ActivePlayers, QueueClientIntegrityChallenge)
     RuntimeSupport.StepCharacterIntegrity(ActivePlayers)

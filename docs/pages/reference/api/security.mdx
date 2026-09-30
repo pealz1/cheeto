@@ -18,6 +18,9 @@ import { Sig } from '../../../components/Reference'
 | [`RegisterPolicy`](#registerpolicy) | Both | Define or replace a named policy |
 | [`RegisterPolicyGroup`](#registerpolicygroup) | Both | Name a list of policies |
 | [`CheckIdempotency`](#checkidempotency) | Both | One-time key check for your own code |
+| [`SetZone`](#setzone), [`GetZone`](#getzone) | Server | The zone [`RequireZone`](/reference/fields#requirezone) checks |
+| [`RegisterKnownId`](#registerknownid), [`ForgetKnownId`](#forgetknownid) | Server | Ids [`RequireServerKnownId`](/reference/fields#requireserverknownid) accepts |
+| [`SetInventoryResolver`](#setinventoryresolver) | Server | The check behind [`RequireInventoryOwnership`](/reference/fields#requireinventoryownership) |
 | [`Kill`](#kill), [`Unkill`](#unkill) | Both | Disable an endpoint live |
 | [`KillPolicyGroup`](#killpolicygroup), [`UnkillPolicyGroup`](#unkillpolicygroup) | Both | Disable every endpoint in a policy group |
 | [`AbuseScores`](#abusescores) | Both | Violation counts per sender |
@@ -106,6 +109,52 @@ Network.Purchase.On(function(player, receiptId)
         return
     end
     Economy.Grant(player, receiptId)
+end)
+```
+
+## SetZone
+
+<Sig side="server">{"SetZone(player: Player, zone: string?): ()"}</Sig>
+
+Records which zone `player` is in, or clears it with `nil`. Endpoints with [`RequireZone`](/reference/fields#requirezone) drop packets from players who are not in the named zone. Call it from whatever decides zones in your game: region checks, teleports or round state.
+
+```lua copy
+Network.Security.SetZone(player, "Arena")
+```
+
+## GetZone
+
+<Sig side="server">{"GetZone(player: Player): string?"}</Sig>
+
+Returns the zone set with [`SetZone`](#setzone), or `nil`.
+
+## RegisterKnownId
+
+<Sig side="server">{"RegisterKnownId(id: number | string, player: Player?): ()"}</Sig>
+
+Marks `id` as issued by the server. Endpoints with [`RequireServerKnownId`](/reference/fields#requireserverknownid) accept a packet only if the first number or string in its payload is a registered id. With `player`, only that player may use it; without, anyone may.
+
+```lua copy
+local offerId = HttpService:GenerateGUID(false)
+Network.Security.RegisterKnownId(offerId, player)
+Network.ShowOffer.Fire(player, offerId)
+```
+
+## ForgetKnownId
+
+<Sig side="server">{"ForgetKnownId(id: number | string): ()"}</Sig>
+
+Removes an id registered with [`RegisterKnownId`](#registerknownid). Call it when the offer, trade or session the id stood for ends.
+
+## SetInventoryResolver
+
+<Sig side="server">{"SetInventoryResolver(resolver: ((player: Player, payload: { n: number, [number]: any }) -> boolean)?): ()"}</Sig>
+
+Sets the function that decides [`RequireInventoryOwnership`](/reference/fields#requireinventoryownership). It receives the sender and the decoded arguments (packed, with `n`) and returns `true` when the player owns what the payload names. Until one is set, those endpoints drop every packet and warn once. A resolver that errors counts as a rejection.
+
+```lua copy
+Network.Security.SetInventoryResolver(function(player, payload)
+    return Inventory.Has(player, payload[1])
 end)
 ```
 

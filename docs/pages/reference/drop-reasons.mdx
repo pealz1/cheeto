@@ -39,6 +39,7 @@ These discard one event. They are listed in the order the receive path checks th
 | `AuthRejected` | The [`Auth`](/reference/fields#auth) rule returned something other than `true`, errored, or is not registered |
 | `KillSwitch` | The endpoint or its policy group is [killed](/reference/api/security#kill) |
 | `PolicyRejected` | The policy denied, errored or is not registered, the policy group is not registered, or [`RequirePolicies`](/reference/options/security#requirepolicies) is on and the endpoint has no `Policy`, `PolicyGroup` or `Auth` |
+| `OutOfOrder` | A [`Sequenced`](/reference/fields#reliabilitymode) event arrived that was not newer than the last one accepted from that peer |
 | `Cooldown` | The sender used the endpoint again before its [`CooldownSeconds`](/reference/fields#cooldownseconds) had passed |
 | *custom* | A policy returned `false, "your-reason"` |
 | `ReplayDuplicate` | A predicted event reused a sequence number, or failed [`Idempotency`](/reference/fields#idempotency) |

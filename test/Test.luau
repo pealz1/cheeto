@@ -1,4 +1,5 @@
 local Format = require("../src/Modules/Format")
+local Vector3 = require("@lune/roblox").Vector3
 local fs = require("@lune/fs")
 local luau = require("@lune/luau")
 local process = require("@lune/process")
@@ -147,6 +148,7 @@ local Client: typeof(require("../Network/Client")) = MockRequire("../Network/Cli
 	Color3 = ClientEnvironment.Color3,
 	DateTime = ClientEnvironment.DateTime,
 	BrickColor = ClientEnvironment.BrickColor,
+	Vector3 = Vector3,
 })
 
 local Server: typeof(require("../Network/Server")) = MockRequire("../Network/Server.luau", {
@@ -154,6 +156,7 @@ local Server: typeof(require("../Network/Server")) = MockRequire("../Network/Ser
 	Color3 = ServerEnvironment.Color3,
 	DateTime = ServerEnvironment.DateTime,
 	BrickColor = ServerEnvironment.BrickColor,
+	Vector3 = Vector3,
 })
 
 --> Helper functions
@@ -1152,8 +1155,8 @@ FireAllAndExpectAll("Many events", 32, {
 	},
 	Unreliable = {
 		Data = { 0 },
-		Outgoing = Server.UnreliableServer,
-		Incoming = Client.UnreliableServer,
+		Outgoing = Server.ManyUnreliableAsync,
+		Incoming = Client.ManyUnreliableAsync,
 	},
 	Reference = {
 		Data = { Example },
@@ -2749,6 +2752,114 @@ RunClosure("Wire ids honour WireId, reservations, aliases and the lock", functio
 
 	local Conflict = pcall(Ids, Parse(Event("A", "WireId: 4,") .. Event("B", "WireId: 4,")))
 	assert(not Conflict, "Expected two endpoints pinned to one id to fail.")
+end)
+
+RunClosure("Latest delivers only the last send of a frame", function()
+	local Received = {}
+	local Release = Client.UnreliableServer.On(function(Value)
+		table.insert(Received, Value)
+	end)
+	for Value = 1, 5 do
+		Server.UnreliableServer.FireAll(Value)
+	end
+	Server.StepReplication()
+	task.wait(1 / 30)
+	Release()
+	assert(#Received == 1 and Received[1] == 5, `Expected only the last value, got {Format(Received)}.`)
+end)
+
+RunClosure("Unreliable events for one player share a remote call", function()
+	local Received = 0
+	local Release = Client.ManyUnreliableAsync.On(function()
+		Received += 1
+	end)
+	Server.StepReplication()
+	local Before = Server.Stats().PacketsSent.Unreliable or 0
+	for _ = 1, 10 do
+		Server.ManyUnreliableAsync.Fire(Shared.Player, 1)
+	end
+	Server.StepReplication()
+	task.wait(1 / 30)
+	Release()
+	local Calls = (Server.Stats().PacketsSent.Unreliable or 0) - Before
+	assert(Received == 10, `Expected all 10 unreliable events, got {Received}.`)
+	assert(Calls == 1, `Expected one remote call for the batch, got {Calls}.`)
+end)
+
+RunClosure("Sequenced events drop anything older than the last accepted", function()
+	local Received = {}
+	local Release = Client.SequencedServer.On(function(Value)
+		table.insert(Received, Value)
+	end)
+	Server.Capture.Clear()
+	Server.Capture.Start({ Limit = 32 })
+	Server.SequencedServer.Fire(Shared.Player, 1)
+	local Old = CloneBuffer(FindCaptureBuffer(Server.Capture.Entries(), "SequencedServer", "send", "accepted"))
+	Server.StepReplication()
+	task.wait(1 / 30)
+	Server.SequencedServer.Fire(Shared.Player, 2)
+	Server.StepReplication()
+	task.wait(1 / 30)
+	Server.Capture.Stop()
+
+	local ClientUnreliable = ClientEnvironment.Instances.CHEETO_UNRELIABLE_REMOTE.OnClientEvent
+	FireSignalSync(ClientUnreliable, Old, {})
+	task.wait(1 / 30)
+	Release()
+	assert(
+		#Received == 2 and Received[1] == 1 and Received[2] == 2,
+		`A stale sequenced packet was delivered: {Format(Received)}.`
+	)
+end)
+
+RunClosure("Payload constraints are enforced by the runtime", function()
+	local Seen = { Distance = 0, Handle = 0, Known = 0 }
+	local Releases = {
+		Server.DistanceClient.On(function()
+			Seen.Distance += 1
+		end),
+		Server.HandleClient.On(function()
+			Seen.Handle += 1
+		end),
+		Server.KnownIdClient.On(function()
+			Seen.Known += 1
+		end),
+	}
+
+	--> The test player has no character, so no position can be within range.
+	Client.DistanceClient.Fire(Vector3.new(1, 2, 3))
+
+	local Handle = Server.Handles.Register(newproxy(), Shared.Player)
+	Client.HandleClient.Fire(Handle)
+	Client.HandleClient.Fire(Handle + 1000)
+
+	Server.Security.RegisterKnownId("offer-1")
+	Client.KnownIdClient.Fire("offer-1")
+	Client.KnownIdClient.Fire("offer-2")
+
+	Client.StepReplication()
+	task.wait(1 / 30)
+	for _, Release in Releases do
+		Release()
+	end
+	assert(Seen.Distance == 0, "A position could not be checked against the sender and was still accepted.")
+	assert(Seen.Handle == 1, `Expected only the registered handle to pass, got {Seen.Handle}.`)
+	assert(Seen.Known == 1, `Expected only the registered id to pass, got {Seen.Known}.`)
+end)
+
+RunClosure("Polled events are queued only after their checks pass", function()
+	for _ in Server.ClientPollEvent.Iter() do
+	end
+	local Bad = table.clone(MergeStruct)
+	Bad.Float16Field = 0 / 0
+	Client.ClientPollEvent.Fire(Bad)
+	Client.StepReplication()
+	task.wait(1 / 30)
+	local Queued = 0
+	for _ in Server.ClientPollEvent.Iter() do
+		Queued += 1
+	end
+	assert(Queued == 0, "A payload rejected by canonicalization was still handed to Iter().")
 end)
 
 RunClosure("Fuzz malformed packets", function()

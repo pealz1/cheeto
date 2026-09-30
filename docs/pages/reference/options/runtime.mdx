@@ -21,6 +21,7 @@ import { Spec } from '../../../components/Reference'
 | [`EnableReplicationAdapters`](#enablereplicationadapters) | boolean | `true` | Yes |
 | [`EnableMicroProfiler`](#enablemicroprofiler) | boolean | `true` | Yes |
 | [`UseEmptyInstanceOptimization`](#useemptyinstanceoptimization) | boolean | `true` | Yes |
+| [`BatchUnreliable`](#batchunreliable) | boolean | `true` | Yes |
 
 ## `UsePolling`
 
@@ -103,3 +104,11 @@ Wraps decoding and flushing in `debug.profilebegin` labels (`Cheeto.Decode.Relia
 <Spec type="boolean" default={<code>true</code>} />
 
 When a packet carries no Instances, sends `nil` instead of an empty table as the second remote argument, saving a few bytes per packet.
+
+## `BatchUnreliable`
+
+<Spec type="boolean" default={<code>true</code>} />
+
+Unreliable events for the same recipient are collected during the frame and sent together in one remote call at the replication step, in batches of at most [`MaxUnreliablePacketBytes`](/reference/options/limits#maxunreliablepacketbytes). With `false`, every unreliable send is its own remote call, sent immediately.
+
+Batching cuts the number of remote calls, which also keeps high-frequency unreliable traffic under the receiver's per-call [rate limit](/reference/options/limits#ratelimitpersecond). The cost is up to one frame of added delay, the same delay reliable events already have. If a batch is lost, every event in it is lost, which is what unreliable delivery allows.

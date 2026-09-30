@@ -272,13 +272,22 @@ Types.f16 = {
 		Block:Line(`local Encoded = buffer.readu16({RECIEVE_BUFFER}, {Block:Read(HALF_FLOAT)})`)
 		Block:Declare(Variable, true)
 		Block:Line(`local MantissaExponent = Encoded % 0x8000`)
-		Block:Compare("MantissaExponent", "0b0_11111_0000000000 ", "Equals")
+		Block
+			:Compare("MantissaExponent", "0b0_11111_0000000000 ", "Equals")
 			:Compare("Encoded // 0x8000", "1", "Equals")
 			:Line(`{Variable} = -math.huge`)
 			:Branch("Default")
 			:Line(`{Variable} = math.huge`)
 			:End()
-			:Branch("Conditional", "MantissaExponent", "0b1_11111_0000000000  ", "Equals")
+			--> Exponent all ones with a non-zero mantissa is NaN. This compared
+			--> against a pattern with the sign bit set, which the masked value
+			--> can never equal, so NaN decoded as a large finite number.
+			:Branch(
+				"Conditional",
+				"MantissaExponent",
+				"0b0_11111_0000000000",
+				"Greater"
+			)
 			:Line(`{Variable} = 0 / 0`)
 			:Branch("Conditional", "MantissaExponent", "0b0_00000_0000000000  ", "Equals")
 			:Line(`{Variable} = 0`)

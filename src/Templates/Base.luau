@@ -25,6 +25,7 @@ local RecieveFrameEnd = 0
 local State = {
     SendPredictionId = nil :: number?,
     SendInterning = true,
+    RecieveSequence = 0,
     RecieveSize = 64,
     SendBuffer = SendBuffer,
     RecieveBuffer = RecieveBuffer,
@@ -169,6 +170,7 @@ local TransportError = table.freeze({
     IntegrityReceiptInvalid = "IntegrityReceiptInvalid",
     IntegrityEvaluatorFailed = "IntegrityEvaluatorFailed",
     CharacterIntegrity = "CharacterIntegrity",
+    OutOfOrder = "OutOfOrder",
 })
 
 local PriorityOrder = table.freeze({
@@ -248,6 +250,12 @@ local RuntimeState = {
     PolicyGroups = {} :: {[string]: {string}},
     Idempotency = {} :: {[any]: any},
     PlayerZones = {} :: {[any]: string},
+    KnownIds = {} :: {[any]: any},
+    UnreliableBatches = {} :: {[any]: any},
+    Latest = {} :: {[any]: {[string]: any}},
+    SendSequences = {} :: {[number]: number},
+    RecieveSequences = {} :: {[any]: {[number]: number}},
+    InventoryResolver = nil :: ((any, any) -> boolean)?,
     Handles = {} :: {[number]: any},
     ObjectToHandle = {} :: {[any]: number},
     Capabilities = {} :: {[number]: any},
@@ -1875,8 +1883,11 @@ local function ValidateCanonicalValue(Source: any, Name: string, Channel: string
             return false
         end
 
+        --> Keys are whatever the schema's maps declare: negative, fractional,
+        --> sparse or struct keys are all legitimate. They were rejected here,
+        --> which dropped every packet on endpoints with such maps. Keys are
+        --> checked like values instead (budget, depth, finiteness).
         local Count = 0
-        local MaxIndex = 0
         for Key, Child in Value do
             Count += 1
             if Count > RuntimeConfig.MaxTableKeys then
@@ -1884,25 +1895,15 @@ local function ValidateCanonicalValue(Source: any, Name: string, Channel: string
                 return false
             end
 
-            if type(Key) == "number" then
-                MaxIndex = math.max(MaxIndex, Key)
-                if Key < 1 or Key % 1 ~= 0 then
-                    DropPacket(Source, Channel, TransportError.Canonicalization, Budget.Bytes, Name)
+            if type(Key) ~= "string" and type(Key) ~= "boolean" then
+                if not ValidateCanonicalValue(Source, Name, Channel, Key, Depth + 1, Budget) then
                     return false
                 end
-            elseif type(Key) ~= "string" and type(Key) ~= "boolean" then
-                DropPacket(Source, Channel, TransportError.Canonicalization, Budget.Bytes, Name)
-                return false
             end
 
             if not ValidateCanonicalValue(Source, Name, Channel, Child, Depth + 1, Budget) then
                 return false
             end
-        end
-
-        if MaxIndex > Count * 2 and Count > 0 then
-            DropPacket(Source, Channel, TransportError.Canonicalization, Budget.Bytes, Name)
-            return false
         end
     elseif Kind == "EnumItem" then
         return true
@@ -2177,6 +2178,182 @@ do
         end
 
         return true, nil
+    end
+
+    --> The constraints that describe the PAYLOAD, checked after decoding and
+    --> before the Validate hook. The values examined are the arguments and the
+    --> fields of table arguments, one level deep.
+    local MAX_EXAMINED = 64
+
+    local function Collect(Payload: any): {any}
+        local Values = {}
+        local function Add(Value: any)
+            if #Values < MAX_EXAMINED then
+                table.insert(Values, Value)
+            end
+        end
+        for Index = 1, (Payload and Payload.n) or 0 do
+            local Value = Payload[Index]
+            Add(Value)
+            if type(Value) == "table" then
+                for _, Field in Value do
+                    Add(Field)
+                end
+            end
+        end
+        return Values
+    end
+
+    local function PositionOf(Value: any): Vector3?
+        local Kind = typeof(Value)
+        if Kind == "Vector3" then
+            return Value
+        elseif Kind == "CFrame" then
+            return Value.Position
+        elseif Kind == "Instance" then
+            local Success, Position = pcall(function()
+                if Value:IsA("BasePart") then
+                    return Value.Position
+                elseif Value:IsA("Model") then
+                    return Value:GetPivot().Position
+                elseif Value:IsA("Attachment") then
+                    return Value.WorldPosition
+                end
+                return nil
+            end)
+            return if Success then Position else nil
+        end
+        return nil
+    end
+
+    local function SenderPosition(Player: any): Vector3?
+        local Character = ReadProperty(Player, "Character")
+        if Character == nil then
+            return nil
+        end
+        local Success, Position = pcall(function()
+            local Root = Character:FindFirstChild("HumanoidRootPart")
+            return if Root then Root.Position else Character:GetPivot().Position
+        end)
+        return if Success then Position else nil
+    end
+
+    local function IsOwnedBy(Object: any, Player: any): boolean
+        local UserId = TryGetUserId(Player)
+        local Character = ReadProperty(Player, "Character")
+        local Current = Object
+        for _ = 1, 32 do
+            if Current == nil then
+                return false
+            end
+            local Owners = RuntimeState.ObjectOwners[Current]
+            if Owners ~= nil and Owners[Player] then
+                return true
+            end
+            if Character ~= nil and Current == Character then
+                return true
+            end
+            local Success, Attribute = pcall(function()
+                return Current:GetAttribute("OwnerUserId")
+            end)
+            if Success and Attribute ~= nil and Attribute == UserId then
+                return true
+            end
+            Current = ReadProperty(Current, "Parent")
+        end
+        return false
+    end
+
+    local function FirstOf(Values: {any}, Kinds: {[string]: true}): any
+        for _, Value in Values do
+            if Kinds[type(Value)] then
+                return Value
+            end
+        end
+        return nil
+    end
+
+    local NUMBER = { number = true }
+    local IDENTIFIER = { number = true, string = true }
+
+    function RuntimeSupport.RegisterKnownId(Id: any, Player: Player?)
+        RuntimeState.KnownIds[Id] = if Player ~= nil then Player else true
+    end
+
+    function RuntimeSupport.ForgetKnownId(Id: any)
+        RuntimeState.KnownIds[Id] = nil
+    end
+
+    function RuntimeSupport.SetInventoryResolver(Resolver: ((Player, any) -> boolean)?)
+        RuntimeState.InventoryResolver = Resolver
+    end
+
+    local InventoryWarned = false
+
+    function RuntimeSupport.CheckPayloadConstraints(Source: any, Constraints: any, Payload: any): boolean
+        if Source == "Server" then
+            return true
+        end
+
+        local Values = Collect(Payload)
+        local MaxDistance = Constraints.MaxDistance
+        if MaxDistance ~= nil and MaxDistance > 0 then
+            local Origin: Vector3? = nil
+            for _, Value in Values do
+                local Position = PositionOf(Value)
+                if Position ~= nil then
+                    Origin = Origin or SenderPosition(Source)
+                    if Origin == nil or (Position - Origin).Magnitude > MaxDistance then
+                        return false
+                    end
+                end
+            end
+        end
+
+        if Constraints.RequireOwnership then
+            for _, Value in Values do
+                if typeof(Value) == "Instance" and not IsOwnedBy(Value, Source) then
+                    return false
+                end
+            end
+        end
+
+        if Constraints.RequireObjectHandle then
+            local Handle = FirstOf(Values, NUMBER)
+            if Handle == nil or RuntimeSupport.ResolveHandle(Handle, Source) == nil then
+                return false
+            end
+        end
+
+        if Constraints.RequireServerKnownId then
+            local Id = FirstOf(Values, IDENTIFIER)
+            local Known = if Id ~= nil then RuntimeState.KnownIds[Id] else nil
+            if Known == nil or (Known ~= true and Known ~= Source) then
+                return false
+            end
+        end
+
+        if Constraints.RequireInventoryOwnership then
+            local Resolver = RuntimeState.InventoryResolver
+            if Resolver == nil then
+                if not InventoryWarned then
+                    InventoryWarned = true
+                    warn("[Cheeto]: RequireInventoryOwnership is declared but no resolver is set, so those packets are dropped. Call Security.SetInventoryResolver.")
+                end
+                return false
+            end
+            local Success, Owns = pcall(Resolver, Source, Payload)
+            if not Success then
+                MetricAdd("HookErrors", "InventoryResolver")
+                warn(`[Cheeto]: Inventory resolver failed: {Owns}`)
+                return false
+            end
+            if Owns ~= true then
+                return false
+            end
+        end
+
+        return true
     end
 end
 
@@ -3560,6 +3737,129 @@ function RuntimeSupport.WriteEvent(
 
     TrackEventSend(Name, Channel, Size, Target, if RuntimeState.Capture.Enabled then table.pack(...) else nil)
     return true, nil
+end
+
+--> Unreliable events queued for one peer, sent together at the next
+--> replication step. A batch never grows past MaxUnreliablePacketBytes: an
+--> event that would not fit sends the batch first.
+function RuntimeSupport.AppendUnreliable(Key: any, Source: buffer, Size: number, Instances: {any})
+    local Limit = RuntimeConfig.MaxUnreliablePacketBytes
+    local Batches = RuntimeState.UnreliableBatches
+    local Batch = Batches[Key]
+    if Batch ~= nil and Limit > 0 and Batch.Size + Size > Limit then
+        Batches[Key] = nil
+        RuntimeSupport.SendUnreliableBatch(Key, Batch)
+        Batch = nil
+    end
+
+    if Batch == nil then
+        Batch = { Buffer = buffer.create(math.max(Size, 128)), Size = 0, Instances = {} }
+        Batches[Key] = Batch
+    end
+
+    local Needed = Batch.Size + Size
+    if Needed > buffer.len(Batch.Buffer) then
+        local Grown = buffer.create(math.max(Needed, buffer.len(Batch.Buffer) * 2))
+        buffer.copy(Grown, 0, Batch.Buffer, 0, Batch.Size)
+        Batch.Buffer = Grown
+    end
+
+    buffer.copy(Batch.Buffer, Batch.Size, Source, 0, Size)
+    Batch.Size = Needed
+    table.move(Instances, 1, #Instances, #Batch.Instances + 1, Batch.Instances)
+end
+
+function RuntimeSupport.FlushUnreliableBatches()
+    local Batches = RuntimeState.UnreliableBatches
+    if next(Batches) == nil then
+        return
+    end
+
+    RuntimeState.UnreliableBatches = {}
+    for Key, Batch in Batches do
+        RuntimeSupport.SendUnreliableBatch(Key, Batch)
+    end
+end
+
+--> Latest delivery: the event in the loaded scratch buffer replaces any
+--> earlier one queued under the same key for the same recipient, and only
+--> the last one written before the replication step is sent. A replaced
+--> prediction is rolled back with the reason "Superseded".
+function RuntimeSupport.DeferLatest(Key: string, Targets: any, Except: any, Reliability: string, Priority: string, PredictionId: number?)
+    local Size = SendCursor
+    local Bytes = buffer.create(Size)
+    buffer.copy(Bytes, 0, SendBuffer, 0, Size)
+    local Entry = {
+        Bytes = Bytes,
+        Size = Size,
+        Instances = table.clone(SendInstances),
+        Reliability = Reliability,
+        Priority = Priority,
+        PredictionId = PredictionId,
+    }
+
+    local List = if type(Targets) == "table" then Targets else { Targets }
+    for _, Target in List do
+        if Target == Except then
+            continue
+        end
+
+        local ByTarget = RuntimeState.Latest[Target]
+        if ByTarget == nil then
+            ByTarget = {}
+            RuntimeState.Latest[Target] = ByTarget
+        end
+
+        local Previous = ByTarget[Key]
+        if Previous ~= nil and Previous.PredictionId ~= nil and Previous.PredictionId ~= PredictionId then
+            RollbackPrediction(Previous.PredictionId, "Superseded")
+        end
+        ByTarget[Key] = Entry
+    end
+end
+
+function RuntimeSupport.FlushLatest()
+    local Pending = RuntimeState.Latest
+    if next(Pending) == nil then
+        return
+    end
+
+    RuntimeState.Latest = {}
+    for Target, Entries in Pending do
+        for _, Entry in Entries do
+            if Entry.Reliability == "Reliable" then
+                RuntimeSupport.CopyReliable(Target, Entry.Bytes, Entry.Size, Entry.Instances, Entry.Priority)
+            else
+                RuntimeSupport.QueueUnreliable(Target, Entry.Bytes, Entry.Size, Entry.Instances, Entry.Priority)
+            end
+        end
+    end
+end
+
+--> Sequenced delivery: every send carries a 16-bit counter per endpoint,
+--> and the receiver drops anything not newer than the last it accepted
+--> from that peer.
+function RuntimeSupport.NextSequence(Key: number): number
+    local Next = ((RuntimeState.SendSequences[Key] or 0) + 1) % 65536
+    RuntimeState.SendSequences[Key] = Next
+    return Next
+end
+
+function RuntimeSupport.AcceptSequence(Source: any, Key: number, Sequence: number): boolean
+    local Peer = RuntimeSupport.PeerKey(Source)
+    local Seen = RuntimeState.RecieveSequences[Peer]
+    if Seen == nil then
+        Seen = {}
+        RuntimeState.RecieveSequences[Peer] = Seen
+    end
+
+    local Last = Seen[Key]
+    if Last ~= nil and RuntimeSupport.SequenceDelta(Sequence, Last) <= 0 then
+        return false
+    end
+
+    Seen[Key] = Sequence
+    return true
 end
 
 local function CheckRateLimit(Source: any, Key: string, Rate: number?, Burst: number?): boolean
@@ -5050,6 +5350,9 @@ local function ClearPlayerRuntimeState(Player: Player)
     RuntimeState.PlayerZones[Player] = nil
     RuntimeState.PeerCapabilities[Player] = nil
     RuntimeState.PeerHandshakesSent[Player] = nil
+    RuntimeState.UnreliableBatches[Player] = nil
+    RuntimeState.Latest[Player] = nil
+    RuntimeState.RecieveSequences[Player] = nil
     RuntimeState.ClientShield.LastReport[Player] = nil
     RuntimeState.ClientShield.Integrity.Peers[Player] = nil
     RuntimeState.ClientShield.Integrity.LastEvidence[Player] = nil

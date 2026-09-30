@@ -324,6 +324,7 @@ local function RuntimeConfigLines(): { string }
 		`\tEnablePrediction = {BooleanLiteral(Options.EnablePrediction, true)},\n`,
 		`\tEnableStateChannels = {BooleanLiteral(Options.EnableStateChannels, true)},\n`,
 		`\tUseEmptyInstanceOptimization = {BooleanLiteral(Options.UseEmptyInstanceOptimization, true)},\n`,
+		`\tBatchUnreliable = {BooleanLiteral(Options.BatchUnreliable, true)},\n`,
 		`\tUseVarints = {BooleanLiteral(Options.UseVarints, true)},\n`,
 		`\tUseBitPacking = {BooleanLiteral(Options.UseBitPacking, true)},\n`,
 		`\tUseStringDictionaries = {BooleanLiteral(Options.UseStringDictionaries, false)},\n`,
@@ -496,9 +497,6 @@ end
 local PAYLOAD_CONSTRAINTS = {
 	"MaxDistance",
 	"RequireOwnership",
-	"RequireTeam",
-	"RequireZone",
-	"RequireMatch",
 	"RequireInventoryOwnership",
 	"RequireObjectHandle",
 	"RequireServerKnownId",
@@ -619,6 +617,17 @@ local function AddAfterReceive(
 	--> does not is byte-for-byte what it was before -- this is the receive path for
 	--> every packet in the game and the context table is a per-packet allocation.
 	if Value ~= nil and HasPayloadConstraint(Value) then
+		if Context == "Server" then
+			Block:Line(
+				`if not RuntimeSupport.CheckPayloadConstraints({Source}, {ConstraintsReference(
+					Reliability,
+					Index,
+					Value
+				)}, {PayloadExpression or "nil"}) then DropPacket({Source}, "{Reliability}", "ConstraintRejected", Size) {AbortReadLine(
+					'"ConstraintRejected"'
+				)} end`
+			)
+		end
 		Block:Line(
 			`if not RunHooks("Validate", \{ Name = "{Name}", Source = {Source}, Channel = "{Reliability}", Size = Size, Constraints = {ConstraintsReference(
 				Reliability,
@@ -668,6 +677,35 @@ local function AddDecodeFailureGuard(Block: Blocks.Block, Name: string, Reliabil
 	Failure:End()
 end
 
+--> Sequence counters are kept per endpoint; the channels have separate id
+--> spaces, so unreliable endpoints are offset past the reliable ones.
+local function SequenceKey(Reliability: string, Index: number): number
+	return if Reliability == "Unreliable" then 256 + Index else Index
+end
+
+--> Sequenced events: drop anything not newer than the last one accepted.
+local function AddSequenceGuard(Block: Blocks.Block, Reliability: string, Index: number, Sequenced: boolean)
+	if not Sequenced then
+		return
+	end
+
+	local Source = SourceExpression()
+	Block:Line(
+		`if not RuntimeSupport.AcceptSequence({Source}, {SequenceKey(Reliability, Index)}, State.RecieveSequence) then DropPacket({Source}, "{Reliability}", "OutOfOrder", Size) {AbortReadLine(
+			'"OutOfOrder"'
+		)} end`
+	)
+end
+
+--> With UseColon the endpoint methods take the endpoint table first, so
+--> `Network.Damage:Fire(10)` works.
+local function ApiParameters(Parameters: string): string
+	if not Options.UseColon then
+		return Parameters
+	end
+	return if Parameters == "" then "_: any" else `_: any, {Parameters}`
+end
+
 local function WriteEventCall(
 	Name: string,
 	Reliability: string,
@@ -713,6 +751,11 @@ local function PushRuntimeApi(Target: Builder.Builder, Indent: number, ReplayRaw
 	Target.Push(`RegisterPolicy = RuntimeSupport.RegisterPolicy,`, 0, Indent + 1)
 	Target.Push(`RegisterPolicyGroup = RuntimeSupport.RegisterPolicyGroup,`, 0, Indent + 1)
 	Target.Push(`CheckIdempotency = RuntimeSupport.CheckIdempotency,`, 0, Indent + 1)
+	Target.Push(`SetZone = RuntimeSupport.SetZone,`, 0, Indent + 1)
+	Target.Push(`GetZone = RuntimeSupport.GetZone,`, 0, Indent + 1)
+	Target.Push(`RegisterKnownId = RuntimeSupport.RegisterKnownId,`, 0, Indent + 1)
+	Target.Push(`ForgetKnownId = RuntimeSupport.ForgetKnownId,`, 0, Indent + 1)
+	Target.Push(`SetInventoryResolver = RuntimeSupport.SetInventoryResolver,`, 0, Indent + 1)
 	Target.Push(`Kill = RuntimeSupport.SetKillSwitch,`, 0, Indent + 1)
 	Target.Push(`Unkill = RuntimeSupport.ClearKillSwitch,`, 0, Indent + 1)
 	Target.Push(`KillPolicyGroup = RuntimeSupport.SetPolicyGroupKillSwitch,`, 0, Indent + 1)
@@ -1105,10 +1148,16 @@ function Declarations.Event(Declaration: Parser.Event)
 	local Index, Match = EndpointId(Declaration)
 	local Queue = `Queue.{Reliability}[{Index}]`
 	local Connection = `Events.{Reliability}[{Index}]`
+	--> Latest and CoalesceKey keep only the last send per recipient per
+	--> replication step; CoalesceKey shares that slot across endpoints.
+	local LatestKey = Value.CoalesceKey
+		or (if Value.ReliabilityMode == "Latest" then Assigned[Declaration].Name else nil)
+	local Sequenced = Value.ReliabilityMode == "Sequenced"
 
 	--> Data body
 	local Types, Values, Arguments, _ = "nil", "Value: nil", "Value", nil
-	local Read, Write = Generators.Event(Value.Data, Index, Identifier)
+	local Read, Write =
+		Generators.Event(Value.Data, Index, Identifier, nil, if Sequenced then SequenceKey(Reliability, Index) else nil)
 
 	if Value.Data then
 		Types, Values, _, Arguments = Generators.LuauType(Value.Data :: Type, true)
@@ -1181,6 +1230,7 @@ function Declarations.Event(Declaration: Parser.Event)
 		AddReceiveGuards(Block, Declaration.Name, Reliability, Index, Value)
 		Block:Line(`local Success, {Arguments} = pcall({Util.GetPath(Identifier, false, Scope)})`)
 		AddDecodeFailureGuard(Block, Declaration.Name, Reliability, DecodeError)
+		AddSequenceGuard(Block, Reliability, Index, Sequenced)
 		AddAfterReceive(Block, Declaration.Name, Reliability, Index, `table.pack({Arguments})`, Value)
 
 		local Disconnect = Blocks.Function("", "", "()")
@@ -1256,22 +1306,14 @@ function Declarations.Event(Declaration: Parser.Event)
 		Block:Compare(`{Queue}.size`, QueueLimit(Value), "GreaterOrEquals")
 			:Line(`DropPacket({SourceExpression()}, "{Reliability}", "QueueFull", Size)`)
 			:Line(AbortReadLine('"QueueFull"'))
-			:Branch("Default")
-			:Line(`local Success, {Arguments} = pcall({Util.GetPath(Identifier, false, Scope)})`)
-			:Lines(
-				Blocks.Block()
-					:Compare("Success", "true", "Not")
-					:Line(`DropPacket({SourceExpression()}, "{Reliability}", "MalformedPacket", Size)`)
-					:Line(
-						`RunHooks("Error", \{ Name = "{Declaration.Name}", Source = {SourceExpression()}, Channel = "{Reliability}", Error = {DecodeError} \})`
-					)
-					:Line(AbortReadLine())
-					:End().Content,
-				0
-			)
-			:Line(`Push({Queue}, table.pack({Context == "Server" and "Player, " or ""}{Arguments}))`)
 			:End()
+		Block:Line(`local Success, {Arguments} = pcall({Util.GetPath(Identifier, false, Scope)})`)
+		AddDecodeFailureGuard(Block, Declaration.Name, Reliability, DecodeError)
+		AddSequenceGuard(Block, Reliability, Index, Sequenced)
+		--> Queued only once every check has passed. It used to be pushed before
+		--> the payload checks ran, so Iter() handed out payloads they rejected.
 		AddAfterReceive(Block, Declaration.Name, Reliability, Index, `table.pack({Arguments})`, Value)
+		Block:Line(`Push({Queue}, table.pack({Context == "Server" and "Player, " or ""}{Arguments}))`)
 
 		local IterTypes = `number, {Context == "Server" and "Player, " or ""}{Types}`
 
@@ -1307,10 +1349,12 @@ function Declarations.Event(Declaration: Parser.Event)
 	elseif Context == "Client" then
 		local Writer = Util.GetPath(Identifier, true, Scope)
 		local Priority = Value.Priority or "Gameplay"
-		local Accounting = if IsReliable then '"Queue"' else '"Admit"'
+		local Deferred = LatestKey ~= nil
+		local UsesScratch = Deferred or not IsReliable
+		local Accounting = if IsReliable and not Deferred then '"Queue"' else "nil"
 
 		local function AddClientSend(Target: Blocks.Block, PredictionId: string)
-			if not IsReliable then
+			if UsesScratch then
 				Target:Line("local Previous = Save()")
 				Target:Line("Load()")
 			end
@@ -1326,13 +1370,19 @@ function Declarations.Event(Declaration: Parser.Event)
 					Arguments
 				)}`
 			)
-			if not IsReliable then
-				Target:Line("if Written then RuntimeSupport.SendUnreliable() end")
+			if Deferred then
+				Target:Line(
+					`if Written then RuntimeSupport.DeferLatest("{LatestKey}", "Server", nil, "{Reliability}", "{Priority}", {PredictionId}) end`
+				)
+			elseif not IsReliable then
+				Target:Line(`if Written then RuntimeSupport.SendUnreliable(nil, nil, "{Priority}") end`)
+			end
+			if UsesScratch then
 				Target:Line("Load(Previous)")
 			end
 		end
 
-		local Fire = Blocks.Function(Casing.Fire, Values, "()", true)
+		local Fire = Blocks.Function(Casing.Fire, ApiParameters(Values), "()", true)
 		AddClientSend(Fire, "nil")
 		Fire:Line("if WriteError then error(WriteError, 2) end")
 		Fire:End()
@@ -1342,7 +1392,7 @@ function Declarations.Event(Declaration: Parser.Event)
 		Body.PushLines((if ShouldGeneratePrediction then Fire:Wrap("", ",").Content else Fire.Content), 0, Indent + 1)
 
 		if ShouldGeneratePrediction then
-			local Predict = Blocks.Function(Casing.Predict, Values, "number", true)
+			local Predict = Blocks.Function(Casing.Predict, ApiParameters(Values), "number", true)
 			Predict:Line(`local PredictionId = BeginPrediction("{Declaration.Name}", table.pack({Arguments}))`)
 			AddClientSend(Predict, "PredictionId")
 			--> A prediction whose packet never left must not sit in Pending
@@ -1357,38 +1407,36 @@ function Declarations.Event(Declaration: Parser.Event)
 	else
 		local Writer = Util.GetPath(Identifier, true, Scope)
 		local Priority = Value.Priority or "Gameplay"
+		local Deferred = LatestKey ~= nil
 
-		local Fire = Blocks.Function(Casing.Fire, `Player: Player, {Values}`, "()", true)
-		if IsReliable then
-			Fire:Line("Load(PlayersMap[Player], true)")
+		local function Send(Target: string): string
+			return `local Written, WriteError = {WriteEventCall(
+				Declaration.Name,
+				Reliability,
+				Target,
+				if IsReliable and not Deferred and Target ~= "nil" then '"Queue"' else "nil",
+				Priority,
+				"nil",
+				Writer,
+				Arguments
+			)}`
+		end
+
+		local Fire = Blocks.Function(Casing.Fire, ApiParameters(`Player: Player, {Values}`), "()", true)
+		if Deferred then
+			Fire:Line("Load()")
+			Fire:Line(Send("Player"))
 			Fire:Line(
-				`local Written, WriteError = {WriteEventCall(
-					Declaration.Name,
-					Reliability,
-					"Player",
-					'"Queue"',
-					Priority,
-					"nil",
-					Writer,
-					Arguments
-				)}`
+				`if Written then RuntimeSupport.DeferLatest("{LatestKey}", Player, nil, "{Reliability}", "{Priority}", nil) end`
 			)
+		elseif IsReliable then
+			Fire:Line("Load(PlayersMap[Player], true)")
+			Fire:Line(Send("Player"))
 			Fire:Line("PlayersMap[Player] = Save()")
 		else
 			Fire:Line("Load()")
-			Fire:Line(
-				`local Written, WriteError = {WriteEventCall(
-					Declaration.Name,
-					Reliability,
-					"Player",
-					'"Admit"',
-					Priority,
-					"nil",
-					Writer,
-					Arguments
-				)}`
-			)
-			Fire:Line("if Written then RuntimeSupport.SendUnreliable(Player, nil) end")
+			Fire:Line(Send("Player"))
+			Fire:Line(`if Written then RuntimeSupport.SendUnreliable(Player, nil, "{Priority}") end`)
 		end
 		Fire:Line("if WriteError then error(WriteError, 2) end")
 		Fire:End()
@@ -1396,26 +1444,19 @@ function Declarations.Event(Declaration: Parser.Event)
 		--> Broadcasts serialize once into a scratch buffer and are then copied
 		--> or sent to each recipient.
 		local function Broadcast(Name: string, Parameters: string, List: string, Except: string): Blocks.Block
-			local Function = Blocks.Function(Name, Parameters, "()", true)
+			local Function = Blocks.Function(Name, ApiParameters(Parameters), "()", true)
 			Function:Line("Load()")
-			Function:Line(
-				`local Written, WriteError = {WriteEventCall(
-					Declaration.Name,
-					Reliability,
-					"nil",
-					"nil",
-					Priority,
-					"nil",
-					Writer,
-					Arguments
-				)}`
-			)
+			Function:Line(Send("nil"))
 			Function:Line("if WriteError then error(WriteError, 2) end")
-			if IsReliable then
+			if Deferred then
+				Function:Line(
+					`if Written then RuntimeSupport.DeferLatest("{LatestKey}", {List}, {Except}, "{Reliability}", "{Priority}", nil) end`
+				)
+			elseif IsReliable then
 				Function:Line(`if Written then RuntimeSupport.BroadcastReliable({List}, {Except}, "{Priority}") end`)
 			else
 				local Targets = if List == "Players:GetPlayers()" then "nil" else List
-				Function:Line(`if Written then RuntimeSupport.SendUnreliable({Targets}, {Except}) end`)
+				Function:Line(`if Written then RuntimeSupport.SendUnreliable({Targets}, {Except}, "{Priority}") end`)
 			end
 			return Function:End()
 		end
@@ -1842,7 +1883,7 @@ function Declarations.Channel(Declaration: Parser.Channel)
 					Declaration.Name,
 					Reliability,
 					Target,
-					if IsReliable then '"Queue"' else '"Admit"',
+					if IsReliable then '"Queue"' else "nil",
 					Priority,
 					"nil",
 					Writer,
@@ -1852,7 +1893,7 @@ function Declarations.Channel(Declaration: Parser.Channel)
 			if IsReliable then
 				FunctionBlock:Line(`PlayersMap[{Target}] = Save()`)
 			else
-				FunctionBlock:Line(`if Written then RuntimeSupport.SendUnreliable({Target}, nil) end`)
+				FunctionBlock:Line(`if Written then RuntimeSupport.SendUnreliable({Target}, nil, "{Priority}") end`)
 			end
 			--> Flushes run from the replication step; raising here would stop
 			--> every other channel and player from flushing this frame.
@@ -2495,7 +2536,8 @@ function Generators.Event(
 	Data: Type?,
 	Index: number,
 	Identifier: string,
-	Function: ("Data" | "Return")?
+	Function: ("Data" | "Return")?,
+	SequenceSlot: number?
 ): ({ string }, { string })
 	local Type, Values, _, Returns = "nil", "Value: nil", nil, "nil"
 	if Data then
@@ -2513,6 +2555,12 @@ function Generators.Event(
 	end
 
 	Write:Line(`local Frame = BeginMessage({Index})`)
+	if SequenceSlot ~= nil then
+		Write:Line(`local SEQUENCE = RuntimeSupport.NextSequence({SequenceSlot})`)
+		Types.u16.Write("SEQUENCE", Write)
+		Types.u16.Read("SEQUENCE", Read)
+		Read:Line("State.RecieveSequence = SEQUENCE")
+	end
 	if Function then
 		Types.u8.Write("InvocationIdentifier", Write)
 		if Function == "Return" then

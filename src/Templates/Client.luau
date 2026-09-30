@@ -79,17 +79,45 @@ local function BindClientRemotes(
     end
 end
 
-function RuntimeSupport.SendUnreliable()
+function RuntimeSupport.CopyReliable(_Target: any, Source: buffer, Size: number, Instances: {Instance}, Priority: string)
+    if not RuntimeSupport.RecordQueuedEvent("Server", "Reliable", Size, Priority) then
+        return
+    end
+
+    local Position = Allocate(Size)
+    buffer.copy(SendBuffer, Position, Source, 0, Size)
+    table.move(Instances, 1, #Instances, #SendInstances + 1, SendInstances)
+end
+
+function RuntimeSupport.SendUnreliableBatch(_Target: any, Batch: any)
+    local Packet = buffer.create(Batch.Size)
+    buffer.copy(Packet, 0, Batch.Buffer, 0, Batch.Size)
+    Unreliable:FireServer(Packet, InstancePayload(Batch.Instances))
+    TrackSend("Unreliable", Batch.Size, nil)
+end
+
+function RuntimeSupport.QueueUnreliable(_Target: any, Source: buffer, Size: number, Instances: {Instance}, Priority: string)
+    if not RuntimeSupport.AdmitEvent("Server", "Unreliable", Size, Priority) then
+        return
+    end
+
+    if RuntimeConfig.BatchUnreliable then
+        RuntimeSupport.AppendUnreliable("Server", Source, Size, Instances)
+        return
+    end
+
+    RuntimeSupport.SendUnreliableBatch("Server", { Buffer = Source, Size = Size, Instances = Instances })
+end
+
+--> Sends the event in the loaded scratch buffer on the unreliable remote.
+function RuntimeSupport.SendUnreliable(_Targets: any?, _Except: any?, Priority: string?)
     local Size = SendCursor
     if RuntimeConfig.MaxUnreliablePacketBytes > 0 and Size > RuntimeConfig.MaxUnreliablePacketBytes then
         DropPacket("Client", "Unreliable", "MaxPacketBytes", Size)
         return
     end
 
-    local Packet = buffer.create(Size)
-    buffer.copy(Packet, 0, SendBuffer, 0, Size)
-    Unreliable:FireServer(Packet, InstancePayload(SendInstances))
-    TrackSend("Unreliable", Size, nil)
+    RuntimeSupport.QueueUnreliable("Server", SendBuffer, Size, SendInstances, Priority or "Gameplay")
 end
 
 RuntimeSupport.StartClientShield()
@@ -101,6 +129,8 @@ local function StepReplication()
     --> the life of the server -- a lost reply, or a peer that simply never
     --> answers, silently leaks a coroutine and hangs that caller forever.
     ExpireInvocations()
+    RuntimeSupport.FlushLatest()
+    RuntimeSupport.FlushUnreliableBatches()
     FlushBits()
     if SendCursor <= 0 then
         ProfileEnd()

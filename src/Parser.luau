@@ -102,6 +102,7 @@ export type Options = {
 	EnablePrediction: boolean?,
 	EnableStateChannels: boolean?,
 	UseEmptyInstanceOptimization: boolean?,
+	BatchUnreliable: boolean?,
 	ReliableFragmentBytes: number?,
 	MaxInFlightFragments: number?,
 	FragmentTimeoutSeconds: number?,
@@ -375,6 +376,7 @@ local OPTIONS: { [string]: Lexer.Types } = {
 	EnablePrediction = "Boolean",
 	EnableStateChannels = "Boolean",
 	UseEmptyInstanceOptimization = "Boolean",
+	BatchUnreliable = "Boolean",
 	ReliableFragmentBytes = "Number",
 	MaxInFlightFragments = "Number",
 	FragmentTimeoutSeconds = "Number",
@@ -1592,6 +1594,16 @@ function Parser.Event(self: Parser, Name: Token): Event
 	local Structure, FieldTokens = self:Structure(Name, EVENT)
 	if Structure.From == "Server" then
 		self:RejectServerOnlyFields(Structure, FieldTokens)
+	end
+
+	local Mode = Structure.ReliabilityMode
+	if (Mode == "Reliable" or Mode == "Unreliable") and Mode ~= Structure.Type then
+		Error.new(Error.AnalyzeIneffectiveField, self.Source, `ReliabilityMode {Mode} contradicts Type`, self.File)
+			:Primary(
+				FieldTokens.ReliabilityMode,
+				`Type is {Structure.Type}; use Sequenced or Latest, or remove this field`
+			)
+			:Emit()
 	end
 	local Call: index<index<Event, "Value">, "Call"> = Structure.Call
 	if Structure.Poll then

@@ -739,3 +739,35 @@ function GuardedFunction {
     Data: u8,
     Return: u8
 }
+
+event SequencedServer {
+    From: Server,
+    Type: Unreliable,
+    Call: ManyAsync,
+    ReliabilityMode: Sequenced,
+    Data: u8
+}
+
+event DistanceClient {
+    From: Client,
+    Type: Reliable,
+    Call: SingleAsync,
+    MaxDistance: 10,
+    Data: vector
+}
+
+event HandleClient {
+    From: Client,
+    Type: Reliable,
+    Call: SingleAsync,
+    RequireObjectHandle: true,
+    Data: u32
+}
+
+event KnownIdClient {
+    From: Client,
+    Type: Reliable,
+    Call: SingleAsync,
+    RequireServerKnownId: true,
+    Data: string
+}
