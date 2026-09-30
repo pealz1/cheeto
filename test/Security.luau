@@ -10,8 +10,8 @@ local process = require("@lune/process")
 local roblox = require("@lune/roblox")
 local stdio = require("@lune/stdio")
 
-local IYSignatures = require("../integrations/security/IYSignatures")
-local SecureReport = require("../integrations/security/SecureReport")
+local IYSignatures = require("../extras/security/IYSignatures")
+local SecureReport = require("../extras/security/SecureReport")
 
 local Instance = roblox.Instance
 

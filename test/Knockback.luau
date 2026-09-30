@@ -17,7 +17,7 @@ local Enum = roblox.Enum
 --> The module uses the Roblox globals Vector3/Enum, which are not ambient in
 --> Lune, so load it with those injected (same technique as the datatype tests).
 local Environment = { Vector3 = V3, Enum = Enum, _G = {} }
-local Bytecode = luau.compile(fs.readFile("../integrations/security/KnockbackForce.luau"), { optimizationLevel = 1 })
+local Bytecode = luau.compile(fs.readFile("../extras/security/KnockbackForce.luau"), { optimizationLevel = 1 })
 local Knockback = luau.load(Bytecode, { debugName = "KnockbackForce", environment = Environment })()
 
 local function check(condition: boolean, message: string)

@@ -7,7 +7,7 @@
 local process = require("@lune/process")
 local stdio = require("@lune/stdio")
 
-local Suspicion = require("../integrations/security/SuspicionScore")
+local Suspicion = require("../extras/security/SuspicionScore")
 
 local function Ok(message: string)
 	stdio.write(`[{stdio.color("green")}OK{stdio.color("reset")}] {message}\n`)
