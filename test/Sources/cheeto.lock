@@ -1,7 +1,7 @@
 {
 	"schemaVersion": 2,
 	"minimumSchemaVersion": 1,
-	"schemaHash": "e3701b27c3eb425d",
+	"schemaHash": "cfedde93cbae2a29",
 	"options": {
 		"securityProfile": "Development",
 		"requirePolicies": false,
@@ -54,6 +54,7 @@
 		"MapReferenceEvent": { "kind": "Event", "channel": "Reliable", "id": 24, "shape": "54a3da08c1573ce2" },
 		"MapStructEvent": { "kind": "Event", "channel": "Reliable", "id": 22, "shape": "6244d61afb1c95ec" },
 		"OptionalPrimitive": { "kind": "Event", "channel": "Unreliable", "id": 8, "shape": "f741c1b2b45ed428" },
+		"PartyState": { "kind": "Channel", "channel": "Reliable", "id": 59, "shape": "99a2f1613096e313" },
 		"PlayerEvent": { "kind": "Event", "channel": "Reliable", "id": 16, "shape": "377432bb6572597d" },
 		"PlayerState": { "kind": "Channel", "channel": "Reliable", "id": 0, "shape": "2cae0ebaf2331abc" },
 		"Reference": { "kind": "Event", "channel": "Reliable", "id": 34, "shape": "a1db2782925148c8" },

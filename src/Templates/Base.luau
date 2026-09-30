@@ -2685,7 +2685,25 @@ function RuntimeSupport.GetInterestPlayers(Scope: string, Key: any): {Player}
     elseif Scope == "Match" then
         return GetScopedPlayers(RuntimeState.Matches, Key)
     elseif Scope == "Team" then
-        return GetScopedPlayers(RuntimeState.Teams, Key)
+        --> Players added with Replication.SetTeam, plus everyone whose Roblox
+        --> Team has this name.
+        local Members = GetScopedPlayers(RuntimeState.Teams, Key)
+        local Seen = {}
+        for _, Player in Members do
+            Seen[Player] = true
+        end
+        local Success, All = pcall(function()
+            return game:GetService("Players"):GetPlayers()
+        end)
+        if Success then
+            for _, Player in All do
+                local Team = Player.Team
+                if not Seen[Player] and Team ~= nil and Team.Name == Key then
+                    table.insert(Members, Player)
+                end
+            end
+        end
+        return Members
     elseif Scope == "Cell" then
         return GetScopedPlayers(RuntimeState.StreamedCells, Key)
     elseif Scope == "Owner" then

@@ -403,6 +403,14 @@ local function EndpointId(Declaration: Parser.Declaration): (number, string)
 	return Assignment.Id, tostring(Assignment.Id)
 end
 
+local SCOPED_INTEREST = {
+	Party = true,
+	Match = true,
+	Team = true,
+	Cell = true,
+	Owner = true,
+}
+
 local function SourceExpression(): string
 	return if Context == "Server" then "Player" else '"Server"'
 end
@@ -675,6 +683,15 @@ local function AddDecodeFailureGuard(Block: Blocks.Block, Name: string, Reliabil
 	)
 	Failure:Line(AbortReadLine('"MalformedPacket"'))
 	Failure:End()
+end
+
+--> A member that points at an existing function. With UseColon it gets a
+--> wrapper that drops the endpoint table the colon call passes first.
+local function ApiMember(Name: string): string
+	if not Options.UseColon then
+		return Name
+	end
+	return `function(_, ...) return ({Name})(...) end`
 end
 
 --> Sequence counters are kept per endpoint; the channels have separate id
@@ -1264,7 +1281,7 @@ function Declarations.Event(Declaration: Parser.Event)
 				:End()
 				:End()
 
-			Listener = Blocks.Function(Casing.On, ContextArguments, `() -> ()`, true)
+			Listener = Blocks.Function(Casing.On, ApiParameters(ContextArguments), `() -> ()`, true)
 				:Line(`local ReleaseListener = RuntimeSupport.RegisterListener("{Declaration.Name}", Listener)`)
 				:Line(IsSingle and `{Connection} = Listener` or `table.insert({Connection}, Listener)`)
 				:Iterator("Index", "Arguments", Queue)
@@ -1280,7 +1297,7 @@ function Declarations.Event(Declaration: Parser.Event)
 				Block:Iterator("_", "Listener", Connection):Lines(CallListener.Content, Block.Indent):End()
 			end
 
-			Listener = Blocks.Function(Casing.On, ContextArguments, `() -> ()`, true)
+			Listener = Blocks.Function(Casing.On, ApiParameters(ContextArguments), `() -> ()`, true)
 				:Line(`local ReleaseListener = RuntimeSupport.RegisterListener("{Declaration.Name}", Listener)`)
 				:Line(IsSingle and `{Connection} = Listener` or `table.insert({Connection}, Listener)`)
 				:Lines(Disconnect.Content, 1)
@@ -1327,13 +1344,13 @@ function Declarations.Event(Declaration: Parser.Event)
 			:End()
 			:Wrap("return ", "")
 
-		local Deprecated = Blocks.Function(Casing.Next, "", `() -> ({IterTypes})`, true)
+		local Deprecated = Blocks.Function(Casing.Next, ApiParameters(""), `() -> ({IterTypes})`, true)
 			:Line(`local index = 0`)
 			:Line(`local queue = {Queue}`)
 			:Lines(Next.Content, 1)
 			:End()
 
-		local Iter = Blocks.Function(Casing.Iter, "", `() -> ({IterTypes})`, true)
+		local Iter = Blocks.Function(Casing.Iter, ApiParameters(""), `() -> ({IterTypes})`, true)
 			:Line(`local index = 0`)
 			:Line(`local queue = {Queue}`)
 			:Lines(Next.Content, 1)
@@ -1619,9 +1636,18 @@ function Declarations.Function(Declaration: Parser.Function)
 				:Line("PlayersMap[Player] = Save()")
 				:End()
 
-		local Listener = Blocks.Function(Casing.On, `Listener: (Player, {DataTypes}) -> ({ReturnTypes})`, "()", true)
+		local Listener = Blocks
+			.Function(Casing.On, ApiParameters(`Listener: (Player, {DataTypes}) -> ({ReturnTypes})`), "() -> ()", true)
 			:Lines(TrueListener.Content, 1)
 			:Lines(FlushQueue.Content, 1)
+			--> The returned function unbinds this handler, if it is still the
+			--> bound one; calls that arrive afterwards queue until the next On.
+			:Line(
+				`local Bound = {Connection}`
+			)
+			:Line("return function()")
+			:Line(`if {Connection} == Bound then {Connection} = nil end`, 2)
+			:Line("end")
 			:End()
 
 		Noop.Push(`{Casing.On} = NOOP`, 0, Indent + 1)
@@ -1687,7 +1713,8 @@ function Declarations.Function(Declaration: Parser.Function)
 		if IsFuture then
 			local Wrapper = Blocks.Function("", ""):Lines(Contents):End():Wrap("return Future.Try(", ")")
 
-			Invoke = Blocks.Function(Casing.Invoke, DataValues, `Future.Future<boolean, {ReturnTypes}>`, true)
+			Invoke =
+				Blocks.Function(Casing.Invoke, ApiParameters(DataValues), `Future.Future<boolean, {ReturnTypes}>`, true)
 			Invoke:Lines(Wrapper.Content, 1)
 		elseif IsPromise then
 			local OnCancel =
@@ -1713,10 +1740,10 @@ function Declarations.Function(Declaration: Parser.Function)
 				:End()
 				:Wrap(`return Promise.new(`, ")")
 
-			Invoke = Blocks.Function(Casing.Invoke, DataValues, nil, true)
+			Invoke = Blocks.Function(Casing.Invoke, ApiParameters(DataValues), nil, true)
 			Invoke:Lines(Promise.Content, 1)
 		else
-			Invoke = Blocks.Function(Casing.Invoke, DataValues, `({ReturnTypes})`, true)
+			Invoke = Blocks.Function(Casing.Invoke, ApiParameters(DataValues), `({ReturnTypes})`, true)
 			Invoke:Lines(Contents, 0)
 		end
 
@@ -1748,14 +1775,19 @@ function Declarations.Channel(Declaration: Parser.Channel)
 	local CanDelta = Value.Delta ~= false and GetStructFields(Data) ~= nil
 	local ReadFull, WriteFull, ReadDelta, WriteDelta = GenerateChannelSerializers(Identifier, Data, Index, CanDelta)
 	local LocalPrefix = `{Util.GetScopePrefix(nil, false, Scope)}CHANNEL_{Declaration.Name}`
-	local StateName = `{LocalPrefix}_STATE`
-	local ConnectionsName = `{LocalPrefix}_CONNECTIONS`
-	local SnapshotName = `{LocalPrefix}_SNAPSHOT`
-	local VersionName = `{LocalPrefix}_VERSION`
+	local StateName = `{LocalPrefix}.STATE`
+	local ConnectionsName = `{LocalPrefix}.CONNECTIONS`
+	local SnapshotName = `{LocalPrefix}.SNAPSHOT`
+	local VersionName = `{LocalPrefix}.VERSION`
 	local WriteFullPath = Util.GetPath(Identifier, true, Scope)
 	local ReadFullPath = Util.GetPath(Identifier, false, Scope)
 	local WriteDeltaPath = Util.GetPath(`{Identifier}_DELTA`, true, Scope)
 	local ReadDeltaPath = Util.GetPath(`{Identifier}_DELTA`, false, Scope)
+
+	--> Everything a channel keeps lives in one table: one top-level local per
+	--> channel instead of about thirty, which ran past Luau's 200-local limit
+	--> with only two channels in a server module.
+	Events.Push(`local {LocalPrefix} = \{\}`)
 
 	local Body = Builder.new()
 	Body.Push(`{Declaration.Name} = \{`, 0, Indent)
@@ -1767,11 +1799,9 @@ function Declarations.Channel(Declaration: Parser.Channel)
 			UserTypes.PushLines(ReadDelta, 1, 0)
 		end
 
-		Events.Push(
-			`local {ConnectionsName}: \{(Value: {Type}, Version: number, Patch: \{[string]: any}?) -> ()\} = \{}`
-		)
-		Events.Push(`local {SnapshotName}: {Type}? = nil`)
-		Events.Push(`local {VersionName} = 0`)
+		Events.Push(`{ConnectionsName} = \{}`)
+		Events.Push(`{SnapshotName} = nil`)
+		Events.Push(`{VersionName} = 0`)
 
 		Block = (Channel.Listening == false) and Block:Compare("Index", Match, "Equals")
 			or Block:Branch("Conditional", "Index", Match, "Equals")
@@ -1815,7 +1845,7 @@ function Declarations.Channel(Declaration: Parser.Channel)
 
 		local On = Blocks.Function(
 			"On",
-			`Listener: (Value: {Type}, Version: number, Patch: \{[string]: any}?) -> ()`,
+			ApiParameters(`Listener: (Value: {Type}, Version: number, Patch: \{[string]: any}?) -> ()`),
 			"() -> ()",
 			true
 		)
@@ -1827,8 +1857,8 @@ function Declarations.Channel(Declaration: Parser.Channel)
 			:Line("end", 2)
 			:Line("end")
 			:End()
-		local Get = Blocks.Function("Get", "", `({Type}?)`, true):Return(SnapshotName):End()
-		local Version = Blocks.Function("Version", "", "number", true):Return(VersionName):End()
+		local Get = Blocks.Function("Get", ApiParameters(""), `({Type}?)`, true):Return(SnapshotName):End()
+		local Version = Blocks.Function("Version", ApiParameters(""), "number", true):Return(VersionName):End()
 
 		Noop.PushLines({
 			"On = NOOP,\n",
@@ -1844,35 +1874,35 @@ function Declarations.Channel(Declaration: Parser.Channel)
 			UserTypes.PushLines(WriteDelta, 1, 0)
 		end
 
-		Events.Push(`local {StateName}: \{[any]: any\} = \{}`)
-		local DirtyName = `{LocalPrefix}_DIRTY`
-		local KeyframeName = `{LocalPrefix}_KEYFRAMES`
-		local LastFlushName = `{LocalPrefix}_LAST_FLUSH`
-		local LastKeyframeName = `{LocalPrefix}_LAST_KEYFRAME`
-		local MarkDirtyName = `{LocalPrefix}_MARK_DIRTY`
-		local MarkFullName = `{LocalPrefix}_MARK_FULL`
-		local FlushPlayerName = `{LocalPrefix}_FLUSH_PLAYER`
-		local FlushAllName = `{LocalPrefix}_FLUSH_ALL`
-		local FlushListName = `{LocalPrefix}_FLUSH_LIST`
-		local FlushGroupName = `{LocalPrefix}_FLUSH_GROUP`
-		local FlushZoneName = `{LocalPrefix}_FLUSH_ZONE`
-		local FlushDistanceName = `{LocalPrefix}_FLUSH_DISTANCE`
-		local SetZoneName = `{LocalPrefix}_SET_ZONE`
-		local SetDistanceName = `{LocalPrefix}_SET_DISTANCE`
-		local PatchZoneName = `{LocalPrefix}_PATCH_ZONE`
-		local PatchDistanceName = `{LocalPrefix}_PATCH_DISTANCE`
-		local SetInterestZoneName = `{LocalPrefix}_SET_INTEREST_ZONE`
-		local SetInterestPositionName = `{LocalPrefix}_SET_INTEREST_POSITION`
-		local AutoFlushName = `{LocalPrefix}_AUTO_FLUSH`
+		Events.Push(`{StateName} = \{}`)
+		local DirtyName = `{LocalPrefix}.DIRTY`
+		local KeyframeName = `{LocalPrefix}.KEYFRAMES`
+		local LastFlushName = `{LocalPrefix}.LAST_FLUSH`
+		local LastKeyframeName = `{LocalPrefix}.LAST_KEYFRAME`
+		local MarkDirtyName = `{LocalPrefix}.MARK_DIRTY`
+		local MarkFullName = `{LocalPrefix}.MARK_FULL`
+		local FlushPlayerName = `{LocalPrefix}.FLUSH_PLAYER`
+		local FlushAllName = `{LocalPrefix}.FLUSH_ALL`
+		local FlushListName = `{LocalPrefix}.FLUSH_LIST`
+		local FlushGroupName = `{LocalPrefix}.FLUSH_GROUP`
+		local FlushZoneName = `{LocalPrefix}.FLUSH_ZONE`
+		local FlushDistanceName = `{LocalPrefix}.FLUSH_DISTANCE`
+		local SetZoneName = `{LocalPrefix}.SET_ZONE`
+		local SetDistanceName = `{LocalPrefix}.SET_DISTANCE`
+		local PatchZoneName = `{LocalPrefix}.PATCH_ZONE`
+		local PatchDistanceName = `{LocalPrefix}.PATCH_DISTANCE`
+		local SetInterestZoneName = `{LocalPrefix}.SET_INTEREST_ZONE`
+		local SetInterestPositionName = `{LocalPrefix}.SET_INTEREST_POSITION`
+		local AutoFlushName = `{LocalPrefix}.AUTO_FLUSH`
 		local TickRate = Value.TickRate or 0
 		local TickInterval = if TickRate > 0 then 1 / TickRate else 0
 		local KeyframeRate = Value.KeyframeRate or 0
 		local KeyframeInterval = if KeyframeRate > 0 then 1 / KeyframeRate else 0
 		local DefaultInterestRadius = Value.InterestRadius or 0
-		Events.Push(`local {DirtyName}: \{[Player]: \{[string]: any\}\} = \{}`)
-		Events.Push(`local {KeyframeName}: \{[Player]: boolean\} = \{}`)
-		Events.Push(`local {LastFlushName} = 0`)
-		Events.Push(`local {LastKeyframeName} = 0`)
+		Events.Push(`{DirtyName} = \{}`)
+		Events.Push(`{KeyframeName} = \{}`)
+		Events.Push(`{LastFlushName} = 0`)
+		Events.Push(`{LastKeyframeName} = 0`)
 
 		local function AddSendBody(Target: string, FunctionBlock: Blocks.Block, Writer: string, Argument: string)
 			local Priority = Value.Priority or "Gameplay"
@@ -1900,14 +1930,14 @@ function Declarations.Channel(Declaration: Parser.Channel)
 			FunctionBlock:Line("if WriteError then warn(WriteError) end")
 		end
 
-		local SetPlayerName = `{LocalPrefix}_SET_PLAYER`
-		local SetAllName = `{LocalPrefix}_SET_ALL`
-		local SetListName = `{LocalPrefix}_SET_LIST`
-		local SetGroupName = `{LocalPrefix}_SET_GROUP`
-		local GetName = `{LocalPrefix}_GET`
-		local ClearName = `{LocalPrefix}_CLEAR`
+		local SetPlayerName = `{LocalPrefix}.SET_PLAYER`
+		local SetAllName = `{LocalPrefix}.SET_ALL`
+		local SetListName = `{LocalPrefix}.SET_LIST`
+		local SetGroupName = `{LocalPrefix}.SET_GROUP`
+		local GetName = `{LocalPrefix}.GET`
+		local ClearName = `{LocalPrefix}.CLEAR`
 
-		local MarkDirty = Blocks.Function(MarkDirtyName, "Player: Player, Patch: {[string]: any}", "()", false, true)
+		local MarkDirty = Blocks.Function(MarkDirtyName, "Player: Player, Patch: {[string]: any}", "()", false, false)
 			:Line(`local Dirty = {DirtyName}[Player]`)
 		MarkDirty:Compare("Dirty", "nil", "Equals"):Line("Dirty = {}"):Line(`{DirtyName}[Player] = Dirty`):End()
 		MarkDirty:Iterator("Key", "PatchValue", "Patch")
@@ -1915,44 +1945,44 @@ function Declarations.Channel(Declaration: Parser.Channel)
 			:End()
 		MarkDirty:End()
 
-		local MarkFull = Blocks.Function(MarkFullName, "Player: Player", "()", false, true)
+		local MarkFull = Blocks.Function(MarkFullName, "Player: Player", "()", false, false)
 			:Line(`{KeyframeName}[Player] = true`)
 			:Line(`{DirtyName}[Player] = nil`)
 			:End()
 
-		local SetPlayer = Blocks.Function(SetPlayerName, `Player: Player, Value: {Type}`, "()", false, true)
+		local SetPlayer = Blocks.Function(SetPlayerName, `Player: Player, Value: {Type}`, "()", false, false)
 			:Line("if not IsPlayerActive(Player) then return end")
 			:Line(`{StateName}[Player] = Value`)
 			:Line(`{MarkFullName}(Player)`)
 			:End()
 
-		local SetAll = Blocks.Function(SetAllName, `Value: {Type}`, "()", false, true)
+		local SetAll = Blocks.Function(SetAllName, `Value: {Type}`, "()", false, false)
 			:Line(`{StateName}.__global = Value`)
 			:Iterator("_", "Player", "Players:GetPlayers()")
 			:Line(`{SetPlayerName}(Player, Value)`)
 			:End()
 			:End()
 
-		local SetList = Blocks.Function(SetListName, `List: \{Player\}, Value: {Type}`, "()", false, true)
+		local SetList = Blocks.Function(SetListName, `List: \{Player\}, Value: {Type}`, "()", false, false)
 			:Iterator("_", "Player", "List")
 			:Line(`{SetPlayerName}(Player, Value)`)
 			:End()
 			:End()
 
-		local SetGroup = Blocks.Function(SetGroupName, `GroupName: string, Value: {Type}`, "()", false, true)
+		local SetGroup = Blocks.Function(SetGroupName, `GroupName: string, Value: {Type}`, "()", false, false)
 			:Iterator("_", "Player", "GetGroupPlayers(GroupName)")
 			:Line(`{SetPlayerName}(Player, Value)`)
 			:End()
 			:End()
 
-		local SetZone = Blocks.Function(SetZoneName, `ZoneName: string, Value: {Type}`, "()", false, true)
+		local SetZone = Blocks.Function(SetZoneName, `ZoneName: string, Value: {Type}`, "()", false, false)
 			:Iterator("_", "Player", `GetInterestZonePlayers("{Declaration.Name}", ZoneName)`)
 			:Line(`{SetPlayerName}(Player, Value)`)
 			:End()
 			:End()
 
 		local SetDistance =
-			Blocks.Function(SetDistanceName, `Origin: Vector3, Value: {Type}, Radius: number?`, "()", false, true)
+			Blocks.Function(SetDistanceName, `Origin: Vector3, Value: {Type}, Radius: number?`, "()", false, false)
 				:Line(`local EffectiveRadius = Radius or {NumberLiteral(DefaultInterestRadius, 0)}`)
 				:Iterator("_", "Player", `GetInterestDistancePlayers("{Declaration.Name}", Origin, EffectiveRadius)`)
 				:Line(`{SetPlayerName}(Player, Value)`)
@@ -1960,12 +1990,12 @@ function Declarations.Channel(Declaration: Parser.Channel)
 				:End()
 
 		local SetInterestZone =
-			Blocks.Function(SetInterestZoneName, "Player: Player, ZoneName: string?", "()", false, true)
+			Blocks.Function(SetInterestZoneName, "Player: Player, ZoneName: string?", "()", false, false)
 				:Line(`SetInterestZone("{Declaration.Name}", Player, ZoneName)`)
 				:End()
 
 		local SetInterestPosition =
-			Blocks.Function(SetInterestPositionName, "Player: Player, Position: Vector3?", "()", false, true)
+			Blocks.Function(SetInterestPositionName, "Player: Player, Position: Vector3?", "()", false, false)
 				:Line(`SetInterestPosition("{Declaration.Name}", Player, Position)`)
 				:End()
 
@@ -1980,29 +2010,48 @@ function Declarations.Channel(Declaration: Parser.Channel)
 		Events.PushLines(SetInterestZone.Content)
 		Events.PushLines(SetInterestPosition.Content)
 
-		local PrimarySet = if Value.Interest == "Zone"
-			then SetZoneName
+		--> Party, Match, Team, Cell and Owner resolve their recipients through
+		--> the replication registry (Replication.SetParty and the rest; Team
+		--> also follows each player's Roblox Team).
+		local ScopeKind = if SCOPED_INTEREST[Value.Interest or ""]
+			then Value.Interest
+			elseif SCOPED_INTEREST[Value.Scope or ""] then Value.Scope
+			else nil
+		local SetScopeName = `{LocalPrefix}.SET_SCOPE`
+		local PatchScopeName = `{LocalPrefix}.PATCH_SCOPE`
+		local FlushScopeName = `{LocalPrefix}.FLUSH_SCOPE`
+		local SetScope = Blocks.Function(SetScopeName, `Kind: string, Key: any, Value: {Type}`, "()", false, false)
+			:Iterator("_", "Player", "RuntimeSupport.GetInterestPlayers(Kind, Key)")
+			:Line(`{SetPlayerName}(Player, Value)`)
+			:End()
+			:End()
+		Events.PushLines(SetScope.Content)
+
+		local PrimarySet = if ScopeKind
+			then `function(Key: any, Value: {Type}) {SetScopeName}("{ScopeKind}", Key, Value) end`
+			elseif Value.Interest == "Zone" or Value.Scope == "Zone" then SetZoneName
 			elseif Value.Interest == "Distance" then SetDistanceName
 			elseif Value.Scope == "Global" then SetAllName
 			elseif Value.Scope == "Group" then SetGroupName
 			else SetPlayerName
-		Body.Push(`Set = {PrimarySet},`, 0, Indent + 1)
-		Body.Push(`SetPlayer = {SetPlayerName},`, 0, Indent + 1)
-		Body.Push(`SetAll = {SetAllName},`, 0, Indent + 1)
-		Body.Push(`SetList = {SetListName},`, 0, Indent + 1)
-		Body.Push(`SetGroup = {SetGroupName},`, 0, Indent + 1)
-		Body.Push(`SetZone = {SetZoneName},`, 0, Indent + 1)
-		Body.Push(`SetDistance = {SetDistanceName},`, 0, Indent + 1)
-		Body.Push(`SetInterestZone = {SetInterestZoneName},`, 0, Indent + 1)
-		Body.Push(`SetInterestPosition = {SetInterestPositionName},`, 0, Indent + 1)
+		Body.Push(`Set = {ApiMember(PrimarySet)},`, 0, Indent + 1)
+		Body.Push(`SetScope = {ApiMember(SetScopeName)},`, 0, Indent + 1)
+		Body.Push(`SetPlayer = {ApiMember(SetPlayerName)},`, 0, Indent + 1)
+		Body.Push(`SetAll = {ApiMember(SetAllName)},`, 0, Indent + 1)
+		Body.Push(`SetList = {ApiMember(SetListName)},`, 0, Indent + 1)
+		Body.Push(`SetGroup = {ApiMember(SetGroupName)},`, 0, Indent + 1)
+		Body.Push(`SetZone = {ApiMember(SetZoneName)},`, 0, Indent + 1)
+		Body.Push(`SetDistance = {ApiMember(SetDistanceName)},`, 0, Indent + 1)
+		Body.Push(`SetInterestZone = {ApiMember(SetInterestZoneName)},`, 0, Indent + 1)
+		Body.Push(`SetInterestPosition = {ApiMember(SetInterestPositionName)},`, 0, Indent + 1)
 
-		local PatchPlayerName = `{LocalPrefix}_PATCH_PLAYER`
-		local PatchAllName = `{LocalPrefix}_PATCH_ALL`
-		local PatchListName = `{LocalPrefix}_PATCH_LIST`
-		local PatchGroupName = `{LocalPrefix}_PATCH_GROUP`
+		local PatchPlayerName = `{LocalPrefix}.PATCH_PLAYER`
+		local PatchAllName = `{LocalPrefix}.PATCH_ALL`
+		local PatchListName = `{LocalPrefix}.PATCH_LIST`
+		local PatchGroupName = `{LocalPrefix}.PATCH_GROUP`
 
 		local PatchPlayer =
-			Blocks.Function(PatchPlayerName, "Player: Player, Patch: {[string]: any}", "()", false, true)
+			Blocks.Function(PatchPlayerName, "Player: Player, Patch: {[string]: any}", "()", false, false)
 				:Line("if not IsPlayerActive(Player) then return end")
 				:Line(`local Value = table.clone({StateName}[Player] or \{})`)
 				:Iterator("Key", "PatchValue", "Patch")
@@ -2012,26 +2061,26 @@ function Declarations.Channel(Declaration: Parser.Channel)
 				:Line(if WriteDelta then `{MarkDirtyName}(Player, Patch)` else `{MarkFullName}(Player)`)
 				:End()
 
-		local PatchAll = Blocks.Function(PatchAllName, "Patch: {[string]: any}", "()", false, true)
+		local PatchAll = Blocks.Function(PatchAllName, "Patch: {[string]: any}", "()", false, false)
 			:Iterator("_", "Player", "Players:GetPlayers()")
 			:Line(`{PatchPlayerName}(Player, Patch)`)
 			:End()
 			:End()
 
-		local PatchList = Blocks.Function(PatchListName, "List: {Player}, Patch: {[string]: any}", "()", false, true)
+		local PatchList = Blocks.Function(PatchListName, "List: {Player}, Patch: {[string]: any}", "()", false, false)
 			:Iterator("_", "Player", "List")
 			:Line(`{PatchPlayerName}(Player, Patch)`)
 			:End()
 			:End()
 
 		local PatchGroup =
-			Blocks.Function(PatchGroupName, "GroupName: string, Patch: {[string]: any}", "()", false, true)
+			Blocks.Function(PatchGroupName, "GroupName: string, Patch: {[string]: any}", "()", false, false)
 				:Iterator("_", "Player", "GetGroupPlayers(GroupName)")
 				:Line(`{PatchPlayerName}(Player, Patch)`)
 				:End()
 				:End()
 
-		local PatchZone = Blocks.Function(PatchZoneName, "ZoneName: string, Patch: {[string]: any}", "()", false, true)
+		local PatchZone = Blocks.Function(PatchZoneName, "ZoneName: string, Patch: {[string]: any}", "()", false, false)
 			:Iterator("_", "Player", `GetInterestZonePlayers("{Declaration.Name}", ZoneName)`)
 			:Line(`{PatchPlayerName}(Player, Patch)`)
 			:End()
@@ -2042,7 +2091,7 @@ function Declarations.Channel(Declaration: Parser.Channel)
 			"Origin: Vector3, Patch: {[string]: any}, Radius: number?",
 			"()",
 			false,
-			true
+			false
 		)
 			:Line(`local EffectiveRadius = Radius or {NumberLiteral(DefaultInterestRadius, 0)}`)
 			:Iterator("_", "Player", `GetInterestDistancePlayers("{Declaration.Name}", Origin, EffectiveRadius)`)
@@ -2057,21 +2106,31 @@ function Declarations.Channel(Declaration: Parser.Channel)
 		Events.PushLines(PatchZone.Content)
 		Events.PushLines(PatchDistance.Content)
 
-		local PrimaryPatch = if Value.Interest == "Zone"
-			then PatchZoneName
+		local PatchScope =
+			Blocks.Function(PatchScopeName, "Kind: string, Key: any, Patch: {[string]: any}", "()", false, false)
+				:Iterator("_", "Player", "RuntimeSupport.GetInterestPlayers(Kind, Key)")
+				:Line(`{PatchPlayerName}(Player, Patch)`)
+				:End()
+				:End()
+		Events.PushLines(PatchScope.Content)
+
+		local PrimaryPatch = if ScopeKind
+			then `function(Key: any, Patch: \{[string]: any\}) {PatchScopeName}("{ScopeKind}", Key, Patch) end`
+			elseif Value.Interest == "Zone" or Value.Scope == "Zone" then PatchZoneName
 			elseif Value.Interest == "Distance" then PatchDistanceName
 			elseif Value.Scope == "Global" then PatchAllName
 			elseif Value.Scope == "Group" then PatchGroupName
 			else PatchPlayerName
-		Body.Push(`Patch = {PrimaryPatch},`, 0, Indent + 1)
-		Body.Push(`PatchPlayer = {PatchPlayerName},`, 0, Indent + 1)
-		Body.Push(`PatchAll = {PatchAllName},`, 0, Indent + 1)
-		Body.Push(`PatchList = {PatchListName},`, 0, Indent + 1)
-		Body.Push(`PatchGroup = {PatchGroupName},`, 0, Indent + 1)
-		Body.Push(`PatchZone = {PatchZoneName},`, 0, Indent + 1)
-		Body.Push(`PatchDistance = {PatchDistanceName},`, 0, Indent + 1)
+		Body.Push(`Patch = {ApiMember(PrimaryPatch)},`, 0, Indent + 1)
+		Body.Push(`PatchScope = {ApiMember(PatchScopeName)},`, 0, Indent + 1)
+		Body.Push(`PatchPlayer = {ApiMember(PatchPlayerName)},`, 0, Indent + 1)
+		Body.Push(`PatchAll = {ApiMember(PatchAllName)},`, 0, Indent + 1)
+		Body.Push(`PatchList = {ApiMember(PatchListName)},`, 0, Indent + 1)
+		Body.Push(`PatchGroup = {ApiMember(PatchGroupName)},`, 0, Indent + 1)
+		Body.Push(`PatchZone = {ApiMember(PatchZoneName)},`, 0, Indent + 1)
+		Body.Push(`PatchDistance = {ApiMember(PatchDistanceName)},`, 0, Indent + 1)
 
-		local FlushPlayer = Blocks.Function(FlushPlayerName, "Player: Player, ForceFull: boolean?", "()", false, true)
+		local FlushPlayer = Blocks.Function(FlushPlayerName, "Player: Player, ForceFull: boolean?", "()", false, false)
 			:Line("if not IsPlayerActive(Player) then return end")
 			:Line(`local Value = {StateName}[Player]`)
 			:Line("if Value == nil then return end")
@@ -2095,22 +2154,22 @@ function Declarations.Channel(Declaration: Parser.Channel)
 		end
 		FlushPlayer:End()
 
-		local FlushAll = Blocks.Function(FlushAllName, "ForceFull: boolean?", "()", false, true)
+		local FlushAll = Blocks.Function(FlushAllName, "ForceFull: boolean?", "()", false, false)
 			:Iterator("_", "Player", "Players:GetPlayers()")
 			:Line(`{FlushPlayerName}(Player, ForceFull)`)
 			:End()
 			:End()
-		local FlushList = Blocks.Function(FlushListName, "List: {Player}, ForceFull: boolean?", "()", false, true)
+		local FlushList = Blocks.Function(FlushListName, "List: {Player}, ForceFull: boolean?", "()", false, false)
 			:Iterator("_", "Player", "List")
 			:Line(`{FlushPlayerName}(Player, ForceFull)`)
 			:End()
 			:End()
-		local FlushGroup = Blocks.Function(FlushGroupName, "GroupName: string, ForceFull: boolean?", "()", false, true)
+		local FlushGroup = Blocks.Function(FlushGroupName, "GroupName: string, ForceFull: boolean?", "()", false, false)
 			:Iterator("_", "Player", "GetGroupPlayers(GroupName)")
 			:Line(`{FlushPlayerName}(Player, ForceFull)`)
 			:End()
 			:End()
-		local FlushZone = Blocks.Function(FlushZoneName, "ZoneName: string, ForceFull: boolean?", "()", false, true)
+		local FlushZone = Blocks.Function(FlushZoneName, "ZoneName: string, ForceFull: boolean?", "()", false, false)
 			:Iterator("_", "Player", `GetInterestZonePlayers("{Declaration.Name}", ZoneName)`)
 			:Line(`{FlushPlayerName}(Player, ForceFull)`)
 			:End()
@@ -2120,7 +2179,7 @@ function Declarations.Channel(Declaration: Parser.Channel)
 			"Origin: Vector3, Radius: number?, ForceFull: boolean?",
 			"()",
 			false,
-			true
+			false
 		)
 			:Line(`local EffectiveRadius = Radius or {NumberLiteral(DefaultInterestRadius, 0)}`)
 			:Iterator("_", "Player", `GetInterestDistancePlayers("{Declaration.Name}", Origin, EffectiveRadius)`)
@@ -2128,7 +2187,7 @@ function Declarations.Channel(Declaration: Parser.Channel)
 			:End()
 			:End()
 
-		local AutoFlush = Blocks.Function(AutoFlushName, "", "()", false, true):Line("local Now = os.clock()")
+		local AutoFlush = Blocks.Function(AutoFlushName, "", "()", false, false):Line("local Now = os.clock()")
 		if TickInterval > 0 then
 			AutoFlush:Compare(`Now - {LastFlushName}`, tostring(TickInterval), "Less"):Line("return"):End()
 		end
@@ -2152,10 +2211,10 @@ function Declarations.Channel(Declaration: Parser.Channel)
 		Events.PushLines(AutoFlush.Content)
 		Events.Push(`RegisterStateFlusher({AutoFlushName})`)
 
-		local Get = Blocks.Function(GetName, "Player: Player?", `({Type}?)`, false, true)
+		local Get = Blocks.Function(GetName, "Player: Player?", `({Type}?)`, false, false)
 			:Return(`if Player then {StateName}[Player] else {StateName}.__global`)
 			:End()
-		local Clear = Blocks.Function(ClearName, "Player: Player?", "()", false, true)
+		local Clear = Blocks.Function(ClearName, "Player: Player?", "()", false, false)
 		Clear:Compare("Player", "nil", "Not")
 			:Line(`{StateName}[Player] = nil`)
 			:Line(`{DirtyName}[Player] = nil`)
@@ -2168,18 +2227,30 @@ function Declarations.Channel(Declaration: Parser.Channel)
 		Clear:End()
 		Events.PushLines(Get.Content)
 		Events.PushLines(Clear.Content)
-		Body.Push(`Flush = {FlushAllName},`, 0, Indent + 1)
-		Body.Push(`FlushPlayer = {FlushPlayerName},`, 0, Indent + 1)
-		Body.Push(`FlushAll = {FlushAllName},`, 0, Indent + 1)
-		Body.Push(`FlushList = {FlushListName},`, 0, Indent + 1)
-		Body.Push(`FlushGroup = {FlushGroupName},`, 0, Indent + 1)
-		Body.Push(`FlushZone = {FlushZoneName},`, 0, Indent + 1)
-		Body.Push(`FlushDistance = {FlushDistanceName},`, 0, Indent + 1)
-		Body.Push(`Get = {GetName},`, 0, Indent + 1)
-		Body.Push(`Clear = {ClearName}`, 0, Indent + 1)
+
+		local FlushScope =
+			Blocks.Function(FlushScopeName, "Kind: string, Key: any, ForceFull: boolean?", "()", false, false)
+				:Iterator("_", "Player", "RuntimeSupport.GetInterestPlayers(Kind, Key)")
+				:Line(`{FlushPlayerName}(Player, ForceFull)`)
+				:End()
+				:End()
+		Events.PushLines(FlushScope.Content)
+		Body.Push(`FlushScope = {ApiMember(FlushScopeName)},`, 0, Indent + 1)
+		Body.Push(`Flush = {ApiMember(FlushAllName)},`, 0, Indent + 1)
+		Body.Push(`FlushPlayer = {ApiMember(FlushPlayerName)},`, 0, Indent + 1)
+		Body.Push(`FlushAll = {ApiMember(FlushAllName)},`, 0, Indent + 1)
+		Body.Push(`FlushList = {ApiMember(FlushListName)},`, 0, Indent + 1)
+		Body.Push(`FlushGroup = {ApiMember(FlushGroupName)},`, 0, Indent + 1)
+		Body.Push(`FlushZone = {ApiMember(FlushZoneName)},`, 0, Indent + 1)
+		Body.Push(`FlushDistance = {ApiMember(FlushDistanceName)},`, 0, Indent + 1)
+		Body.Push(`Get = {ApiMember(GetName)},`, 0, Indent + 1)
+		Body.Push(`Clear = {ApiMember(ClearName)}`, 0, Indent + 1)
 
 		Noop.PushLines({
 			"Set = NOOP,\n",
+			"SetScope = NOOP,\n",
+			"PatchScope = NOOP,\n",
+			"FlushScope = NOOP,\n",
 			"SetPlayer = NOOP,\n",
 			"SetAll = NOOP,\n",
 			"SetList = NOOP,\n",
@@ -2469,8 +2540,8 @@ function Generators.Export(Declaration: Type)
 	local Name = Declaration.Name
 	local _, Values, Export, Returns = Generators.LuauType(Declaration)
 
-	local Read = Blocks.Function(Casing.Read, "Buffer: buffer", `({Export})`, true)
-	local Write = Blocks.Function(Casing.Write, `{Values}`, `(buffer)`, true)
+	local Read = Blocks.Function(Casing.Read, ApiParameters("Buffer: buffer"), `({Export})`, true)
+	local Write = Blocks.Function(Casing.Write, ApiParameters(`{Values}`), `(buffer)`, true)
 	Read:DisableOperationOptimisations()
 	Write:DisableOperationOptimisations()
 

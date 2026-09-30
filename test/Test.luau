@@ -2862,6 +2862,53 @@ RunClosure("Polled events are queued only after their checks pass", function()
 	assert(Queued == 0, "A payload rejected by canonicalization was still handed to Iter().")
 end)
 
+RunClosure("Party channels reach the party's members", function()
+	local Snapshot
+	local Release = Client.PartyState.On(function(Value)
+		Snapshot = Value
+	end)
+	Server.Replication.SetParty("red", Shared.Player, true)
+	Server.PartyState.Set("red", { Health = 7, Stamina = 8, Equipped = "Axe" })
+	Server.PartyState.Flush()
+	Server.StepReplication()
+	task.wait(1 / 30)
+	Release()
+	Server.Replication.SetParty("red", Shared.Player, false)
+	assert(Snapshot and Snapshot.Health == 7, "A party-scoped channel did not reach the party member.")
+end)
+
+RunClosure("Large schemas and UseColon compile and load", function()
+	local Lines = {
+		'option ClientOutput = "../../Network/CapacityClient.luau"',
+		'option ServerOutput = "../../Network/CapacityServer.luau"',
+		"option UseColon = true",
+		"struct Shape { A: u8, B: u16, C: string }",
+	}
+	for Index = 1, 12 do
+		table.insert(Lines, `channel Channel{Index} \{ Interest: Team, Data: Shape \}`)
+	end
+	for Index = 1, 80 do
+		table.insert(Lines, `event Event{Index} \{ From: Client, Type: Reliable, Call: ManyAsync, Data: Shape \}`)
+	end
+	for Index = 1, 30 do
+		table.insert(Lines, `function Function{Index} \{ Yield: Coroutine, Data: u8, Return: Shape \}`)
+	end
+	fs.writeFile("./Sources/CapacityGenerated.cheeto", table.concat(Lines, "\n"))
+	local Result = process.exec(
+		"lune",
+		{ "run", Compiler, "../../test/Sources/CapacityGenerated", "--", "--yes" },
+		{ cwd = "../src/CLI" }
+	)
+	fs.removeFile("./Sources/CapacityGenerated.cheeto")
+	assert(Result.ok, `Capacity schema failed to compile:\n{Result.stderr}`)
+	for _, Name in { "CapacityServer", "CapacityClient" } do
+		local Source = fs.readFile(`../Network/{Name}.luau`)
+		local Compiled, Error = pcall(luau.compile, Source)
+		assert(Compiled, `{Name} does not load: {Error}`)
+		assert(string.find(Source, "_: any", 1, true), `{Name} ignored UseColon.`)
+	end
+end)
+
 RunClosure("Fuzz malformed packets", function()
 	Server.Configure({
 		MaxReliablePacketBytes = 256,

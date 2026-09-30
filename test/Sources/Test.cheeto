@@ -771,3 +771,10 @@ event KnownIdClient {
     RequireServerKnownId: true,
     Data: string
 }
+
+--> A second channel, which on its own used to push the server module past
+--> Luau's 200-local limit.
+channel PartyState {
+    Interest: Party,
+    Data: PlayerStateData
+}
