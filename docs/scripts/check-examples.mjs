@@ -37,7 +37,7 @@ for (const file of mdxFiles(pagesDir)) {
   for (const block of blocks(readFileSync(file, 'utf8'))) {
     if (block.meta.includes('nocheck') || !declaration.test(block.code) || /^\s*import\s/m.test(block.code)) continue
     const hasOutput = /option\s+ClientOutput/.test(block.code)
-    const options = block.code.match(/^option .*$/gm) ?? []
+    const options = (block.code.match(/^option .*$/gm) ?? []).filter((line) => !/TypesOutput/.test(line))
     const body = block.code.replace(/^option .*$/gm, '')
     const source = `${hasOutput ? '' : header}${options.join('\n')}\n${body}`
     const schema = join(work, `example${checked}.cheeto`)
