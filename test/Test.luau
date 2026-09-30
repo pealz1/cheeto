@@ -3047,6 +3047,30 @@ RunClosure("A reply the client drops fails its invoke immediately", function()
 	assert(type(Fine) == "table" and Fine.key4 == 4, "Expected a reply within budget to arrive.")
 end)
 
+RunClosure("An idempotent call is answered on its own invocation id", function()
+	Server.IdempotentFunction.On(function(_, Value)
+		return Value + 1
+	end)
+	--> Another call first, so this function's first invocation id and its
+	--> first sequence differ.
+	Server.BigReplyFunction.On(function()
+		return {}
+	end)
+	Client.BigReplyFunction.Invoke(1)
+	Client.Configure({ InvokeTimeoutSeconds = 2 })
+	local OutOfOrderBefore = Server.Stats().DroppedPackets.OutOfOrder or 0
+	for Value = 1, 20 do
+		local Ok, Result = pcall(Client.IdempotentFunction.Invoke, Value)
+		assert(Ok, `Idempotent call {Value} failed: {tostring(Result)}`)
+		assert(Result == Value + 1, `Idempotent call {Value} got {tostring(Result)}.`)
+	end
+	Client.Configure({ InvokeTimeoutSeconds = 0 })
+	assert(
+		(Server.Stats().DroppedPackets.OutOfOrder or 0) == OutOfOrderBefore,
+		"The server read an idempotent call's sequence out of order."
+	)
+end)
+
 RunClosure("Fuzz malformed packets", function()
 	Server.Configure({
 		MaxReliablePacketBytes = 256,

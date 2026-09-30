@@ -813,3 +813,12 @@ function BigReplyFunction {
     Data: u8,
     Return: unknown
 }
+
+--> A sequenced call: the sequence rides next to the invocation id, and the
+--> server must not read one for the other.
+function IdempotentFunction {
+    Yield: Coroutine,
+    Idempotency: true,
+    Data: u8,
+    Return: u8
+}

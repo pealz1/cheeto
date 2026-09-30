@@ -2657,6 +2657,11 @@ function Generators.Event(
 	end
 
 	Write:Line(`local Frame = BeginMessage({Index})`)
+	--> The invocation id goes first: the receive branch reads it before this
+	--> reader runs, so a sequence written ahead of it was read as the id.
+	if Function then
+		Types.u8.Write("InvocationIdentifier", Write)
+	end
 	if SequenceSlot ~= nil then
 		Write:Line(`local SEQUENCE = RuntimeSupport.NextSequence({SequenceSlot})`)
 		Types.u16.Write("SEQUENCE", Write)
@@ -2664,7 +2669,6 @@ function Generators.Event(
 		Read:Line("State.RecieveSequence = SEQUENCE")
 	end
 	if Function then
-		Types.u8.Write("InvocationIdentifier", Write)
 		if Function == "Return" then
 			Types.u8.Write("1", Write)
 			Types.u8.Read("Success", Read)

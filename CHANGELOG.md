@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [1.1.2] - 2026-09-30
+
+### Fixed
+
+- A function with `Idempotency` wrote its sequence ahead of the invocation id, while the server read the id first. The server answered on the wrong id, so the call timed out whenever its id and sequence differed (for example, a module's first call while another function's call was pending), and the sequence it checked was scrambled. The id is now written first. Regenerate both modules together.
+
 ## [1.1.1] - 2026-09-30
 
 ### Fixed

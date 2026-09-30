@@ -1,7 +1,7 @@
 {
 	"schemaVersion": 2,
 	"minimumSchemaVersion": 1,
-	"schemaHash": "3da54c2bfad27f05",
+	"schemaHash": "72fec735edcef69b",
 	"options": {
 		"securityProfile": "Development",
 		"requirePolicies": false,
@@ -42,6 +42,7 @@
 		"HoneypotClient": { "kind": "Event", "channel": "Reliable", "id": 44, "shape": "0a044ccace725688" },
 		"IdempotentClient": { "kind": "Event", "channel": "Reliable", "id": 45, "shape": "69e0cfe483e8e266" },
 		"IdempotentFire": { "kind": "Event", "channel": "Reliable", "id": 62, "shape": "d87a03cc2b50e96e" },
+		"IdempotentFunction": { "kind": "Function", "channel": "Reliable", "id": 64, "shape": "b92f635129740e9f" },
 		"Indexers.TestEvent": { "kind": "Event", "channel": "Unreliable", "id": 0, "shape": "39d8c35cae365432" },
 		"InstanceAny": { "kind": "Event", "channel": "Reliable", "id": 31, "shape": "f77c2375df5b4ea7" },
 		"InstanceOfType": { "kind": "Event", "channel": "Reliable", "id": 32, "shape": "5abf150b54ff6cd1" },
