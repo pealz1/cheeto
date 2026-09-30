@@ -343,7 +343,7 @@ local function GenerateFile(File: StringValue, Directory: Instance)
 
 	if not RequestScriptPermissions() then
 		ShowError("File generation failed, plugin doesn't have script inject permissions.")
-		warn("[CHEETO]: File generation failed, plugin doesn't have script inject permissions.")
+		warn("[Cheeto]: File generation failed, plugin doesn't have script inject permissions.")
 		SetObservabilityText(`Generation failed for {File.Name}\n\nThe plugin does not have script inject permissions.`)
 		return
 	end

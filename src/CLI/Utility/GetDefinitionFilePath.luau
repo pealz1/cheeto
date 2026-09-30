@@ -7,7 +7,7 @@ local fs = require("@lune/fs")
 
 ---- Settings ----
 
-local EXTENSIONS = { "", ".txt", ".cheeto", ".cheeto" }
+local EXTENSIONS = { "", ".cheeto", ".txt" }
 
 return function(Path: string): string
 	local Directory, Filename = PathParser.Components(Path)

@@ -107,13 +107,13 @@ function Utility.Compile(Path: string, Options: CompileOptions)
 		Utility.Strict(Path, Options)
 	end
 	if (FileOptions.ProtocolVersion or 2) < 2 then
-		error("This Cheeto fork is v2-only; ProtocolVersion below 2 is not supported.")
+		error("Cheeto only speaks protocol v2; ProtocolVersion below 2 is not supported.")
 	end
 	if FileOptions.ProtocolMode ~= nil then
-		error("ProtocolMode is retired in this v2-only fork; omit it instead of using Legacy or Negotiated.")
+		error("ProtocolMode was removed; omit it instead of using Legacy or Negotiated.")
 	end
 	if FileOptions.AcceptProtocolVersion1 ~= nil then
-		error("AcceptProtocolVersion1 is retired in this v2-only fork.")
+		error("AcceptProtocolVersion1 was removed; protocol v1 is not supported.")
 	end
 
 	local ClientOutputPath = FileOptions.ClientOutput
@@ -352,19 +352,19 @@ local function CollectProductionDiagnostics(
 	local InvokeTimeout = FileOptions.InvokeTimeoutSeconds
 
 	if Version < 2 then
-		Fail("ProtocolVersion below 2 is unsupported in this v2-only fork.", FindOptionSpan(Source, "ProtocolVersion"))
+		Fail("ProtocolVersion below 2 is not supported.", FindOptionSpan(Source, "ProtocolVersion"))
 	end
 
 	if FileOptions.ProtocolMode ~= nil then
 		Fail(
-			`ProtocolMode "{Mode}" is retired; this fork always uses strict v2 framing.`,
+			`ProtocolMode "{Mode}" was removed; Cheeto always uses strict v2 framing.`,
 			FindOptionSpan(Source, "ProtocolMode")
 		)
 	end
 
 	if FileOptions.AcceptProtocolVersion1 ~= nil then
 		Fail(
-			"AcceptProtocolVersion1 is retired in this v2-only fork.",
+			"AcceptProtocolVersion1 was removed; protocol v1 is not supported.",
 			FindOptionSpan(Source, "AcceptProtocolVersion1")
 		)
 	end

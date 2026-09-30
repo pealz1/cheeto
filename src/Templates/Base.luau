@@ -2810,11 +2810,11 @@ local function Configure(Options: {[string]: any})
         end
 
         if Key == "ProtocolVersion" and Value ~= PROTOCOL_VERSION then
-            error("[Cheeto]: This fork is v2-only; RuntimeConfig.ProtocolVersion must be 2.")
+            error("[Cheeto]: Cheeto only speaks protocol v2; RuntimeConfig.ProtocolVersion must be 2.")
         elseif Key == "ProtocolMode" then
-            error("[Cheeto]: ProtocolMode is retired in this v2-only fork.")
+            error("[Cheeto]: ProtocolMode was removed; Cheeto always uses strict v2 framing.")
         elseif Key == "AcceptProtocolVersion1" then
-            error("[Cheeto]: AcceptProtocolVersion1 is retired in this v2-only fork.")
+            error("[Cheeto]: AcceptProtocolVersion1 was removed; protocol v1 is not supported.")
         elseif Key == "CharacterIntegrityMode" then
             local Mode = string.lower(tostring(Value))
             if Mode ~= "observe" and Mode ~= "report" and Mode ~= "correct" and Mode ~= "kick" then
