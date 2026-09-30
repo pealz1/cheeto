@@ -1,40 +1,53 @@
-name: Cheeto CI
+name: CI
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 concurrency:
-  group: cheeto-ci-${{ github.ref }}
+  group: ci-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  validate:
-    name: Lint (stylua + selene)
-    # GitHub-hosted runners are blocked on this account (billing), so this
-    # job must stay on the self-hosted PEALZ runner. See CONTRIBUTING notes.
-    runs-on: [self-hosted, Windows, X64]
-    timeout-minutes: 15
-
-    defaults:
-      run:
-        shell: bash
-
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Checkout
         uses: actions/checkout@v7
 
-      - name: Reset rokit auth (persistent self-hosted runner state)
-        run: rm -f "$HOME/.rokit/auth.toml"
-
-      - name: Install Rokit tools
+      - name: Install toolchain
         uses: CompeyDev/setup-rokit@v0.2.1
 
       - name: Check formatting
-        run: stylua --check src test benchmark plugin
+        run: stylua --check src test benchmark plugin extras
 
-      - name: Run Selene
+      - name: Run selene
         run: selene src test benchmark plugin
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install toolchain
+        uses: CompeyDev/setup-rokit@v0.2.1
+
+      - name: Run the test suite
+        working-directory: test
+        run: lune run Test --ci
+
+      - name: Check the wire lockfile
+        run: lune run src/CLI/init.luau test/Sources/Test -- --check-lock --yes
+
+      - name: Run the hardening checklist
+        run: lune run src/CLI/init.luau test/Sources/HardeningGood -- --hardening-checklist --yes

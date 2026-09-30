@@ -1,55 +1,110 @@
 name: Release
 
 on:
-  release:
-    types:
-      - published
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to build and release, for example v1.0.0
+        required: true
 
 permissions:
-  contents: write
+  contents: read
 
-env:
-  GH_TOKEN: ${{github.token}}
-
-defaults:
-  run:
-    shell: bash
+concurrency:
+  group: release-${{ github.event.inputs.tag || github.ref_name }}
 
 jobs:
-  build:
-    runs-on: [self-hosted, Windows, X64]
+  github:
+    name: GitHub release
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ github.event.inputs.tag || github.ref_name }}
+      GH_TOKEN: ${{ github.token }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
-      
-      - name: Setup rokit
+        with:
+          ref: ${{ env.TAG }}
+
+      - name: Install toolchain
+        uses: CompeyDev/setup-rokit@v0.2.1
+
+      - name: Check that the tag matches pesde.toml
+        run: |
+          version="$(grep -m1 '^version' pesde.toml | cut -d '"' -f2)"
+          if [ "v$version" != "$TAG" ]; then
+            echo "::error::pesde.toml is at $version but the tag is $TAG"
+            exit 1
+          fi
+
+      - name: Build the binaries and the Studio plugin
+        run: lune run build
+
+      - name: Extract the release notes
+        run: |
+          awk -v version="${TAG#v}" '
+            index($0, "## [" version "]") == 1 { found = 1; next }
+            found && /^## \[/ { exit }
+            found { print }
+          ' CHANGELOG.md > release-notes.md
+          if [ ! -s release-notes.md ]; then
+            echo "See [CHANGELOG.md](https://github.com/${GITHUB_REPOSITORY}/blob/main/CHANGELOG.md)." > release-notes.md
+          fi
+
+      - name: Publish the release
+        run: |
+          assets=(release/*.tar.* release/*.rbxm)
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            gh release upload "$TAG" "${assets[@]}" --clobber
+          else
+            flags=()
+            if [[ "$TAG" == *-* ]]; then flags+=(--prerelease); fi
+            gh release create "$TAG" "${assets[@]}" \
+              --title "Cheeto $TAG" \
+              --notes-file release-notes.md \
+              --verify-tag "${flags[@]}"
+          fi
+
+  pesde:
+    name: pesde package
+    needs: github
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      TAG: ${{ github.event.inputs.tag || github.ref_name }}
+      PESDE_TOKEN: ${{ secrets.PESDE_TOKEN }}
+    steps:
+      - name: Checkout
+        if: env.PESDE_TOKEN != ''
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.TAG }}
+
+      - name: Install toolchain
+        if: env.PESDE_TOKEN != ''
         uses: CompeyDev/setup-rokit@v0.2.1
 
       - name: Setup pesde
+        if: env.PESDE_TOKEN != ''
         uses: axiom-co/setup-pesde@v0.4.1
         with:
           token: ${{ secrets.PESDE_TOKEN }}
 
-      - name: Build binaries
-        run: lune run build
+      - name: Bundle the CLI
+        if: env.PESDE_TOKEN != ''
+        run: |
+          mkdir -p release
+          darklua process --config build/.darklua.json src/CLI/init.luau release/cheeto_pesde.luau
 
-      - name: linux-aarch64
-        run: gh release upload ${{github.event.release.tag_name}} release/cheeto-linux-aarch64.tar.xz
-
-      - name: linux-x86_64
-        run: gh release upload ${{github.event.release.tag_name}} release/cheeto-linux-x86_64.tar.xz
-
-      - name: macos-aarch64
-        run: gh release upload ${{github.event.release.tag_name}} release/cheeto-macos-aarch64.tar.xz
-
-      - name: macos-x86_64
-        run: gh release upload ${{github.event.release.tag_name}} release/cheeto-macos-x86_64.tar.xz
-
-      - name: windows-x86_64
-        run: gh release upload ${{github.event.release.tag_name}} release/cheeto-windows-x86_64.tar.gz
-
-      - name: plugin
-        run: gh release upload ${{github.event.release.tag_name}} release/cheeto-plugin.rbxm
-      
-      - name: pesde
+      - name: Publish
+        if: env.PESDE_TOKEN != ''
         run: pesde publish -y
+
+      - name: Skip
+        if: env.PESDE_TOKEN == ''
+        run: echo "PESDE_TOKEN is not set, skipping the pesde publish."

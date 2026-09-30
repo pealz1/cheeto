@@ -1,0 +1,29 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    commit-message:
+      prefix: ci
+    groups:
+      actions:
+        patterns: ["*"]
+
+  - package-ecosystem: npm
+    directory: /docs
+    schedule:
+      interval: monthly
+    commit-message:
+      prefix: docs
+    groups:
+      docs:
+        patterns: ["*"]
+    ignore:
+      # Nextra 3+ is a rewrite of the docs theme; upgrade deliberately
+      - dependency-name: nextra
+        update-types: ["version-update:semver-major"]
+      - dependency-name: nextra-theme-docs
+        update-types: ["version-update:semver-major"]
+      - dependency-name: next
+        update-types: ["version-update:semver-major"]
