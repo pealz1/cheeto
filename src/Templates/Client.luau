@@ -79,6 +79,19 @@ local function BindClientRemotes(
     end
 end
 
+function RuntimeSupport.SendUnreliable()
+    local Size = SendCursor
+    if RuntimeConfig.MaxUnreliablePacketBytes > 0 and Size > RuntimeConfig.MaxUnreliablePacketBytes then
+        DropPacket("Client", "Unreliable", "MaxPacketBytes", Size)
+        return
+    end
+
+    local Packet = buffer.create(Size)
+    buffer.copy(Packet, 0, SendBuffer, 0, Size)
+    Unreliable:FireServer(Packet, InstancePayload(SendInstances))
+    TrackSend("Unreliable", Size, nil)
+end
+
 RuntimeSupport.StartClientShield()
 
 local function StepReplication()
@@ -102,6 +115,7 @@ local function StepReplication()
     buffer.copy(Buffer, 0, SendBuffer, 0, SendCursor)
     if RuntimeConfig.MaxReliablePacketBytes > 0 and SendCursor > RuntimeConfig.MaxReliablePacketBytes then
         DropPacket("Client", "Reliable", "MaxPacketBytes", SendCursor)
+        RuntimeSupport.RecordFlush("Server", "Reliable", 0)
     else
         for _, Fragment in RuntimeSupport.FragmentReliablePacket("Server", Buffer, InstancePayload(SendInstances)) do
             Reliable:FireServer(Fragment.Buffer, Fragment.Instances)

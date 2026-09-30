@@ -75,7 +75,11 @@
 		"InScopeEvent": { "id": 62, "kind": "Event", "deprecated": false, "reserved": false },
 		"InAnotherScopeEvent": { "id": 63, "kind": "Event", "deprecated": false, "reserved": false },
 		"InScopeEvent": { "id": 64, "kind": "Event", "deprecated": false, "reserved": false },
-		"Event": { "id": 65, "kind": "Event", "deprecated": false, "reserved": false }
+		"Event": { "id": 65, "kind": "Event", "deprecated": false, "reserved": false },
+		"StrideClient": { "id": 66, "kind": "Event", "deprecated": false, "reserved": false },
+		"SmallCapClient": { "id": 67, "kind": "Event", "deprecated": false, "reserved": false },
+		"LargeClient": { "id": 68, "kind": "Event", "deprecated": false, "reserved": false },
+		"SlowFunction": { "id": 69, "kind": "Function", "deprecated": false, "reserved": false }
 	},
 	"typeHashes": {
 		"TestStruct": "Struct:TestStruct",
@@ -150,6 +154,7 @@
 		"Foo": "Enum:Foo",
 		"Map": "Map:Map",
 		"Enum": "TagEnum:Enum",
-		"Struct": "Struct:Struct"
+		"Struct": "Struct:Struct",
+		"Stride": "Enum:Stride"
 	}
 }

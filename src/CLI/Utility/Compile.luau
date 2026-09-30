@@ -106,15 +106,6 @@ function Utility.Compile(Path: string, Options: CompileOptions)
 	if FileOptions.StrictProduction then
 		Utility.Strict(Path, Options)
 	end
-	if (FileOptions.ProtocolVersion or 2) < 2 then
-		error("Cheeto only speaks protocol v2; ProtocolVersion below 2 is not supported.")
-	end
-	if FileOptions.ProtocolMode ~= nil then
-		error("ProtocolMode was removed; omit it instead of using Legacy or Negotiated.")
-	end
-	if FileOptions.AcceptProtocolVersion1 ~= nil then
-		error("AcceptProtocolVersion1 was removed; protocol v1 is not supported.")
-	end
 
 	local ClientOutputPath = FileOptions.ClientOutput
 	local ServerOutputPath = FileOptions.ServerOutput
@@ -296,14 +287,6 @@ local function SchemaVersion(FileOptions: Parser.Options): number
 	return FileOptions.SchemaVersion or FileOptions.Version or 1
 end
 
-local function ProtocolVersion(FileOptions: Parser.Options): number
-	return FileOptions.ProtocolVersion or 2
-end
-
-local function ProtocolMode(FileOptions: Parser.Options): string
-	return FileOptions.ProtocolMode or "StrictV2Only"
-end
-
 local function IsUnsafeOutputPath(Path: string?): boolean
 	if Path == nil then
 		return true
@@ -344,30 +327,10 @@ local function CollectProductionDiagnostics(
 	end
 
 	local Profile = FileOptions.SecurityProfile or "Development"
-	local Version = ProtocolVersion(FileOptions)
-	local Mode = ProtocolMode(FileOptions)
 	local RateLimit = FileOptions.RateLimitPerSecond
 	local ReliableLimit = FileOptions.MaxReliablePacketBytes or FileOptions.MaxPacketBytes
 	local UnreliableLimit = FileOptions.MaxUnreliablePacketBytes or FileOptions.MaxPacketBytes
 	local InvokeTimeout = FileOptions.InvokeTimeoutSeconds
-
-	if Version < 2 then
-		Fail("ProtocolVersion below 2 is not supported.", FindOptionSpan(Source, "ProtocolVersion"))
-	end
-
-	if FileOptions.ProtocolMode ~= nil then
-		Fail(
-			`ProtocolMode "{Mode}" was removed; Cheeto always uses strict v2 framing.`,
-			FindOptionSpan(Source, "ProtocolMode")
-		)
-	end
-
-	if FileOptions.AcceptProtocolVersion1 ~= nil then
-		Fail(
-			"AcceptProtocolVersion1 was removed; protocol v1 is not supported.",
-			FindOptionSpan(Source, "AcceptProtocolVersion1")
-		)
-	end
 
 	if (ReliableLimit or math.huge) > 1024 * 1024 then
 		Warn(
@@ -633,7 +596,6 @@ end
 function Utility.Benchmark(Path: string, Options: CompileOptions)
 	local Ast = ParseForUtility(Path, Options)
 	local FileOptions = Ast.Value.Options
-	FileOptions.ProtocolVersion = 2
 	local Counts = CountDeclarations(Ast.Value.Declarations)
 	local Start = os.clock()
 	local ServerSource = Generator.Generate("Server", Ast)
@@ -651,10 +613,9 @@ function Utility.Benchmark(Path: string, Options: CompileOptions)
 	local Thresholds = {
 		ServerBytes = 700_000 + (EndpointHeadroom * 2_250),
 		ClientBytes = 520_000 + (EndpointHeadroom * 1_500),
-		--> The shared artifact deliberately embeds the generated runtime. Client
-		--> integrity receipts and server character reconciliation moved its audited
-		--> baseline from roughly 195 KB to 216 KB; retain measured regression room.
-		TypesBytes = 225_000,
+		--> The shared artifact embeds the whole runtime, so it tracks runtime size.
+		--> Built-in constraint checks and the unified send path took it past 225 KB.
+		TypesBytes = 250_000,
 		GenerateSeconds = 2,
 		PacketBytes200 = math.max(250_000, math.floor(Traffic * 20)),
 		EncodeMs200 = math.max(80, Traffic * 0.008),
@@ -679,9 +640,9 @@ function Utility.Benchmark(Path: string, Options: CompileOptions)
 	Check("decodeMs200", SimulatedDecodeMs, Thresholds.DecodeMs200)
 	Check("drops200", SimulatedDrops, Thresholds.Drops200)
 
-	Message("green", Options, "Cheeto v2 benchmark:")
+	Message("green", Options, "Cheeto benchmark:")
 	print(
-		`protocol=v2 generated={FormatTime(Elapsed)} server={#ServerSource} bytes client={#ClientSource} bytes types={#TypesSource} bytes`
+		`generated={FormatTime(Elapsed)} server={#ServerSource} bytes client={#ClientSource} bytes types={#TypesSource} bytes`
 	)
 	print(
 		`sim200 packetBytes={SimulatedPacketBytes} encodeMs={SimulatedEncodeMs} decodeMs={SimulatedDecodeMs} drops={SimulatedDrops}`
@@ -702,16 +663,15 @@ function Utility.LoadSim(Path: string, Options: CompileOptions)
 	local ServerSource = Generator.Generate("Server", Ast)
 	local ClientSource = Generator.Generate("Client", Ast)
 	local BaseEvents = math.max(1, Counts.Event + Counts.Function + Counts.Channel)
-	local Protocol = ProtocolVersion(FileOptions)
 
 	Message("green", Options, "Cheeto load simulation:")
-	print(`schemaVersion={SchemaVersion(FileOptions)} protocol=v{Protocol} mode={ProtocolMode(FileOptions)}`)
+	print(`schemaVersion={SchemaVersion(FileOptions)}`)
 	print(
 		"clients,encodeMs,decodeMs,bytes,drops,validationFailures,rateLimitHits,pendingInvokes,queueDepth,stateFlushMs"
 	)
 	for _, Clients in { 10, 50, 100, 200 } do
 		local Traffic = Clients * BaseEvents
-		local Bytes = math.floor((#ServerSource + #ClientSource) / 128) + (Traffic * (if Protocol >= 2 then 18 else 24))
+		local Bytes = math.floor((#ServerSource + #ClientSource) / 128) + (Traffic * 18)
 		local Drops = if (FileOptions.MaxQueuedEvents or 256) < Traffic / 4 then math.floor(Traffic / 32) else 0
 		local ValidationFailures = math.floor(Traffic / 400)
 		local RateLimitHits = if (FileOptions.RateLimitPerSecond or 0) > 0
@@ -719,8 +679,8 @@ function Utility.LoadSim(Path: string, Options: CompileOptions)
 			else 0
 		local PendingInvokes = math.min(Counts.Function * Clients, FileOptions.MaxPendingInvokes or 256)
 		local QueueDepth = math.min(Traffic, FileOptions.MaxQueuedEvents or 256)
-		local EncodeMs = Traffic * (if Protocol >= 2 then 0.006 else 0.008)
-		local DecodeMs = Traffic * (if Protocol >= 2 then 0.007 else 0.009)
+		local EncodeMs = Traffic * 0.006
+		local DecodeMs = Traffic * 0.007
 		local StateFlushMs = Counts.Channel * Clients * 0.004
 		print(
 			`{Clients},{EncodeMs},{DecodeMs},{Bytes},{Drops},{ValidationFailures},{RateLimitHits},{PendingInvokes},{QueueDepth},{StateFlushMs}`
@@ -747,7 +707,6 @@ function Utility.GoldenSnapshots(Path: string, Options: CompileOptions)
 	local ClientSource = Generator.Generate("Client", Ast)
 	Message("green", Options, "Cheeto golden snapshot metadata:")
 	print(`schemaVersion={SchemaVersion(FileOptions)}`)
-	print(`protocol=v{ProtocolVersion(FileOptions)}`)
 	print(`wireHash={#ServerSource}:{#ClientSource}:{Counts.Type}:{Counts.Event}:{Counts.Function}:{Counts.Channel}`)
 	print(`events={table.concat(DeclarationNames(Ast.Value.Declarations, "Event"), ",")}`)
 	print(`functions={table.concat(DeclarationNames(Ast.Value.Declarations, "Function"), ",")}`)
@@ -760,12 +719,11 @@ function Utility.Compatibility(Path: string, Options: CompileOptions)
 	local RuntimeSchema = SchemaVersion(FileOptions)
 	local MinimumSchema = FileOptions.MinimumSchemaVersion or 1
 	local Hash = `schema-{RuntimeSchema}`
-	Message("green", Options, "Cheeto v2 schema/hash compatibility:")
-	print("peerProtocol,peerSchema,peerHash,result")
-	print(`v1,{RuntimeSchema},{Hash},reject:legacy-protocol`)
-	print(`v2,{MinimumSchema - 1},{Hash},reject:schema-too-old`)
-	print(`v2,{RuntimeSchema},wrong-hash,reject:schema-hash-mismatch`)
-	print(`v2,{RuntimeSchema},{Hash},accept`)
+	Message("green", Options, "Cheeto schema compatibility:")
+	print("peerSchema,peerHash,result")
+	print(`{MinimumSchema - 1},{Hash},reject:schema-too-old`)
+	print(`{RuntimeSchema},wrong-hash,reject:schema-hash-mismatch`)
+	print(`{RuntimeSchema},{Hash},accept`)
 end
 
 function Utility.SchemaDocs(Path: string, Options: CompileOptions)
@@ -775,7 +733,6 @@ function Utility.SchemaDocs(Path: string, Options: CompileOptions)
 	Message("green", Options, "Cheeto schema documentation:")
 	print(`# Cheeto schema v{SchemaVersion(FileOptions)}`)
 	print("")
-	print(`Protocol: v{ProtocolVersion(FileOptions)} ({ProtocolMode(FileOptions)})`)
 	if FileOptions.CaptureRedactions and FileOptions.CaptureRedactions ~= "" then
 		print(`Capture redactions: {FileOptions.CaptureRedactions}`)
 	end

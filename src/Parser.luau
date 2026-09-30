@@ -102,7 +102,6 @@ export type Options = {
 	EnablePrediction: boolean?,
 	EnableStateChannels: boolean?,
 	UseEmptyInstanceOptimization: boolean?,
-	ProtocolVersion: number?,
 	ReliableFragmentBytes: number?,
 	MaxInFlightFragments: number?,
 	FragmentTimeoutSeconds: number?,
@@ -125,8 +124,6 @@ export type Options = {
 	Version: number?,
 	SchemaVersion: number?,
 	MinimumSchemaVersion: number?,
-	ProtocolMode: string?,
-	AcceptProtocolVersion1: boolean?,
 	EnableProtocolHandshake: boolean?,
 	NoRawCaptureInProduction: boolean?,
 	RequirePolicies: boolean?,
@@ -377,7 +374,6 @@ local OPTIONS: { [string]: Lexer.Types } = {
 	EnablePrediction = "Boolean",
 	EnableStateChannels = "Boolean",
 	UseEmptyInstanceOptimization = "Boolean",
-	ProtocolVersion = "Number",
 	ReliableFragmentBytes = "Number",
 	MaxInFlightFragments = "Number",
 	FragmentTimeoutSeconds = "Number",
@@ -400,8 +396,6 @@ local OPTIONS: { [string]: Lexer.Types } = {
 	Version = "Number",
 	SchemaVersion = "Number",
 	MinimumSchemaVersion = "Number",
-	ProtocolMode = "Identifier",
-	AcceptProtocolVersion1 = "Boolean",
 	EnableProtocolHandshake = "Boolean",
 	NoRawCaptureInProduction = "Boolean",
 	RequirePolicies = "Boolean",
@@ -453,6 +447,34 @@ local OPTIONS: { [string]: Lexer.Types } = {
 	EnableRemoteDecoys = "Boolean",
 	RemoteDecoyCount = "Number",
 	StrictProduction = "Boolean",
+}
+
+--> Options that used to exist. Each is a hard error naming what replaced it,
+--> rather than "Unknown option", so an old schema says why it stopped compiling.
+local REMOVED_OPTIONS: { [string]: string } = {
+	ProtocolVersion = "Cheeto has a single wire protocol; remove this option.",
+	ProtocolMode = "Cheeto has a single wire protocol; remove this option.",
+	AcceptProtocolVersion1 = "Cheeto has a single wire protocol; remove this option.",
+}
+
+--> Fields that only mean something when the RECEIVER is the server. On a
+--> server-sent endpoint the client would evaluate them against rules that are
+--> only ever registered on the server, and drop every packet.
+local SERVER_ONLY_FIELDS = {
+	"Auth",
+	"Policy",
+	"PolicyGroup",
+	"CooldownSeconds",
+	"Idempotency",
+	"MaxDistance",
+	"RequireOwnership",
+	"RequireTeam",
+	"RequireZone",
+	"RequireMatch",
+	"RequireInventoryOwnership",
+	"RequireCharacterState",
+	"RequireObjectHandle",
+	"RequireServerKnownId",
 }
 
 local EVENT: { EventOption } = {
@@ -1193,7 +1215,14 @@ function Parser.Parse(self: Parser, Source: string, Scope: Scope?): Body
 	local Options = self:Options()
 	local Declarations = self:Declarations()
 
-	Options.SyncValidation = if Options.SyncValidation ~= nil then Options.SyncValidation else true
+	--> SyncValidation is a development aid: it costs a coroutine check per Sync
+	--> dispatch and --strict rejects it, so it is on by default only while the
+	--> effective profile is Development.
+	if Options.SyncValidation == nil then
+		local Profile = Options.SecurityProfile
+			or (if Options.SecurityPreset == "Maximum" then "Competitive" else "Development")
+		Options.SyncValidation = Profile == "Development"
+	end
 
 	return {
 		Type = "Body",
@@ -1303,6 +1332,13 @@ function Parser.Options(self: Parser): Options
 		self:Consume("Keyword")
 		local Key = self:ConsumeAll("Identifier", "Assign")
 		local Name = Key.Value
+
+		local Removed = REMOVED_OPTIONS[Name]
+		if Removed then
+			Error.new(Error.ParserRemovedOption, self.Source, `Option "{Name}" was removed`, self.File)
+				:Primary(Key, Removed)
+				:Emit()
+		end
 
 		local Type: Lexer.Types = OPTIONS[Name]
 		if not Type then
@@ -1459,8 +1495,13 @@ function Parser.GetOptionFromToken(self: Parser, Token: Token, Structure: { Even
 	)
 end
 
-function Parser.Structure(self: Parser, Name: Token, Structure: { EventOption }): { [string]: any }
+function Parser.Structure(
+	self: Parser,
+	Name: Token,
+	Structure: { EventOption }
+): ({ [string]: any }, { [string]: Token })
 	local Fields: { [string]: any } = {}
+	local FieldTokens: { [string]: Token } = {}
 	local Open, Close: Lexer.Token? = self:Consume("OpenBraces"), nil
 
 	while true do
@@ -1496,6 +1537,7 @@ function Parser.Structure(self: Parser, Name: Token, Structure: { EventOption })
 		end
 
 		Fields[Option.Key] = Value
+		FieldTokens[Option.Key] = Field
 		Close = self:TryConsume("CloseBraces")
 
 		if Close then
@@ -1525,11 +1567,30 @@ function Parser.Structure(self: Parser, Name: Token, Structure: { EventOption })
 			:Emit()
 	end
 
-	return Fields
+	return Fields, FieldTokens
+end
+
+function Parser.RejectServerOnlyFields(self: Parser, Fields: { [string]: any }, FieldTokens: { [string]: Token })
+	for _, Key in SERVER_ONLY_FIELDS do
+		local Value = Fields[Key]
+		if Value == nil or Value == false then
+			continue
+		end
+
+		Error.new(Error.AnalyzeIneffectiveField, self.Source, `Field "{Key}" cannot be used here`, self.File)
+			:Primary(
+				FieldTokens[Key],
+				"The client receives this endpoint, and access rules are only checked when the server receives"
+			)
+			:Emit()
+	end
 end
 
 function Parser.Event(self: Parser, Name: Token): Event
-	local Structure = self:Structure(Name, EVENT)
+	local Structure, FieldTokens = self:Structure(Name, EVENT)
+	if Structure.From == "Server" then
+		self:RejectServerOnlyFields(Structure, FieldTokens)
+	end
 	local Call: index<index<Event, "Value">, "Call"> = Structure.Call
 	if Structure.Poll then
 		Call = "Polling"
@@ -1617,7 +1678,8 @@ function Parser.Function(self: Parser, Name: Token): Function
 end
 
 function Parser.Channel(self: Parser, Name: Token): Channel
-	local Structure = self:Structure(Name, CHANNEL)
+	local Structure, FieldTokens = self:Structure(Name, CHANNEL)
+	self:RejectServerOnlyFields(Structure, FieldTokens)
 
 	return {
 		Type = "Channel",

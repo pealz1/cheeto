@@ -839,6 +839,13 @@ local Example: Client.Example = {
 
 PrettyPrint("blue", "Running output tests...")
 
+--> Policies fail closed: a name nobody registered drops every packet on the
+--> endpoint. Test.cheeto uses "damage", so register it the way a game would.
+local function AllowDamage()
+	return true
+end
+Server.Security.RegisterPolicy("damage", AllowDamage)
+
 FireAndExpect("Reliable Server", Server.ReliableServer, Client.ReliableServer, 1)
 FireAndExpect("Unreliable Server", Server.UnreliableServer, Client.UnreliableServer, 1)
 FireAndExpect("Empty Reliable Server", Server.EmptyEvent, Client.EmptyEvent, nil)
@@ -1392,7 +1399,7 @@ RunClosure("CI utility modes", function()
 	assert(HardeningResult.ok, `Expected hardening checklist to pass:\n{HardeningResult.stderr}`)
 end)
 
-RunClosure("V2-only protocol rejects legacy options and validates schema hash", function()
+RunClosure("Removed protocol options are rejected", function()
 	for _, Options in
 		{
 			{ ProtocolVersion = 1 },
@@ -1403,7 +1410,7 @@ RunClosure("V2-only protocol rejects legacy options and validates schema hash", 
 		local Success = pcall(function()
 			Client.Configure(Options)
 		end)
-		assert(not Success, "Expected retired protocol runtime option to fail.")
+		assert(not Success, "Expected a removed protocol runtime option to fail.")
 	end
 
 	local Result = process.exec(
@@ -1411,7 +1418,11 @@ RunClosure("V2-only protocol rejects legacy options and validates schema hash", 
 		{ "run", Compiler, "../../test/Sources/LegacyBad", "--", "--yes" },
 		{ cwd = "../src/CLI" }
 	)
-	assert(not Result.ok, "Expected ProtocolVersion = 1 schema to fail compilation.")
+	assert(not Result.ok, "Expected a schema using a removed protocol option to fail compilation.")
+	assert(
+		string.find(Result.stdout .. Result.stderr, "was removed", 1, true) ~= nil,
+		"Expected the compiler to say the protocol option was removed."
+	)
 
 	local IntegrityModeResult = process.exec(
 		"lune",
@@ -1425,8 +1436,8 @@ RunClosure("V2-only protocol rejects legacy options and validates schema hash", 
 	assert(not RuntimeModeSuccess, "Expected an unknown runtime character-integrity mode to fail configuration.")
 
 	local Info = Client.Protocol.Info()
-	assert(Info.LocalProtocolVersion == 2, "Expected v2-only runtime protocol.")
-	assert(Info.ProtocolMode == "StrictV2Only", "Expected strict v2-only protocol mode.")
+	assert(Info.ProtocolMode == nil and Info.LocalProtocolVersion == nil, "Protocol.Info still reports protocol modes.")
+	assert(Info.SchemaHash == Client.Schema.Hash, "Expected Protocol.Info to report the local schema hash.")
 end)
 
 RunClosure("Capture replay inspector and schema helpers", function()
@@ -1655,12 +1666,10 @@ RunClosure("Golden binary snapshots", function()
 	end
 
 	Client.Configure({
-		ProtocolVersion = 2,
 		EnableProtocolHandshake = false,
 		RateLimitPerSecond = 0,
 	})
 	Server.Configure({
-		ProtocolVersion = 2,
 		EnableProtocolHandshake = false,
 		RateLimitPerSecond = 0,
 	})
@@ -1719,12 +1728,10 @@ RunClosure("Golden binary snapshots", function()
 	Client.Capture.Stop()
 	Server.Capture.Stop()
 	Client.Configure({
-		ProtocolVersion = 2,
 		EnableProtocolHandshake = true,
 		RateLimitPerSecond = 0,
 	})
 	Server.Configure({
-		ProtocolVersion = 2,
 		EnableProtocolHandshake = true,
 		RateLimitPerSecond = 0,
 	})
@@ -1834,8 +1841,23 @@ RunClosure("Transport hardening runtime APIs", function()
 		"SyncValidation stopped reporting a Sync handler that genuinely yielded."
 	)
 
-	--> Leave the registry as it was found; later checks assume "damage" is absent.
+	--> An unregistered policy must drop, not admit. The built-in names used to
+	--> resolve to a rule that only checked the sender was connected.
 	Server.Security.RegisterPolicy("damage", nil :: any)
+	local UnregisteredSeen = 0
+	local ReleaseUnregistered = Server.ReliableClient.On(function()
+		UnregisteredSeen += 1
+	end)
+	Client.ReliableClient.Fire(5)
+	Client.StepReplication()
+	task.wait(1 / 30)
+	ReleaseUnregistered()
+	assert(UnregisteredSeen == 0, "An endpoint whose policy is not registered delivered a packet.")
+	assert(
+		FindWarning('Policy "damage" is not registered') ~= nil,
+		"Expected a warning naming the unregistered policy."
+	)
+	Server.Security.RegisterPolicy("damage", AllowDamage)
 
 	--> Auth: a registered rule gates the event, and an UNREGISTERED rule must fail
 	--> closed without raising. CheckAuth used to error() on an unknown rule, which
@@ -2012,7 +2034,7 @@ RunClosure("Transport hardening runtime APIs", function()
 	local ReleaseIntegritySampler = Client.Security.OnIntegritySample(function(Context)
 		IntegritySamples += 1
 		assert(Context.ChallengeId > 0, "Expected a positive one-time challenge id.")
-		assert(Context.ProtocolVersion == 2, "Expected the integrity sample to bind protocol v2.")
+		assert(Context.WireFormat ~= nil, "Expected the integrity sample to carry the wire format.")
 		return true
 	end)
 
@@ -2465,15 +2487,128 @@ RunClosure("Buffer (Default, Fixed, Bounded)", function()
 	end
 end)
 
+RunClosure("RequirePolicies accepts Auth and PolicyGroup", function()
+	Server.UseAuth("unittest", function()
+		return true
+	end)
+	Server.Configure({ RequirePolicies = true })
+	local Seen = 0
+	local Release = Server.AuthedClient.On(function()
+		Seen += 1
+	end)
+	Client.AuthedClient.Fire(1)
+	Client.StepReplication()
+	task.wait(1 / 30)
+	Server.Configure({ RequirePolicies = false })
+	Release()
+	assert(Seen == 1, `An Auth-only endpoint was dropped by RequirePolicies ({Seen} delivered).`)
+end)
+
+RunClosure("A send that fails to serialize leaves the batch intact", function()
+	local Seen = {}
+	local Release = Server.StrideClient.On(function(_, Stride)
+		table.insert(Seen, Stride)
+	end)
+	Client.StrideClient.Fire("Walk")
+	local Sent = pcall(Client.StrideClient.Fire, "Fly" :: any)
+	assert(not Sent, "Expected an invalid enum value to raise.")
+	Client.StrideClient.Fire("Run")
+	Client.StepReplication()
+	task.wait(1 / 30)
+	Release()
+	assert(
+		#Seen == 2 and Seen[1] == "Walk" and Seen[2] == "Run",
+		`A failed write corrupted its batch: received {Format(Seen)}.`
+	)
+end)
+
+RunClosure("Per-endpoint MaxPacketBytes measures the event, not the packet", function()
+	local SmallSeen = 0
+	local ReleaseSmall = Server.SmallCapClient.On(function()
+		SmallSeen += 1
+	end)
+	local ReleaseLarge = Server.LargeClient.On(function() end)
+	Client.LargeClient.Fire(string.rep("x", 200))
+	Client.SmallCapClient.Fire(1)
+	Client.StepReplication()
+	task.wait(1 / 30)
+	ReleaseSmall()
+	ReleaseLarge()
+	assert(SmallSeen == 1, "A small event was dropped because it shared a packet with a large one.")
+end)
+
+RunClosure("Broadcasts and unreliable sends do not leak queued bytes", function()
+	for _ = 1, 50 do
+		Server.ReliableServer.FireAll(1)
+		Server.ReliableServer.FireList({ Shared.Player }, 1)
+		Server.UnreliableServer.FireAll(1)
+		Server.UnreliableServer.Fire(Shared.Player, 1)
+	end
+	Server.StepReplication()
+	task.wait(1 / 30)
+	local PlayerState = Server.Transport.Snapshot(Shared.Player)
+	assert(PlayerState.QueuedBytes == 0, `Queued bytes survived a flush: {PlayerState.QueuedBytes}.`)
+	for Key, State in Server.Transport.Snapshot() do
+		assert(State.QueuedBytes == 0, `Peer {Key} still counts {State.QueuedBytes} queued bytes after a flush.`)
+	end
+end)
+
+RunClosure("Invokes use the runtime timeout", function()
+	Server.SlowFunction.On(function(_, Value)
+		task.wait(0.4)
+		return Value
+	end)
+	Client.Configure({ InvokeTimeoutSeconds = 0.1 })
+	local Ok, Error = pcall(Client.SlowFunction.Invoke, 1)
+	Client.Configure({ InvokeTimeoutSeconds = 0 })
+	assert(not Ok, "Expected the invoke to time out.")
+	assert(string.find(tostring(Error), "timed out", 1, true), `Expected a timeout error, got {tostring(Error)}.`)
+	task.wait(0.5)
+end)
+
+RunClosure("Prediction ids survive wrapping past 65535", function()
+	local Delivered = 0
+	local Release = Server.UnconstrainedClient.On(function()
+		Delivered += 1
+	end)
+	--> Test.cheeto fragments reliable packets at 64 bytes to exercise
+	--> reassembly; large batches here would exceed MaxInFlightFragments.
+	Client.Configure({ ReliableFragmentBytes = 1048576, MaxReliablePacketBytes = 1048576 })
+	Server.Configure({ MaxReliablePacketBytes = 1048576 })
+	local Total = 0
+	for _ = 1, 7 do
+		for _ = 1, 10000 do
+			Client.UnconstrainedClient.Predict(1)
+			Total += 1
+		end
+		task.wait(1 / 20)
+	end
+	task.wait(1 / 20)
+	Client.Configure({ ReliableFragmentBytes = 64 })
+	Release()
+	assert(Delivered == Total, `Predicted events were dropped after the id wrapped: {Delivered} of {Total} delivered.`)
+end)
+
+RunClosure("Access fields on server-sent endpoints are rejected", function()
+	local Result = process.exec(
+		"lune",
+		{ "run", Compiler, "../../test/Sources/ServerOnlyFieldBad", "--", "--yes" },
+		{ cwd = "../src/CLI" }
+	)
+	assert(not Result.ok, "Expected Policy on a server-sent event to fail compilation.")
+	assert(
+		string.find(Result.stdout .. Result.stderr, "cannot be used here", 1, true) ~= nil,
+		"Expected the compiler to explain why the field was rejected."
+	)
+end)
+
 RunClosure("Fuzz malformed packets", function()
 	Server.Configure({
-		ProtocolVersion = 2,
 		MaxReliablePacketBytes = 256,
 		MaxUnreliablePacketBytes = 256,
 		RateLimitPerSecond = 0,
 	})
 	Client.Configure({
-		ProtocolVersion = 2,
 		MaxReliablePacketBytes = 256,
 		MaxUnreliablePacketBytes = 256,
 		RateLimitPerSecond = 0,

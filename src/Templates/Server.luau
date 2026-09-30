@@ -121,6 +121,56 @@ do
     RuntimeSupport.InstallRemoteDecoys(GetRemoteParent(), RuntimeConfig.RemoteDecoyCount)
 end
 
+--> Copies the event sitting in the loaded scratch buffer into each
+--> recipient's pending reliable batch. Bytes are accounted per recipient,
+--> which is what the backpressure limits are defined against.
+function RuntimeSupport.BroadcastReliable(List: {Player}, Except: Player?, Priority: string)
+    local Source = SendBuffer
+    local Size = SendCursor
+    local Instances = SendInstances
+    for _, Player in List do
+        if Player == Except or not IsPlayerActive(Player) then
+            continue
+        end
+        if not RuntimeSupport.RecordQueuedEvent(Player, "Reliable", Size, Priority) then
+            continue
+        end
+
+        Load(PlayersMap[Player])
+        local Position = Allocate(Size)
+        buffer.copy(SendBuffer, Position, Source, 0, Size)
+        table.move(Instances, 1, #Instances, #SendInstances + 1, SendInstances)
+        PlayersMap[Player] = Save()
+    end
+end
+
+--> Sends the event in the loaded scratch buffer on the unreliable remote.
+--> Targets is one player, a list of players, or nil for everyone.
+function RuntimeSupport.SendUnreliable(Targets: any, Except: Player?)
+    local Size = SendCursor
+    if RuntimeConfig.MaxUnreliablePacketBytes > 0 and Size > RuntimeConfig.MaxUnreliablePacketBytes then
+        DropPacket(if type(Targets) == "table" then nil else Targets, "Unreliable", "MaxPacketBytes", Size)
+        return
+    end
+
+    local Packet = buffer.create(Size)
+    buffer.copy(Packet, 0, SendBuffer, 0, Size)
+    local Instances = InstancePayload(SendInstances)
+    if Targets == nil and Except == nil then
+        Unreliable:FireAllClients(Packet, Instances)
+        TrackSend("Unreliable", Size, nil)
+        return
+    end
+
+    local List = if Targets == nil then Players:GetPlayers() elseif type(Targets) == "table" then Targets else { Targets }
+    for _, Player in List do
+        if Player ~= Except then
+            Unreliable:FireClient(Player, Packet, Instances)
+            TrackSend("Unreliable", Size, Player)
+        end
+    end
+end
+
 local function QueueClientIntegrityChallenge(Player: Player, ChallengeId: number, Nonce: number)
     Load(PlayersMap[Player])
     RuntimeSupport.WriteClientIntegrityChallenge(ChallengeId, Nonce)
@@ -169,6 +219,7 @@ local function StepReplication()
         buffer.copy(Buffer, 0, Send.Buffer, 0, Send.Cursor)
         if RuntimeConfig.MaxReliablePacketBytes > 0 and Send.Cursor > RuntimeConfig.MaxReliablePacketBytes then
             DropPacket(Player, "Reliable", "MaxPacketBytes", Send.Cursor)
+            RuntimeSupport.RecordFlush(Player, "Reliable", 0)
         elseif IsPlayerActive(Player) then
             for _, Fragment in RuntimeSupport.FragmentReliablePacket(Player, Buffer, InstancePayload(Send.Instances)) do
                 Reliable:FireClient(Player, Fragment.Buffer, Fragment.Instances)

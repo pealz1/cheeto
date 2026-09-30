@@ -47,7 +47,9 @@ local PREDICTION_ACK_INDEX = 255
 local CAPABILITY_HANDSHAKE_INDEX = 254
 local FRAGMENT_INDEX = 253
 local CLIENT_SHIELD_INDEX = 252
-local PROTOCOL_VERSION = 2
+--> Format byte at the start of every handshake. It identifies the frame
+--> layout, not a version users choose: there is one wire format.
+local WIRE_FORMAT = 2
 local SERVER_PEER_KEY = "__server"
 
 type Entry = {
@@ -142,6 +144,7 @@ local TransportError = table.freeze({
     Backpressure = "Backpressure",
     RateLimit = "RateLimit",
     PolicyRejected = "PolicyRejected",
+    Cooldown = "Cooldown",
     --> A payload-dependent constraint (MaxDistance, RequireOwnership, ...) was
     --> rejected by a Validate hook, after the payload was decoded.
     ConstraintRejected = "ConstraintRejected",
@@ -241,7 +244,8 @@ local RuntimeState = {
     KilledPolicyGroups = {} :: {[string]: string},
     PolicyRules = {} :: {[string]: (any) -> (boolean, string?)},
     PolicyGroups = {} :: {[string]: {string}},
-    Idempotency = {} :: {[any]: {[string]: number}},
+    Idempotency = {} :: {[any]: any},
+    PlayerZones = {} :: {[any]: string},
     Handles = {} :: {[number]: any},
     ObjectToHandle = {} :: {[any]: number},
     Capabilities = {} :: {[number]: any},
@@ -439,7 +443,7 @@ function RuntimeSupport.RecordCapture(Entry: {[string]: any})
     end
 
     Entry.Time = os.clock()
-    Entry.ProtocolVersion = PROTOCOL_VERSION
+    Entry.WireFormat = WIRE_FORMAT
     Entry.SchemaVersion = RuntimeConfig.SchemaVersion
     Entry.SchemaHash = RuntimeConfig.SchemaHash
     Entry.Redaction = {
@@ -833,7 +837,7 @@ function RuntimeSupport.ClientIntegrityChecksum(
         Sweep,
         SamplerCount,
         if Healthy then 1 else 0,
-        PROTOCOL_VERSION,
+        WIRE_FORMAT,
         RuntimeConfig.SchemaVersion,
     } do
         Value = (Value * 48271 + RuntimeSupport.IntegrityInteger(Part) * 69621 + 31) % 2147483647
@@ -1719,83 +1723,91 @@ local function CheckCooldown(Source: any, Name: string, Seconds: number?): boole
     return true
 end
 
-local function CheckReplay(Source: any, Name: string, Sequence: number?, Size: number?): boolean
-    if Sequence == nil then
-        return true
-    end
+--> Prediction ids are 16-bit and wrap, so ordering is serial-number
+--> arithmetic (RFC 1982): the signed distance around the circle, not a plain
+--> subtraction. With a plain subtraction every id after the wrap looked 65,535
+--> behind the highest one seen and was dropped as stale.
+local CheckReplay: (any, string, number?, number?) -> (boolean, string?)
+do
+    local SEQUENCE_SPACE = 65536
 
-    local Key = RuntimeSupport.PeerKey(Source)
-    local ByName = RuntimeState.Replay[Key]
-    if ByName == nil then
-        ByName = {}
-        RuntimeState.Replay[Key] = ByName
-    end
-
-    local Window = ByName[Name]
-    local Now = os.clock()
-    if Window == nil then
-        Window = {
-            Highest = -1,
-            Seen = {},
-            Time = {},
-            Tracked = 0
-        }
-        ByName[Name] = Window
-    end
-
-    --> Sweep only once the window is actually full, not on every packet. The
-    --> sweep is O(tracked), and a sender controls how many distinct sequence
-    --> numbers are tracked, so sweeping unconditionally let one peer make every
-    --> later packet on the event more expensive -- quadratic work for a linear
-    --> send rate. Deferring never weakens the check: a duplicate is still
-    --> rejected by Seen while it is remembered, and the sweep only exists to let
-    --> a sequence number be reused once it has gone stale.
-    local Capacity = if RuntimeConfig.ReplayWindowSize > 0 then RuntimeConfig.ReplayWindowSize else 256
-    if Window.Tracked > Capacity then
-        local Kept = 0
-        for SeenSequence, SeenAt in Window.Time do
-            if Now - SeenAt >= RuntimeConfig.ReplayStaleSeconds then
-                Window.Seen[SeenSequence] = nil
-                Window.Time[SeenSequence] = nil
-            else
-                Kept += 1
-            end
+    local function SequenceDelta(Newer: number, Older: number): number
+        local Delta = (Newer - Older) % SEQUENCE_SPACE
+        if Delta >= SEQUENCE_SPACE / 2 then
+            Delta -= SEQUENCE_SPACE
         end
-        Window.Tracked = Kept
+        return Delta
+    end
 
-        --> Nothing was stale, so the peer is inside the stale window and still
-        --> over capacity. Anything at or below Highest - Capacity is already
-        --> rejected as stale by the check below, so remembering it buys nothing.
-        if Kept > Capacity then
-            local Floor = Window.Highest - Capacity
-            local Remaining = 0
-            for SeenSequence in Window.Time do
-                if SeenSequence <= Floor then
+    function RuntimeSupport.SequenceDelta(Newer: number, Older: number): number
+        return SequenceDelta(Newer, Older)
+    end
+
+    function CheckReplay(Source: any, Name: string, Sequence: number?, Size: number?): (boolean, string?)
+        if Sequence == nil then
+            return true, nil
+        end
+
+        Sequence = Sequence % SEQUENCE_SPACE
+        local Key = RuntimeSupport.PeerKey(Source)
+        local ByName = RuntimeState.Replay[Key]
+        if ByName == nil then
+            ByName = {}
+            RuntimeState.Replay[Key] = ByName
+        end
+
+        local Window = ByName[Name]
+        local Now = os.clock()
+        if Window == nil then
+            Window = {
+                Highest = nil :: number?,
+                Seen = {},
+                Time = {},
+                Tracked = 0
+            }
+            ByName[Name] = Window
+        end
+
+        --> Sweep only once the window is actually full, not on every packet: the
+        --> sweep is O(tracked) and the sender controls how many sequence numbers
+        --> are tracked. An entry leaves when it is stale in time or has fallen out
+        --> of the window, and anything out of the window is rejected as stale
+        --> below anyway, so forgetting it never weakens the check.
+        local WindowSize = RuntimeConfig.ReplayWindowSize
+        local Capacity = if WindowSize > 0 then WindowSize else 256
+        if Window.Tracked > Capacity and Window.Highest ~= nil then
+            local Highest = Window.Highest
+            local Kept = 0
+            for SeenSequence, SeenAt in Window.Time do
+                if Now - SeenAt >= RuntimeConfig.ReplayStaleSeconds or SequenceDelta(Highest, SeenSequence) >= Capacity then
                     Window.Seen[SeenSequence] = nil
                     Window.Time[SeenSequence] = nil
                 else
-                    Remaining += 1
+                    Kept += 1
                 end
             end
-            Window.Tracked = Remaining
+            Window.Tracked = Kept
         end
-    end
 
-    if Window.Seen[Sequence] then
-        DropPacket(Source, Name, TransportError.ReplayDuplicate, Size)
-        return false
-    end
+        if Window.Seen[Sequence] then
+            DropPacket(Source, Name, TransportError.ReplayDuplicate, Size)
+            return false, TransportError.ReplayDuplicate
+        end
 
-    if RuntimeConfig.ReplayWindowSize > 0 and Window.Highest - Sequence >= RuntimeConfig.ReplayWindowSize then
-        DropPacket(Source, Name, TransportError.ReplayStale, Size)
-        return false
-    end
+        local Highest = Window.Highest
+        if Highest ~= nil and WindowSize > 0 and SequenceDelta(Highest, Sequence) >= WindowSize then
+            DropPacket(Source, Name, TransportError.ReplayStale, Size)
+            return false, TransportError.ReplayStale
+        end
 
-    Window.Highest = math.max(Window.Highest, Sequence)
-    Window.Seen[Sequence] = true
-    Window.Time[Sequence] = Now
-    Window.Tracked += 1
-    return true
+        if Highest == nil or SequenceDelta(Sequence, Highest) > 0 then
+            Window.Highest = Sequence
+        end
+        Window.Seen[Sequence] = true
+        Window.Time[Sequence] = Now
+        Window.Tracked += 1
+        return true, nil
+    end
 end
 
 function RuntimeSupport.IsFiniteNumber(Value: any): boolean
@@ -1911,115 +1923,257 @@ function RuntimeSupport.ValidateDecodedPayload(Name: string, Source: any, Channe
     })
 end
 
-local function CheckPolicy(Source: any, Name: string, Channel: string, PolicyName: string?, PolicyGroup: string?, Constraints: any, Size: number?): boolean
-    if RuntimeState.KilledRemotes[Name] then
-        DropPacket(Source, Channel, TransportError.KillSwitch, Size)
-        return false
-    end
+local CheckPolicy: (any, string, string, string?, string?, any, number?) -> (boolean, string?)
+do
+    local UnregisteredWarned: {[string]: true} = {}
 
-    if PolicyGroup and RuntimeState.KilledPolicyGroups[PolicyGroup] then
-        DropPacket(Source, Channel, TransportError.KillSwitch, Size)
-        return false
-    end
-
-    if not CheckCooldown(Source, Name, Constraints.CooldownSeconds) then
-        DropPacket(Source, Channel, TransportError.PolicyRejected, Size)
-        return false
-    end
-
-    if not CheckReplay(Source, Name, RecievePredictionId, Size) then
-        return false
-    end
-
-    --> Idempotency used to be handed to policies as an advisory flag and enforced
-    --> by nothing, so `Idempotency: true` on an event silently did nothing unless
-    --> the game happened to write a policy that called CheckIdempotency itself.
-    --> A security attribute that quietly does nothing is worse than no attribute,
-    --> so the runtime enforces it here.
-    -->
-    --> PRECONDITION, and it is a real limit: the key is the sequence number, and a
-    --> sequence only reaches the wire when the sender attached a prediction id. On
-    --> an event with no prediction there is nothing that identifies one logical
-    --> call, so there is nothing to deduplicate and the packet is allowed through.
-    --> CheckReplay above has exactly the same precondition -- ReplayWindowSize and
-    --> ReplayStaleSeconds are inert without prediction. Use CooldownSeconds to
-    --> bound a one-shot action that does not carry a sequence.
-    if Constraints.Idempotency == true and RecievePredictionId ~= nil then
-        if not RuntimeSupport.CheckIdempotency(Source, `{Name}:{RecievePredictionId}`) then
-            DropPacket(Source, Channel, TransportError.ReplayDuplicate, Size)
-            return false
+    local function WarnUnregistered(Kind: string, RuleName: string, Name: string)
+        local Key = `{Kind}:{RuleName}`
+        if UnregisteredWarned[Key] then
+            return
         end
+
+        UnregisteredWarned[Key] = true
+        warn(`[Cheeto]: {Kind} "{RuleName}" is not registered, so every packet on "{Name}" is dropped. Register it with Security.Register{Kind}.`)
     end
 
-    local Context = {
-        Source = Source,
-        Name = Name,
-        Channel = Channel,
-        Policy = PolicyName,
-        PolicyGroup = PolicyGroup,
-        Constraints = Constraints,
-        UserId = TryGetUserId(Source),
-        Size = Size or 0
-    }
+    local function Rejected(Source: any, Channel: string, Reason: string, Size: number?, Name: string?): (boolean, string?)
+        DropPacket(Source, Channel, Reason, Size, Name)
+        return false, Reason
+    end
 
-    if PolicyName and PolicyName ~= "" then
+    local function RunPolicyRule(Source: any, Name: string, Channel: string, PolicyName: string, Context: any, Size: number?): (boolean, string?)
         local Rule = RuntimeState.PolicyRules[PolicyName]
         if Rule == nil then
-            DropPacket(Source, Channel, TransportError.PolicyRejected, Size)
-            return false
+            --> Fail closed. A policy name nobody registered used to be satisfied by
+            --> a built-in that only checked the sender was connected, so
+            --> `Policy: "admin"` looked protected and admitted every player.
+            WarnUnregistered("Policy", PolicyName, Name)
+            return Rejected(Source, Channel, TransportError.PolicyRejected, Size, Name)
         end
 
+        Context.Policy = PolicyName
         local Success, Allowed, Reason = pcall(Rule, Context)
-        if not Success or Allowed ~= true then
-            DropPacket(Source, Channel, Reason or TransportError.PolicyRejected, Size)
-            return false
+        if not Success then
+            MetricAdd("HookErrors", "Policy")
+            warn(`[Cheeto]: Policy "{PolicyName}" failed: {Allowed}`)
+            return Rejected(Source, Channel, TransportError.PolicyRejected, Size, Name)
         end
-    elseif RuntimeConfig.RequirePolicies and Source ~= "Server" then
-        DropPacket(Source, Channel, TransportError.PolicyRejected, Size)
-        return false
+
+        if Allowed ~= true then
+            local DropReason = if type(Reason) == "string" and Reason ~= "" then Reason else TransportError.PolicyRejected
+            return Rejected(Source, Channel, DropReason, Size, Name)
+        end
+
+        return true, nil
     end
 
-    if PolicyGroup and RuntimeState.PolicyGroups[PolicyGroup] then
-        for _, RuleName in RuntimeState.PolicyGroups[PolicyGroup] do
-            if not CheckPolicy(Source, Name, Channel, RuleName, nil, Constraints, Size) then
-                return false
+    function CheckPolicy(Source: any, Name: string, Channel: string, PolicyName: string?, PolicyGroup: string?, Constraints: any, Size: number?): (boolean, string?)
+        if RuntimeState.KilledRemotes[Name] then
+            return Rejected(Source, Channel, TransportError.KillSwitch, Size, Name)
+        end
+
+        if PolicyGroup and RuntimeState.KilledPolicyGroups[PolicyGroup] then
+            return Rejected(Source, Channel, TransportError.KillSwitch, Size, Name)
+        end
+
+        if not CheckCooldown(Source, Name, Constraints.CooldownSeconds) then
+            return Rejected(Source, Channel, TransportError.Cooldown, Size, Name)
+        end
+
+        local ReplayOk, ReplayReason = CheckReplay(Source, Name, RecievePredictionId, Size)
+        if not ReplayOk then
+            return false, ReplayReason
+        end
+
+        --> The key is the sequence number, which only reaches the wire when the
+        --> sender attached a prediction id. Without one there is nothing that
+        --> identifies one logical call, so the packet is allowed through; use
+        --> CooldownSeconds or Security.CheckIdempotency for unsequenced actions.
+        if Constraints.Idempotency == true and RecievePredictionId ~= nil then
+            if not RuntimeSupport.CheckIdempotency(Source, `{Name}:{RecievePredictionId}`) then
+                return Rejected(Source, Channel, TransportError.ReplayDuplicate, Size, Name)
             end
         end
+
+        local ConstraintOk, ConstraintReason = RuntimeSupport.CheckSenderConstraints(Source, Constraints)
+        if not ConstraintOk then
+            return Rejected(Source, Channel, ConstraintReason or TransportError.ConstraintRejected, Size, Name)
+        end
+
+        local HasPolicy = PolicyName ~= nil and PolicyName ~= ""
+        local HasGroup = PolicyGroup ~= nil and PolicyGroup ~= ""
+        if not HasPolicy and not HasGroup and Constraints.Auth == nil and RuntimeConfig.RequirePolicies and Source ~= "Server" then
+            return Rejected(Source, Channel, TransportError.PolicyRejected, Size, Name)
+        end
+
+        if not HasPolicy and not HasGroup then
+            return true, nil
+        end
+
+        local Context = {
+            Source = Source,
+            Name = Name,
+            Channel = Channel,
+            Policy = PolicyName,
+            PolicyGroup = PolicyGroup,
+            Constraints = Constraints,
+            UserId = TryGetUserId(Source),
+            Size = Size or 0
+        }
+
+        if HasPolicy then
+            local Allowed, Reason = RunPolicyRule(Source, Name, Channel, PolicyName :: string, Context, Size)
+            if not Allowed then
+                return false, Reason
+            end
+        end
+
+        if HasGroup then
+            local Rules = RuntimeState.PolicyGroups[PolicyGroup :: string]
+            if Rules == nil then
+                WarnUnregistered("PolicyGroup", PolicyGroup :: string, Name)
+                return Rejected(Source, Channel, TransportError.PolicyRejected, Size, Name)
+            end
+
+            for _, RuleName in Rules do
+                local Allowed, Reason = RunPolicyRule(Source, Name, Channel, RuleName, Context, Size)
+                if not Allowed then
+                    return false, Reason
+                end
+            end
+        end
+
+        return true, nil
     end
 
-    return true
-end
+    function RuntimeSupport.RegisterPolicy(Name: string, Callback: ((any) -> (boolean, string?))?)
+        RuntimeState.PolicyRules[Name] = Callback
+        UnregisteredWarned[`Policy:{Name}`] = nil
+    end
 
-function RuntimeSupport.RegisterPolicy(Name: string, Callback: (any) -> (boolean, string?))
-    RuntimeState.PolicyRules[Name] = Callback
-end
-
-function RuntimeSupport.RegisterPolicyGroup(Name: string, Rules: {string})
-    RuntimeState.PolicyGroups[Name] = table.clone(Rules)
+    function RuntimeSupport.RegisterPolicyGroup(Name: string, Rules: {string}?)
+        RuntimeState.PolicyGroups[Name] = if Rules then table.clone(Rules) else nil
+        UnregisteredWarned[`PolicyGroup:{Name}`] = nil
+    end
 end
 
 function RuntimeSupport.CheckIdempotency(Source: any, Key: string, TtlSeconds: number?): boolean
     local Peer = RuntimeSupport.PeerKey(Source)
     local State = RuntimeState.Idempotency[Peer]
     if State == nil then
-        State = {}
+        State = { Keys = {}, LastSweep = 0 }
         RuntimeState.Idempotency[Peer] = State
     end
 
+    --> Expired keys are swept at most once a second. Sweeping on every call
+    --> made each packet cost O(keys held), and the sender decides how many
+    --> keys that is.
     local Now = os.clock()
-    local Ttl = TtlSeconds or 120
-    for Existing, ExpiresAt in State do
-        if ExpiresAt <= Now then
-            State[Existing] = nil
+    local Keys = State.Keys
+    if Now - State.LastSweep >= 1 then
+        State.LastSweep = Now
+        for Existing, ExpiresAt in Keys do
+            if ExpiresAt <= Now then
+                Keys[Existing] = nil
+            end
         end
     end
 
-    if State[Key] ~= nil then
+    local ExpiresAt = Keys[Key]
+    if ExpiresAt ~= nil and ExpiresAt > Now then
         return false
     end
 
-    State[Key] = Now + Ttl
+    Keys[Key] = Now + (TtlSeconds or 120)
     return true
+end
+
+function RuntimeSupport.SetZone(Player: any, ZoneName: string?)
+    RuntimeState.PlayerZones[Player] = ZoneName
+end
+
+function RuntimeSupport.GetZone(Player: any): string?
+    return RuntimeState.PlayerZones[Player]
+end
+
+do
+    local function ReadProperty(Object: any, Property: string): any
+        local Success, Value = pcall(function()
+            return Object[Property]
+        end)
+        return if Success then Value else nil
+    end
+
+    local function FindHumanoid(Player: any): any
+        local Character = ReadProperty(Player, "Character")
+        if Character == nil then
+            return nil
+        end
+
+        local Success, Humanoid = pcall(function()
+            return Character:FindFirstChildOfClass("Humanoid")
+        end)
+        return if Success then Humanoid else nil
+    end
+
+    local function InScope(Store: {[any]: {[any]: true}}, ScopeName: string, Player: any): boolean
+        local Members = Store[ScopeName]
+        return Members ~= nil and Members[Player] == true
+    end
+
+    local function MatchesCharacterState(Player: any, Expected: string): boolean
+        local Humanoid = FindHumanoid(Player)
+        local Health = if Humanoid then ReadProperty(Humanoid, "Health") else nil
+        local Alive = type(Health) == "number" and Health > 0
+        if Expected == "Alive" then
+            return Alive
+        elseif Expected == "Dead" then
+            return not Alive
+        elseif Humanoid == nil then
+            return false
+        end
+
+        local Success, State = pcall(function()
+            return Humanoid:GetState()
+        end)
+        return Success and State ~= nil and (State.Name == Expected or tostring(State) == Expected)
+    end
+
+    --> The constraints that describe the SENDER, checked before the payload is
+    --> decoded. The payload constraints (MaxDistance, RequireOwnership, ...) run
+    --> after decoding, in CheckPayloadConstraints.
+    function RuntimeSupport.CheckSenderConstraints(Source: any, Constraints: any): (boolean, string?)
+        if Source == "Server" then
+            return true, nil
+        end
+
+        local Team = Constraints.RequireTeam
+        if Team ~= nil then
+            local PlayerTeam = ReadProperty(Source, "Team")
+            local TeamName = if PlayerTeam ~= nil then ReadProperty(PlayerTeam, "Name") else nil
+            if TeamName ~= Team and not InScope(RuntimeState.Teams, Team, Source) then
+                return false, TransportError.ConstraintRejected
+            end
+        end
+
+        local Zone = Constraints.RequireZone
+        if Zone ~= nil and RuntimeState.PlayerZones[Source] ~= Zone then
+            return false, TransportError.ConstraintRejected
+        end
+
+        local Match = Constraints.RequireMatch
+        if Match ~= nil and not InScope(RuntimeState.Matches, Match, Source) then
+            return false, TransportError.ConstraintRejected
+        end
+
+        local CharacterState = Constraints.RequireCharacterState
+        if CharacterState ~= nil and not MatchesCharacterState(Source, CharacterState) then
+            return false, TransportError.ConstraintRejected
+        end
+
+        return true, nil
+    end
 end
 
 function RuntimeSupport.RegisterHandle(Object: any, Owner: Player?, ExpiresAt: number?): number
@@ -2102,32 +2256,6 @@ function RuntimeSupport.ValidateCapability(Capability: number, Player: Player?, 
     return Entry.Object
 end
 
-local function RegisterPolicyPresets()
-    local function Alive(Context)
-        return Context.Source == "Server" or Context.Source ~= nil
-    end
-
-    local function RequireKnownPolicy(Context)
-        return Alive(Context)
-    end
-
-    for _, Name in {
-        "damage",
-        "currency",
-        "trade",
-        "inventory",
-        "teleport",
-        "admin",
-        "crafting",
-        "marketplace",
-        "moderation",
-    } do
-        RuntimeState.PolicyRules[Name] = RequireKnownPolicy
-    end
-end
-
-RegisterPolicyPresets()
-
 local function TransportKey(Target: any): any
     return RuntimeSupport.PeerKey(Target)
 end
@@ -2165,33 +2293,65 @@ local function PriorityValue(Priority: string?): number
     return PriorityOrder[Priority or "Gameplay"] or PriorityOrder.Gameplay
 end
 
-function RuntimeSupport.RecordQueuedEvent(Target: any, Channel: string, Size: number, Priority: string?)
-    local State = GetTransportState(Target)
-    local Lane = Priority or "Gameplay"
-    State.QueuedBytes += Size
-    State.QueuedEvents += 1
-    State.LastQueueTime = os.clock()
-    State.Priority[Lane] = State.Priority[Lane] or { Bytes = 0, Events = 0 }
-    State.Priority[Lane].Bytes += Size
-    State.Priority[Lane].Events += 1
+do
+    local function ShouldShed(State: any, Priority: string?): boolean
+        return RuntimeConfig.MaxQueuedBytes > 0
+            and State.QueuedBytes > RuntimeConfig.MaxQueuedBytes
+            and RuntimeConfig.LowPriorityShedding
+            and PriorityValue(Priority) >= PriorityOrder.Cosmetic
+    end
 
-    if RuntimeConfig.MaxQueuedBytes > 0 and State.QueuedBytes > RuntimeConfig.MaxQueuedBytes then
-        if RuntimeConfig.LowPriorityShedding and PriorityValue(Priority) >= PriorityOrder.Cosmetic then
+    --> Accounts for bytes written into Target's pending reliable buffer. Only
+    --> call it for bytes that really sit in that buffer until the next flush:
+    --> RecordFlush zeroes the counters, so anything recorded here and never
+    --> flushed would count against the peer forever.
+    function RuntimeSupport.RecordQueuedEvent(Target: any, Channel: string, Size: number, Priority: string?): boolean
+        local State = GetTransportState(Target)
+        if ShouldShed(State, Priority) then
             State.DroppedLowPriority += 1
             DropPacket(Target, Channel, TransportError.Backpressure, Size)
             return false
         end
+
+        local Lane = Priority or "Gameplay"
+        State.QueuedBytes += Size
+        State.QueuedEvents += 1
+        State.LastQueueTime = os.clock()
+        State.Priority[Lane] = State.Priority[Lane] or { Bytes = 0, Events = 0 }
+        State.Priority[Lane].Bytes += Size
+        State.Priority[Lane].Events += 1
+        return true
     end
 
-    return true
+    --> Admission for sends that never sit in a per-peer buffer (unreliable sends
+    --> go out immediately). Low-priority traffic is still shed while the peer's
+    --> reliable backlog is over budget, but nothing is added to it.
+    function RuntimeSupport.AdmitEvent(Target: any, Channel: string, Size: number, Priority: string?): boolean
+        local State = GetTransportState(Target)
+        if ShouldShed(State, Priority) then
+            State.DroppedLowPriority += 1
+            DropPacket(Target, Channel, TransportError.Backpressure, Size)
+            return false
+        end
+
+        return true
+    end
 end
 
 function RuntimeSupport.RecordFlush(Target: any, Channel: string, Size: number)
     local State = GetTransportState(Target)
-    State.QueuedBytes = math.max(0, State.QueuedBytes - Size)
-    State.QueuedEvents = math.max(0, State.QueuedEvents - 1)
-    State.SentBytes += Size
-    State.SentPackets += 1
+    State.QueuedBytes = 0
+    State.QueuedEvents = 0
+    for _, Lane in State.Priority do
+        Lane.Bytes = 0
+        Lane.Events = 0
+    end
+    --> Size 0 means the batch was discarded (over MaxReliablePacketBytes): its
+    --> bytes stop counting as queued, but nothing was sent.
+    if Size > 0 then
+        State.SentBytes += Size
+        State.SentPackets += 1
+    end
     State.LastFlush = os.clock()
     EmitTelemetry("transport.flush", {
         Target = Target,
@@ -2809,13 +2969,7 @@ local function Configure(Options: {[string]: any})
             error(`[Cheeto]: Unknown runtime option "{Key}".`)
         end
 
-        if Key == "ProtocolVersion" and Value ~= PROTOCOL_VERSION then
-            error("[Cheeto]: Cheeto only speaks protocol v2; RuntimeConfig.ProtocolVersion must be 2.")
-        elseif Key == "ProtocolMode" then
-            error("[Cheeto]: ProtocolMode was removed; Cheeto always uses strict v2 framing.")
-        elseif Key == "AcceptProtocolVersion1" then
-            error("[Cheeto]: AcceptProtocolVersion1 was removed; protocol v1 is not supported.")
-        elseif Key == "CharacterIntegrityMode" then
+        if Key == "CharacterIntegrityMode" then
             local Mode = string.lower(tostring(Value))
             if Mode ~= "observe" and Mode ~= "report" and Mode ~= "correct" and Mode ~= "kick" then
                 error('[Cheeto]: CharacterIntegrityMode must be "Observe", "Report", "Correct", or "Kick".')
@@ -2904,16 +3058,8 @@ local function InstancePayload(Instances: {Instance})
     return Instances
 end
 
-function RuntimeSupport.CurrentProtocolVersion(): number
-    return PROTOCOL_VERSION
-end
-
-function RuntimeSupport.ResolveReceiveProtocolVersion(Source: any): number
-    return PROTOCOL_VERSION
-end
-
-function RuntimeSupport.IsPeerCompatible(ProtocolVersion: number, SchemaVersion: number, SchemaHash: string?): boolean
-    return ProtocolVersion == PROTOCOL_VERSION
+function RuntimeSupport.IsPeerCompatible(Format: number, SchemaVersion: number, SchemaHash: string?): boolean
+    return Format == WIRE_FORMAT
         and SchemaVersion >= RuntimeConfig.MinimumSchemaVersion
         and SchemaHash == RuntimeConfig.SchemaHash
 end
@@ -2925,9 +3071,9 @@ function RuntimeSupport.WriteCapabilityHandshake()
 
     local Frame = BeginMessage(CAPABILITY_HANDSHAKE_INDEX)
     local IndexOffset = Allocate(1)
-    buffer.writeu8(SendBuffer, IndexOffset, PROTOCOL_VERSION)
+    buffer.writeu8(SendBuffer, IndexOffset, WIRE_FORMAT)
     local ProtocolOffset = Allocate(1)
-    buffer.writeu8(SendBuffer, ProtocolOffset, PROTOCOL_VERSION)
+    buffer.writeu8(SendBuffer, ProtocolOffset, WIRE_FORMAT)
     local SchemaOffset = Allocate(2)
     buffer.writeu16(SendBuffer, SchemaOffset, RuntimeConfig.SchemaVersion)
     local MinimumSchemaOffset = Allocate(2)
@@ -2956,17 +3102,17 @@ function RuntimeSupport.QueueCapabilityHandshake(Target: any?)
 end
 
 function RuntimeSupport.ReadCapabilityHandshake(Source: any, Channel: string, PacketSize: number): boolean
-    local Success, ProtocolVersion, SchemaVersion, MinimumSchemaVersion, SchemaHash = pcall(function()
+    local Success, WireFormat, SchemaVersion, MinimumSchemaVersion, SchemaHash = pcall(function()
         local Marker = buffer.readu8(RecieveBuffer, Read(1))
-        if Marker ~= PROTOCOL_VERSION then
-            error("[Cheeto]: Invalid v2 handshake marker.")
+        if Marker ~= WIRE_FORMAT then
+            error("[Cheeto]: Unknown handshake format.")
         end
-        local ProtocolVersion = buffer.readu8(RecieveBuffer, Read(1))
+        local WireFormat = buffer.readu8(RecieveBuffer, Read(1))
         local SchemaVersion = buffer.readu16(RecieveBuffer, Read(2))
         local MinimumSchemaVersion = buffer.readu16(RecieveBuffer, Read(2))
         local HashLength = buffer.readu8(RecieveBuffer, Read(1))
         local SchemaHash = buffer.readstring(RecieveBuffer, Read(HashLength), HashLength)
-        return ProtocolVersion, SchemaVersion, MinimumSchemaVersion, SchemaHash
+        return WireFormat, SchemaVersion, MinimumSchemaVersion, SchemaHash
     end)
 
     if not Success then
@@ -2974,9 +3120,9 @@ function RuntimeSupport.ReadCapabilityHandshake(Source: any, Channel: string, Pa
         return false
     end
 
-    local Compatible = RuntimeSupport.IsPeerCompatible(ProtocolVersion, SchemaVersion, SchemaHash)
+    local Compatible = RuntimeSupport.IsPeerCompatible(WireFormat, SchemaVersion, SchemaHash)
     RuntimeState.PeerCapabilities[RuntimeSupport.PeerKey(Source)] = {
-        ProtocolVersion = ProtocolVersion,
+        WireFormat = WireFormat,
         SchemaVersion = SchemaVersion,
         MinimumSchemaVersion = MinimumSchemaVersion,
         SchemaHash = SchemaHash,
@@ -2993,7 +3139,7 @@ function RuntimeSupport.ReadCapabilityHandshake(Source: any, Channel: string, Pa
         Reason = if Compatible then nil else "IncompatibleProtocol",
         Size = PacketSize,
         Payload = {
-            ProtocolVersion = ProtocolVersion,
+            WireFormat = WireFormat,
             SchemaVersion = SchemaVersion,
             MinimumSchemaVersion = MinimumSchemaVersion,
             SchemaHash = SchemaHash
@@ -3011,10 +3157,10 @@ end
 function RuntimeSupport.ProtocolInfo(Source: any?)
     local Capability = RuntimeState.PeerCapabilities[RuntimeSupport.PeerKey(Source)]
     return {
-        LocalProtocolVersion = PROTOCOL_VERSION,
+        WireFormat = WIRE_FORMAT,
         LocalSchemaVersion = RuntimeConfig.SchemaVersion,
         MinimumSchemaVersion = RuntimeConfig.MinimumSchemaVersion,
-        ProtocolMode = "StrictV2Only",
+        SchemaHash = RuntimeConfig.SchemaHash,
         Peer = Capability
     }
 end
@@ -3136,8 +3282,35 @@ function Frame.Cursor(): number
     return SendCursor
 end
 
-function Frame.Rewind(To: number)
+--> A position in the send buffer that a failed or rejected write can be
+--> rolled back to. The cursor alone is not enough: the write may also have
+--> pushed Instances and interned strings, and leaving either behind makes the
+--> receiver's instance cursor and string table disagree with the sender's.
+function Frame.Mark(): (number, number, number)
+    return SendCursor, #SendInstances, NextSendStringId
+end
+
+function Frame.Rewind(To: number, InstanceCount: number?, StringId: number?)
     SendCursor = To
+    SendBitByte = 0
+    SendBitCount = 0
+    if InstanceCount ~= nil then
+        for Index = #SendInstances, InstanceCount + 1, -1 do
+            SendInstances[Index] = nil
+        end
+    end
+    if StringId ~= nil and StringId < NextSendStringId then
+        for Value, Id in SendStringIds do
+            if Id >= StringId then
+                SendStringIds[Value] = nil
+            end
+        end
+        NextSendStringId = StringId
+    end
+end
+
+function Frame.MessageSize(): number
+    return RecieveFrameEnd - RecieveMessageStart
 end
 
 --> Receive-side boundary. Generated code drives the receive cursor at packet
@@ -3306,6 +3479,61 @@ local function TrackEventReceive(Name: string, Channel: string, Size: number, So
         Channel = Channel,
         Size = Size
     })
+end
+
+--> Every generated send goes through here. Writer serializes the payload
+--> into whatever buffer is loaded; Accounting says how the bytes count
+--> against Target: "Queue" for bytes that wait in Target's reliable buffer,
+--> "Admit" for sends that leave immediately, nil for a broadcast scratch
+--> buffer that is accounted per player when it is copied out.
+-->
+--> Returns true when the event was written. Returns false and a message when
+--> serialization raised: the buffer is rolled back first, so the batch it
+--> was going into stays well-formed. The caller saves its buffer state and
+--> then raises the message, in that order, so a failed write can never leave
+--> a peer's saved buffer pointing at bytes that were released.
+function RuntimeSupport.WriteEvent(
+    Name: string,
+    Channel: string,
+    Target: any,
+    Accounting: string?,
+    Priority: string,
+    PredictionId: number?,
+    Writer: (...any) -> (),
+    ...: any
+): (boolean, string?)
+    if not BeforeSend(Name, Channel, Target) then
+        DropPacket(Target, Channel, TransportError.MiddlewareRejected, 0, Name)
+        return false, nil
+    end
+
+    RuntimeSupport.QueueCapabilityHandshake(nil)
+
+    local Cursor, InstanceCount, StringId = Frame.Mark()
+    local PreviousPredictionId = State.SendPredictionId
+    State.SendPredictionId = PredictionId
+    local Success, Error = pcall(Writer, ...)
+    State.SendPredictionId = PreviousPredictionId
+    if not Success then
+        Frame.Rewind(Cursor, InstanceCount, StringId)
+        return false, `[Cheeto]: Could not send "{Name}": {Error}`
+    end
+
+    local Size = SendCursor - Cursor
+    if Accounting == "Queue" then
+        if not RuntimeSupport.RecordQueuedEvent(Target, Channel, Size, Priority) then
+            Frame.Rewind(Cursor, InstanceCount, StringId)
+            return false, nil
+        end
+    elseif Accounting == "Admit" then
+        if not RuntimeSupport.AdmitEvent(Target, Channel, Size, Priority) then
+            Frame.Rewind(Cursor, InstanceCount, StringId)
+            return false, nil
+        end
+    end
+
+    TrackEventSend(Name, Channel, Size, Target, if RuntimeState.Capture.Enabled then table.pack(...) else nil)
+    return true, nil
 end
 
 local function CheckRateLimit(Source: any, Key: string, Rate: number?, Burst: number?): boolean
@@ -4006,13 +4234,12 @@ function RuntimeSupport.RunClientIntegrityChallenge(ChallengeId: number, Nonce: 
                 Nonce = Challenge.Nonce,
                 Completion = Local.Completion,
                 Sweep = Local.Sweep,
-                ProtocolVersion = PROTOCOL_VERSION,
+                WireFormat = WIRE_FORMAT,
                 SchemaVersion = RuntimeConfig.SchemaVersion,
                 ReceivedAt = Challenge.ReceivedAt,
             }
             if
-                RuntimeSupport.CurrentProtocolVersion() ~= PROTOCOL_VERSION
-                or type(BeginMessage) ~= "function"
+                type(BeginMessage) ~= "function"
                 or type(EndMessage) ~= "function"
                 or type(Read) ~= "function"
             then
@@ -4448,11 +4675,12 @@ local function Save(): BufferSave
     }
 end
 
+--> Load never returns the buffer it switches away from to the pool. That
+--> buffer is usually some peer's pending batch, still referenced by its saved
+--> state: pooling it let the next allocation hand the same memory to another
+--> peer and overwrite messages that had not been sent yet.
 local function Load(Save: BufferSave?)
     if Save then
-        if SendBuffer ~= Save.Buffer then
-            ReleaseBuffer(SendBuffer)
-        end
         SendSize = Save.Size
         SendCursor = Save.Cursor
         SendOffset = Save.Cursor
@@ -4480,14 +4708,19 @@ local function Load(Save: BufferSave?)
     NextSendStringId = 1
 end
 
+--> Invocation ids are one byte. Skip ids that are still awaiting a reply;
+--> handing one out twice made the second caller fail with "already awaiting a
+--> response" even while 254 other ids were free.
 local function Invoke()
-    if Invocations == 255 then
-        Invocations = 0
+    for _ = 1, 256 do
+        local Invocation = Invocations
+        Invocations = (Invocations + 1) % 256
+        if Calls[Invocation] == nil then
+            return Invocation
+        end
     end
 
-    local Invocation = Invocations
-    Invocations += 1
-    return Invocation
+    error("[Cheeto]: 256 calls are already awaiting a response.")
 end
 
 --> Resuming an invocation is the ONE resume an attacker can aim: the identifier
@@ -4546,6 +4779,29 @@ local function ExpireInvocations()
             ResumeInvocation(Invocation, false, `[Cheeto]: Invoke timed out after {Timeout} seconds.`)
         end
     end
+end
+
+--> Checked before the request is written. Raising after the write left the
+--> server running a call whose caller had already been told it failed.
+local function CheckInvocationCapacity(Name: string, MaxPending: number?)
+    ExpireInvocations()
+    local GlobalLimit = RuntimeConfig.MaxPendingInvokes
+    local NameLimit = MaxPending or GlobalLimit
+    if GlobalLimit > 0 and PendingInvokes >= GlobalLimit then
+        error(`[Cheeto]: More than {GlobalLimit} calls are awaiting a response.`, 3)
+    end
+
+    if NameLimit > 0 and (PendingInvokesByName[Name] or 0) >= NameLimit then
+        error(`[Cheeto]: More than {NameLimit} calls for "{Name}" are awaiting a response.`, 3)
+    end
+end
+
+function RuntimeSupport.WriteInvocationFailure(Index: number, Identifier: number, Reason: string?)
+    local Message = BeginMessage(Index)
+    local Offset = Allocate(2)
+    buffer.writeu8(SendBuffer, Offset, Identifier)
+    buffer.writeu8(SendBuffer, Offset + 1, 0)
+    EndMessage(Message)
 end
 
 local function RegisterInvocation(Identifier: number, Thread: thread, Name: string?, MaxPending: number?, Timeout: number?)
@@ -4744,6 +5000,7 @@ local function ClearPlayerRuntimeState(Player: Player)
     RuntimeState.InvokeNonces[Player] = nil
     RuntimeState.Abuse[Player] = nil
     RuntimeState.Idempotency[Player] = nil
+    RuntimeState.PlayerZones[Player] = nil
     RuntimeState.ClientShield.LastReport[Player] = nil
     RuntimeState.ClientShield.Integrity.Peers[Player] = nil
     RuntimeState.ClientShield.Integrity.LastEvidence[Player] = nil
@@ -4993,9 +5250,9 @@ function RuntimeSupport.InspectorSnapshot()
         ClientIntegrity = RuntimeSupport.ClientIntegritySnapshot(),
         CharacterIntegrity = RuntimeSupport.CharacterIntegritySnapshot(),
         Runtime = {
-            ProtocolVersion = RuntimeConfig.ProtocolVersion,
-            ProtocolMode = "StrictV2Only",
+            WireFormat = WIRE_FORMAT,
             SchemaVersion = RuntimeConfig.SchemaVersion,
+            SchemaHash = RuntimeConfig.SchemaHash,
             SecurityProfile = RuntimeConfig.SecurityProfile
         }
     }
@@ -5014,7 +5271,7 @@ function RuntimeSupport.CreateMessagingServiceAdapter(Topic: string, Service: an
             Channel = Channel,
             Payload = Payload,
             SchemaVersion = RuntimeConfig.SchemaVersion,
-            ProtocolVersion = RuntimeConfig.ProtocolVersion
+            SchemaHash = RuntimeConfig.SchemaHash
         })
     end
 
@@ -5052,7 +5309,7 @@ function RuntimeSupport.CreateMemoryStoreAdapter(Name: string, Service: any?)
         return Store:SetAsync(`{Scope}:{Key}`, {
             Payload = Payload,
             SchemaVersion = RuntimeConfig.SchemaVersion,
-            ProtocolVersion = RuntimeConfig.ProtocolVersion
+            SchemaHash = RuntimeConfig.SchemaHash
         }, ExpirationSeconds or 60)
     end
 

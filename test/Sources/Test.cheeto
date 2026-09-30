@@ -687,3 +687,37 @@ scope Issue33 {
         Data: (Map<u8>, Enum<u8>, Struct<u8>)
     }
 }
+
+--> Appended, so earlier wire ids are unchanged.
+enum Stride = { Walk, Run }
+
+event StrideClient {
+    From: Client,
+    Type: Reliable,
+    Call: SingleSync,
+    Data: Stride
+}
+
+--> A small per-endpoint cap. It is measured against this event's frame, so a
+--> large event in the same batch must not push it over.
+event SmallCapClient {
+    From: Client,
+    Type: Reliable,
+    Call: SingleSync,
+    MaxPacketBytes: 16,
+    Data: u8
+}
+
+event LargeClient {
+    From: Client,
+    Type: Reliable,
+    Call: SingleSync,
+    Data: string
+}
+
+--> No InvokeTimeoutSeconds of its own, so the runtime value applies.
+function SlowFunction {
+    Yield: Coroutine,
+    Data: u8,
+    Return: u8
+}

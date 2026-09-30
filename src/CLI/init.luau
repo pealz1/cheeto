@@ -58,7 +58,7 @@ local ARGUMENTS: { [string]: Argument } = {
 	},
 	Benchmark = {
 		Aliases = { "--benchmark" },
-		Description = "Measure v2 generation size/timing against thresholds",
+		Description = "Measure generation size and timing against thresholds",
 	},
 	Strict = {
 		Aliases = { "--strict" },
@@ -78,7 +78,7 @@ local ARGUMENTS: { [string]: Argument } = {
 	},
 	Compatibility = {
 		Aliases = { "--compatibility" },
-		Description = "Print strict v2 schema/hash compatibility checks",
+		Description = "Print which peer schema versions and hashes are accepted",
 	},
 	SchemaDocs = {
 		Aliases = { "--schema-docs" },
@@ -86,7 +86,7 @@ local ARGUMENTS: { [string]: Argument } = {
 	},
 	WriteLock = {
 		Aliases = { "--write-lock" },
-		Description = "Write cheeto.lock with v2 wire IDs and schema hashes",
+		Description = "Write cheeto.lock with wire IDs and schema hashes",
 	},
 	CheckLock = {
 		Aliases = { "--check-lock" },

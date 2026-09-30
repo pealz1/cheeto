@@ -36,6 +36,7 @@ local RUNTIME_EXPORTS = {
 	"CancelInvocations",
 	"ChallengeClientIntegrity",
 	"CheckAuth",
+	"CheckInvocationCapacity",
 	"CheckPolicy",
 	"CheckRateLimit",
 	"ClearInvocation",
@@ -153,22 +154,6 @@ local EVENT_SYNC_VALIDATION = {
 	'\twarn(`[Cheeto]: Yielded in a Sync call. Event "{SerdesEvent}" uses a Sync call, consider using an Async call instead.`)\n',
 	"\tSerdesThread = nil\n",
 	"end\n",
-}
-
-local RELIABLE_BODY = {
-	Header = "local Buffer, Size, Instances = State.SendBuffer, Frame.Cursor(), State.SendInstances",
-	Body = {
-		"Load(PlayersMap[Player])\n",
-		"local Position = Allocate(Size)\n",
-		"buffer.copy(State.SendBuffer, Position, Buffer, 0, Size)\n",
-		"table.move(Instances, 1, #Instances, #State.SendInstances + 1, State.SendInstances)\n",
-		"PlayersMap[Player] = Save()\n",
-	},
-}
-
-local UNRELIABLE_BODY = {
-	"local Buffer = buffer.create(Frame.Cursor())\n",
-	"buffer.copy(Buffer, 0, State.SendBuffer, 0, Frame.Cursor())\n",
 }
 
 local IGNORED_TYPES_IN_SHARED = {
@@ -295,7 +280,6 @@ local function RuntimeConfigLines(): { string }
 	end
 	return {
 		"local RuntimeConfig = {\n",
-		"\tProtocolVersion = 2,\n",
 		`\tEnableProtocolHandshake = {BooleanLiteral(Options.EnableProtocolHandshake, true)},\n`,
 		`\tSchemaVersion = {NumberLiteral(SchemaVersion, 1)},\n`,
 		`\tMinimumSchemaVersion = {NumberLiteral(Options.MinimumSchemaVersion, 1)},\n`,
@@ -399,6 +383,17 @@ local function RuntimeConfigLines(): { string }
 	}
 end
 
+--> Endpoint numbers are one byte and 252-255 are control frames.
+local MAX_ENDPOINTS_PER_CHANNEL = 252
+
+local function CheckEndpointCapacity(Reliability: string, Count: number)
+	if Count >= MAX_ENDPOINTS_PER_CHANNEL then
+		error(
+			`A schema can declare at most {MAX_ENDPOINTS_PER_CHANNEL} {string.lower(Reliability)} endpoints. Split the schema, or move endpoints to the other channel.`
+		)
+	end
+end
+
 local function SourceExpression(): string
 	return if Context == "Server" then "Player" else '"Server"'
 end
@@ -447,21 +442,33 @@ end
 --> and the post-decode Validate hook, so the two can never disagree about what a
 --> constraint is called.
 local function ConstraintsTable(Value: { [string]: any }): string
-	return `\{ Risk = {OptionalString(Value.Risk)}, CooldownSeconds = {NumberLiteral(Value.CooldownSeconds, 0)}, MaxDistance = {NumberLiteral(
-		Value.MaxDistance,
+	return `table.freeze(\{ Risk = {OptionalString(Value.Risk)}, Auth = {OptionalString(Value.Auth)}, CooldownSeconds = {NumberLiteral(
+		Value.CooldownSeconds,
 		0
-	)}, RequireOwnership = {BooleanLiteral(Value.RequireOwnership, false)}, RequireTeam = {OptionalString(
-		Value.RequireTeam
-	)}, RequireZone = {OptionalString(Value.RequireZone)}, RequireMatch = {OptionalString(Value.RequireMatch)}, RequireInventoryOwnership = {BooleanLiteral(
-		Value.RequireInventoryOwnership,
+	)}, MaxDistance = {NumberLiteral(Value.MaxDistance, 0)}, RequireOwnership = {BooleanLiteral(
+		Value.RequireOwnership,
 		false
-	)}, RequireCharacterState = {OptionalString(Value.RequireCharacterState)}, RequireObjectHandle = {BooleanLiteral(
-		Value.RequireObjectHandle,
+	)}, RequireTeam = {OptionalString(Value.RequireTeam)}, RequireZone = {OptionalString(Value.RequireZone)}, RequireMatch = {OptionalString(
+		Value.RequireMatch
+	)}, RequireInventoryOwnership = {BooleanLiteral(Value.RequireInventoryOwnership, false)}, RequireCharacterState = {OptionalString(
+		Value.RequireCharacterState
+	)}, RequireObjectHandle = {BooleanLiteral(Value.RequireObjectHandle, false)}, RequireServerKnownId = {BooleanLiteral(
+		Value.RequireServerKnownId,
 		false
-	)}, RequireServerKnownId = {BooleanLiteral(Value.RequireServerKnownId, false)}, Idempotency = {BooleanLiteral(
-		Value.Idempotency,
-		false
-	)} \}`
+	)}, Idempotency = {BooleanLiteral(Value.Idempotency, false)} \})`
+end
+
+--> Built once per endpoint at load, not once per packet: the receive path
+--> used to allocate this table for every event it decoded.
+local ConstraintsEmitted: { [string]: boolean } = {}
+
+local function ConstraintsReference(Reliability: string, Index: number, Value: { [string]: any }): string
+	local Key = `{Reliability}{Index}`
+	if not ConstraintsEmitted[Key] then
+		ConstraintsEmitted[Key] = true
+		Events.Push(`EndpointConstraints.{Reliability}[{Index}] = {ConstraintsTable(Value)}`)
+	end
+	return `EndpointConstraints.{Reliability}[{Index}]`
 end
 
 --> Constraints that describe the PAYLOAD rather than the sender. Only these justify
@@ -501,6 +508,7 @@ local function AddReceiveGuards(
 	Block: Blocks.Block,
 	Name: string,
 	Reliability: string,
+	Index: number,
 	Value: { [string]: any },
 	TrustedSource: boolean?
 )
@@ -516,11 +524,12 @@ local function AddReceiveGuards(
 	end
 
 	local Source = SourceExpression()
-	local EventMaxPacketBytes = Value.MaxPacketBytes or Options.MaxPacketBytes
 	Block:Line("local EventStart = Frame.At()")
-	if EventMaxPacketBytes then
+	--> Measured against this event's frame. Comparing the whole packet made a
+	--> small cap drop the event whenever it shared a batch with large ones.
+	if Value.MaxPacketBytes then
 		Block:Line(
-			`if Size > {EventMaxPacketBytes} then DropPacket({Source}, "{Reliability}", "MaxPacketBytes", Size) {AbortReadLine()} end`
+			`if Frame.MessageSize() > {Value.MaxPacketBytes} then DropPacket({Source}, "{Reliability}", "MaxPacketBytes", Size) {AbortReadLine()} end`
 		)
 	end
 
@@ -555,7 +564,7 @@ local function AddReceiveGuards(
 	Block:Line(
 		`if not CheckPolicy({Source}, "{Name}", "{Reliability}", {OptionalString(Value.Policy)}, {OptionalString(
 			Value.PolicyGroup
-		)}, {ConstraintsTable(Value)}, Size) then {AbortReadLine()} end`
+		)}, {ConstraintsReference(Reliability, Index, Value)}, Size) then {AbortReadLine()} end`
 	)
 end
 
@@ -563,6 +572,7 @@ local function AddAfterReceive(
 	Block: Blocks.Block,
 	Name: string,
 	Reliability: string,
+	Index: number,
 	PayloadExpression: string?,
 	Value: { [string]: any }?
 )
@@ -582,7 +592,9 @@ local function AddAfterReceive(
 	--> every packet in the game and the context table is a per-packet allocation.
 	if Value ~= nil and HasPayloadConstraint(Value) then
 		Block:Line(
-			`if not RunHooks("Validate", \{ Name = "{Name}", Source = {Source}, Channel = "{Reliability}", Size = Size, Constraints = {ConstraintsTable(
+			`if not RunHooks("Validate", \{ Name = "{Name}", Source = {Source}, Channel = "{Reliability}", Size = Size, Constraints = {ConstraintsReference(
+				Reliability,
+				Index,
 				Value
 			)}, Payload = {PayloadExpression or "nil"} \}) then DropPacket({Source}, "{Reliability}", "ConstraintRejected", Size) {AbortReadLine()} end`
 		)
@@ -633,40 +645,17 @@ local function AddDecodeFailureGuard(Block: Blocks.Block, Name: string, Reliabil
 	Failure:End()
 end
 
-local function AddTrackedWrite(
-	Block: Blocks.Block,
+local function WriteEventCall(
 	Name: string,
 	Reliability: string,
-	WriteEvent: string,
-	Target: string?,
-	PredictionId: string?,
-	PayloadExpression: string?,
-	Priority: string?,
-	CoalesceKey: string?
-)
-	Block:Line(
-		`if not BeforeSend("{Name}", "{Reliability}", {Target or "nil"}) then DropPacket({Target or "nil"}, "{Reliability}", "MiddlewareRejected") return end`
-	)
-	Block:Line("RuntimeSupport.QueueCapabilityHandshake(nil)")
-	Block:Line("local PreviousCursor = Frame.Cursor()")
-	if PredictionId then
-		Block:Line("local PreviousPredictionId = State.SendPredictionId")
-		Block:Line(`State.SendPredictionId = {PredictionId}`)
-	end
-	Block:Line(WriteEvent)
-	if PredictionId then
-		Block:Line("State.SendPredictionId = PreviousPredictionId")
-	end
-	Block:Line(`local EventSize = Frame.Cursor() - PreviousCursor`)
-	Block:Line(
-		`if not RuntimeSupport.RecordQueuedEvent({Target or "nil"}, "{Reliability}", EventSize, "{Priority or "Gameplay"}") then Frame.Rewind(PreviousCursor) return end`
-	)
-	if CoalesceKey then
-		Block:Line(
-			`RuntimeSupport.Coalesce({Target or "nil"}, "{CoalesceKey}", "{Priority or "Gameplay"}", {PayloadExpression or "nil"})`
-		)
-	end
-	Block:Line(`TrackEventSend("{Name}", "{Reliability}", EventSize, {Target or "nil"}, {PayloadExpression or "nil"})`)
+	Target: string,
+	Accounting: string,
+	Priority: string,
+	PredictionId: string,
+	Writer: string,
+	Arguments: string
+): string
+	return `RuntimeSupport.WriteEvent("{Name}", "{Reliability}", {Target}, {Accounting}, "{Priority}", {PredictionId}, {Writer}, {Arguments})`
 end
 
 local function PushRuntimeApi(Target: Builder.Builder, Indent: number, ReplayRawName: string?)
@@ -1091,6 +1080,7 @@ function Declarations.Event(Declaration: Parser.Event)
 	local Channel = IsUnreliable and Channels.Unreliable or Channels.Reliable
 
 	local Index = Channel.Count
+	CheckEndpointCapacity(Reliability, Index)
 	local Queue = `Queue.{Reliability}[{Index}]`
 	local Connection = `Events.{Reliability}[{Index}]`
 
@@ -1165,10 +1155,10 @@ function Declarations.Event(Declaration: Parser.Event)
 			end
 		end
 
-		AddReceiveGuards(Block, Declaration.Name, Reliability, Value)
+		AddReceiveGuards(Block, Declaration.Name, Reliability, Index, Value)
 		Block:Line(`local Success, {Arguments} = pcall({Util.GetPath(Identifier, false, Scope)})`)
 		AddDecodeFailureGuard(Block, Declaration.Name, Reliability, DecodeError)
-		AddAfterReceive(Block, Declaration.Name, Reliability, `table.pack({Arguments})`, Value)
+		AddAfterReceive(Block, Declaration.Name, Reliability, Index, `table.pack({Arguments})`, Value)
 
 		local Disconnect = Blocks.Function("", "", "()")
 		if IsSingle then
@@ -1238,7 +1228,7 @@ function Declarations.Event(Declaration: Parser.Event)
 		end
 
 		Channel.Listening = true
-		AddReceiveGuards(Block, Declaration.Name, Reliability, Value)
+		AddReceiveGuards(Block, Declaration.Name, Reliability, Index, Value)
 		Block:Compare(`{Queue}.size`, QueueLimit(Value), "GreaterOrEquals")
 			:Line(`DropPacket({SourceExpression()}, "{Reliability}", "QueueFull", Size)`)
 			:Line(AbortReadLine())
@@ -1257,7 +1247,7 @@ function Declarations.Event(Declaration: Parser.Event)
 			)
 			:Line(`Push({Queue}, table.pack({Context == "Server" and "Player, " or ""}{Arguments}))`)
 			:End()
-		AddAfterReceive(Block, Declaration.Name, Reliability, `table.pack({Arguments})`, Value)
+		AddAfterReceive(Block, Declaration.Name, Reliability, Index, `table.pack({Arguments})`, Value)
 
 		local IterTypes = `number, {Context == "Server" and "Player, " or ""}{Types}`
 
@@ -1291,47 +1281,36 @@ function Declarations.Event(Declaration: Parser.Event)
 		Body.Push("--- @deprecated v0.14.1 -- Use `Iter` instead.", 0, Indent + 1)
 		Body.PushLines(Deprecated.Content, 0, Indent + 1)
 	elseif Context == "Client" then
-		local Fire = Blocks.Function(Casing.Fire, Values, "()", true)
-		if IsReliable then
-			AddTrackedWrite(
-				Fire,
-				Declaration.Name,
-				Reliability,
-				WriteEvent,
-				nil,
-				nil,
-				`table.pack({Arguments})`,
-				Value.Priority,
-				Value.CoalesceKey
+		local Writer = Util.GetPath(Identifier, true, Scope)
+		local Priority = Value.Priority or "Gameplay"
+		local Accounting = if IsReliable then '"Queue"' else '"Admit"'
+
+		local function AddClientSend(Target: Blocks.Block, PredictionId: string)
+			if not IsReliable then
+				Target:Line("local Previous = Save()")
+				Target:Line("Load()")
+			end
+			Target:Line(
+				`local Written, WriteError = {WriteEventCall(
+					Declaration.Name,
+					Reliability,
+					"nil",
+					Accounting,
+					Priority,
+					PredictionId,
+					Writer,
+					Arguments
+				)}`
 			)
-		else
-			Fire:Line(`local Previous = Save()`)
-			Fire:Line(`Load()`)
-			AddTrackedWrite(
-				Fire,
-				Declaration.Name,
-				Reliability,
-				WriteEvent,
-				nil,
-				nil,
-				`table.pack({Arguments})`,
-				Value.Priority,
-				Value.CoalesceKey
-			)
-			Fire:Line("local Buffer = buffer.create(Frame.Cursor())")
-			Fire:Line("buffer.copy(Buffer, 0, State.SendBuffer, 0, Frame.Cursor())")
-			Fire:Compare(
-				"RuntimeConfig.MaxUnreliablePacketBytes > 0 and Frame.Cursor()",
-				"RuntimeConfig.MaxUnreliablePacketBytes",
-				"Greater"
-			)
-				:Line(`DropPacket("Client", "Unreliable", "MaxPacketBytes", Frame.Cursor())`)
-				:Branch("Default")
-				:Line("Unreliable:FireServer(Buffer, InstancePayload(State.SendInstances))")
-				:Line(`TrackSend("Unreliable", Frame.Cursor(), nil)`)
-				:End()
-			Fire:Line("Load(Previous)")
+			if not IsReliable then
+				Target:Line("if Written then RuntimeSupport.SendUnreliable() end")
+				Target:Line("Load(Previous)")
+			end
 		end
+
+		local Fire = Blocks.Function(Casing.Fire, Values, "()", true)
+		AddClientSend(Fire, "nil")
+		Fire:Line("if WriteError then error(WriteError, 2) end")
 		Fire:End()
 
 		local ShouldGeneratePrediction = Options.EnablePrediction ~= false or Value.Predict
@@ -1341,279 +1320,87 @@ function Declarations.Event(Declaration: Parser.Event)
 		if ShouldGeneratePrediction then
 			local Predict = Blocks.Function(Casing.Predict, Values, "number", true)
 			Predict:Line(`local PredictionId = BeginPrediction("{Declaration.Name}", table.pack({Arguments}))`)
-			if IsReliable then
-				AddTrackedWrite(
-					Predict,
-					Declaration.Name,
-					Reliability,
-					WriteEvent,
-					nil,
-					"PredictionId",
-					`table.pack({Arguments})`,
-					Value.Priority,
-					Value.CoalesceKey
-				)
-			else
-				Predict:Line(`local Previous = Save()`)
-				Predict:Line(`Load()`)
-				AddTrackedWrite(
-					Predict,
-					Declaration.Name,
-					Reliability,
-					WriteEvent,
-					nil,
-					"PredictionId",
-					`table.pack({Arguments})`,
-					Value.Priority,
-					Value.CoalesceKey
-				)
-				Predict:Line("local Buffer = buffer.create(Frame.Cursor())")
-				Predict:Line("buffer.copy(Buffer, 0, State.SendBuffer, 0, Frame.Cursor())")
-				Predict:Compare(
-					"RuntimeConfig.MaxUnreliablePacketBytes > 0 and Frame.Cursor()",
-					"RuntimeConfig.MaxUnreliablePacketBytes",
-					"Greater"
-				)
-					:Line(`DropPacket("Client", "Unreliable", "MaxPacketBytes", Frame.Cursor())`)
-					:Branch("Default")
-					:Line("Unreliable:FireServer(Buffer, InstancePayload(State.SendInstances))")
-					:Line(`TrackSend("Unreliable", Frame.Cursor(), nil)`)
-					:End()
-				Predict:Line("Load(Previous)")
-			end
+			AddClientSend(Predict, "PredictionId")
+			--> A prediction whose packet never left must not sit in Pending
+			--> waiting for an acknowledgement that cannot arrive.
+			Predict:Line('if not Written then RollbackPrediction(PredictionId, WriteError or "Dropped") end')
+			Predict:Line("if WriteError then error(WriteError, 2) end")
 			Predict:Return("PredictionId"):End()
 
 			Noop.Push(`{Casing.Predict} = NOOP`, 0, Indent + 1)
 			Body.PushLines(Predict.Content, 0, Indent + 1)
 		end
 	else
+		local Writer = Util.GetPath(Identifier, true, Scope)
+		local Priority = Value.Priority or "Gameplay"
+
 		local Fire = Blocks.Function(Casing.Fire, `Player: Player, {Values}`, "()", true)
 		if IsReliable then
 			Fire:Line("Load(PlayersMap[Player])")
-			AddTrackedWrite(
-				Fire,
-				Declaration.Name,
-				Reliability,
-				WriteEvent,
-				"Player",
-				nil,
-				`table.pack({Arguments})`,
-				Value.Priority,
-				Value.CoalesceKey
+			Fire:Line(
+				`local Written, WriteError = {WriteEventCall(
+					Declaration.Name,
+					Reliability,
+					"Player",
+					'"Queue"',
+					Priority,
+					"nil",
+					Writer,
+					Arguments
+				)}`
 			)
 			Fire:Line("PlayersMap[Player] = Save()")
 		else
 			Fire:Line("Load()")
-			AddTrackedWrite(
-				Fire,
-				Declaration.Name,
-				Reliability,
-				WriteEvent,
-				"Player",
-				nil,
-				`table.pack({Arguments})`,
-				Value.Priority,
-				Value.CoalesceKey
+			Fire:Line(
+				`local Written, WriteError = {WriteEventCall(
+					Declaration.Name,
+					Reliability,
+					"Player",
+					'"Admit"',
+					Priority,
+					"nil",
+					Writer,
+					Arguments
+				)}`
 			)
-			Fire:Lines(UNRELIABLE_BODY, 1)
-			Fire:Compare(
-				"RuntimeConfig.MaxUnreliablePacketBytes > 0 and Frame.Cursor()",
-				"RuntimeConfig.MaxUnreliablePacketBytes",
-				"Greater"
-			)
-				:Line(`DropPacket(Player, "Unreliable", "MaxPacketBytes", Frame.Cursor())`)
-				:Branch("Default")
-				:Line("Unreliable:FireClient(Player, Buffer, InstancePayload(State.SendInstances))")
-				:Line(`TrackSend("Unreliable", Frame.Cursor(), Player)`)
-				:End()
+			Fire:Line("if Written then RuntimeSupport.SendUnreliable(Player, nil) end")
 		end
+		Fire:Line("if WriteError then error(WriteError, 2) end")
 		Fire:End()
 
-		local FireAll = Blocks.Function(Casing.FireAll, Values, "()", true)
-		if IsReliable then
-			FireAll:Line("Load()")
-			AddTrackedWrite(
-				FireAll,
-				Declaration.Name,
-				Reliability,
-				WriteEvent,
-				nil,
-				nil,
-				`table.pack({Arguments})`,
-				Value.Priority,
-				Value.CoalesceKey
+		--> Broadcasts serialize once into a scratch buffer and are then copied
+		--> or sent to each recipient.
+		local function Broadcast(Name: string, Parameters: string, List: string, Except: string): Blocks.Block
+			local Function = Blocks.Function(Name, Parameters, "()", true)
+			Function:Line("Load()")
+			Function:Line(
+				`local Written, WriteError = {WriteEventCall(
+					Declaration.Name,
+					Reliability,
+					"nil",
+					"nil",
+					Priority,
+					"nil",
+					Writer,
+					Arguments
+				)}`
 			)
-			FireAll:Line(RELIABLE_BODY.Header)
-			FireAll:Iterator("_", "Player", "Players:GetPlayers()"):Lines(RELIABLE_BODY.Body, 2):End()
-		else
-			FireAll:Line("Load()")
-			AddTrackedWrite(
-				FireAll,
-				Declaration.Name,
-				Reliability,
-				WriteEvent,
-				nil,
-				nil,
-				`table.pack({Arguments})`,
-				Value.Priority,
-				Value.CoalesceKey
-			)
-			FireAll:Lines(UNRELIABLE_BODY, 1)
-			FireAll:Compare(
-				"RuntimeConfig.MaxUnreliablePacketBytes > 0 and Frame.Cursor()",
-				"RuntimeConfig.MaxUnreliablePacketBytes",
-				"Greater"
-			)
-				:Line(`DropPacket(nil, "Unreliable", "MaxPacketBytes", Frame.Cursor())`)
-				:Branch("Default")
-				:Line("Unreliable:FireAllClients(Buffer, InstancePayload(State.SendInstances))")
-				:Line(`TrackSend("Unreliable", Frame.Cursor(), nil)`)
-				:End()
+			Function:Line("if WriteError then error(WriteError, 2) end")
+			if IsReliable then
+				Function:Line(`if Written then RuntimeSupport.BroadcastReliable({List}, {Except}, "{Priority}") end`)
+			else
+				local Targets = if List == "Players:GetPlayers()" then "nil" else List
+				Function:Line(`if Written then RuntimeSupport.SendUnreliable({Targets}, {Except}) end`)
+			end
+			return Function:End()
 		end
-		FireAll:End()
 
-		local FireList = Blocks.Function(Casing.FireList, `List: \{Player\}, {Values}`, "()", true)
-		if IsReliable then
-			FireList:Line("Load()")
-			AddTrackedWrite(
-				FireList,
-				Declaration.Name,
-				Reliability,
-				WriteEvent,
-				nil,
-				nil,
-				`table.pack({Arguments})`,
-				Value.Priority,
-				Value.CoalesceKey
-			)
-			FireList:Line(RELIABLE_BODY.Header)
-			FireList:Iterator("_", "Player", "List"):Lines(RELIABLE_BODY.Body, 2):End()
-		else
-			FireList:Line("Load()")
-			AddTrackedWrite(
-				FireList,
-				Declaration.Name,
-				Reliability,
-				WriteEvent,
-				nil,
-				nil,
-				`table.pack({Arguments})`,
-				Value.Priority,
-				Value.CoalesceKey
-			)
-			FireList:Lines(UNRELIABLE_BODY, 1)
-			FireList:Compare(
-				"RuntimeConfig.MaxUnreliablePacketBytes > 0 and Frame.Cursor()",
-				"RuntimeConfig.MaxUnreliablePacketBytes",
-				"Greater"
-			)
-				:Line(`DropPacket(nil, "Unreliable", "MaxPacketBytes", Frame.Cursor())`)
-				:Branch("Default")
-				:Iterator("_", "Player", "List")
-				:Line("Unreliable:FireClient(Player, Buffer, InstancePayload(State.SendInstances))")
-				:Line(`TrackSend("Unreliable", Frame.Cursor(), Player)`)
-				:End()
-				:End()
-		end
-		FireList:End()
-
-		local FireExcept = Blocks.Function(Casing.FireExcept, `Except: Player, {Values}`, "()", true)
-		if IsReliable then
-			FireExcept:Line("Load()")
-			AddTrackedWrite(
-				FireExcept,
-				Declaration.Name,
-				Reliability,
-				WriteEvent,
-				nil,
-				nil,
-				`table.pack({Arguments})`,
-				Value.Priority,
-				Value.CoalesceKey
-			)
-			FireExcept:Line(RELIABLE_BODY.Header)
-			FireExcept:Iterator("_", "Player", "Players:GetPlayers()")
-				:Compare("Player", "Except", "Equals")
-				:Line("continue")
-				:End()
-				:Lines(RELIABLE_BODY.Body, 2)
-				:End()
-		else
-			FireExcept:Line("Load()")
-			AddTrackedWrite(
-				FireExcept,
-				Declaration.Name,
-				Reliability,
-				WriteEvent,
-				nil,
-				nil,
-				`table.pack({Arguments})`,
-				Value.Priority,
-				Value.CoalesceKey
-			)
-			FireExcept:Lines(UNRELIABLE_BODY, 1)
-			FireExcept:Compare(
-				"RuntimeConfig.MaxUnreliablePacketBytes > 0 and Frame.Cursor()",
-				"RuntimeConfig.MaxUnreliablePacketBytes",
-				"Greater"
-			)
-				:Line(`DropPacket(nil, "Unreliable", "MaxPacketBytes", Frame.Cursor())`)
-				:Branch("Default")
-				:Iterator("_", "Player", "Players:GetPlayers()")
-				:Compare("Player", "Except", "Equals")
-				:Line("continue")
-				:End()
-				:Line("Unreliable:FireClient(Player, Buffer, InstancePayload(State.SendInstances))")
-				:Line(`TrackSend("Unreliable", Frame.Cursor(), Player)`)
-				:End()
-				:End()
-		end
-		FireExcept:End()
-
-		local FireGroup = Blocks.Function(Casing.FireGroup, `GroupName: string, {Values}`, "()", true)
-		if IsReliable then
-			FireGroup:Line("Load()")
-			AddTrackedWrite(
-				FireGroup,
-				Declaration.Name,
-				Reliability,
-				WriteEvent,
-				nil,
-				nil,
-				`table.pack({Arguments})`,
-				Value.Priority,
-				Value.CoalesceKey
-			)
-			FireGroup:Line(RELIABLE_BODY.Header)
-			FireGroup:Iterator("_", "Player", "GetGroupPlayers(GroupName)"):Lines(RELIABLE_BODY.Body, 2):End()
-		else
-			FireGroup:Line("Load()")
-			AddTrackedWrite(
-				FireGroup,
-				Declaration.Name,
-				Reliability,
-				WriteEvent,
-				nil,
-				nil,
-				`table.pack({Arguments})`,
-				Value.Priority,
-				Value.CoalesceKey
-			)
-			FireGroup:Lines(UNRELIABLE_BODY, 1)
-			FireGroup:Compare(
-				"RuntimeConfig.MaxUnreliablePacketBytes > 0 and Frame.Cursor()",
-				"RuntimeConfig.MaxUnreliablePacketBytes",
-				"Greater"
-			)
-				:Line(`DropPacket(GroupName, "Unreliable", "MaxPacketBytes", Frame.Cursor())`)
-				:Branch("Default")
-				:Iterator("_", "Player", "GetGroupPlayers(GroupName)")
-				:Line("Unreliable:FireClient(Player, Buffer, InstancePayload(State.SendInstances))")
-				:Line(`TrackSend("Unreliable", Frame.Cursor(), Player)`)
-				:End()
-				:End()
-		end
-		FireGroup:End()
+		local FireAll = Broadcast(Casing.FireAll, Values, "Players:GetPlayers()", "nil")
+		local FireList = Broadcast(Casing.FireList, `List: \{Player\}, {Values}`, "List", "nil")
+		local FireExcept = Broadcast(Casing.FireExcept, `Except: Player, {Values}`, "Players:GetPlayers()", "Except")
+		local FireGroup =
+			Broadcast(Casing.FireGroup, `GroupName: string, {Values}`, "GetGroupPlayers(GroupName)", "nil")
 
 		Noop.PushLines({
 			`{Casing.Fire} = NOOP,\n`,
@@ -1660,6 +1447,7 @@ function Declarations.Function(Declaration: Parser.Function)
 	local Channel = Channels.Reliable
 
 	local Index = Channel.Count
+	CheckEndpointCapacity("Reliable", Index)
 	local Queue = `Queue.Reliable[{Index}]`
 	local Connection = `Events.Reliable[{Index}]`
 
@@ -1705,12 +1493,12 @@ function Declarations.Function(Declaration: Parser.Function)
 
 	if Context == "Server" then
 		--> Data recieve body
-		AddReceiveGuards(Block, Name, "Reliable", Value)
+		AddReceiveGuards(Block, Name, "Reliable", Index, Value)
 		AddGuardedByteRead(Block, "InvocationIdentifier", "Reliable")
 		local DecodeError = string.split(DataArguments, ",")[1] or "Value"
 		Block:Line(`local Success, {DataArguments} = pcall({Util.GetPath(DataIdentifier, false, Scope)})`)
 		AddDecodeFailureGuard(Block, Name, "Reliable", DecodeError)
-		AddAfterReceive(Block, Name, "Reliable", `table.pack({DataArguments})`, Value)
+		AddAfterReceive(Block, Name, "Reliable", Index, `table.pack({DataArguments})`, Value)
 		Block:Compare(Connection, "nil", "Not")
 			:Line(`task.spawn({Connection}, Player, {DataArguments}, InvocationIdentifier)`)
 			:Branch("Default")
@@ -1737,6 +1525,10 @@ function Declarations.Function(Declaration: Parser.Function)
 			:End()
 			:Wrap("local Success, Error = pcall(", ")")
 
+		--> The reply is serialized under pcall like every other send: a return
+		--> value that does not fit its type must not leave half a frame in the
+		--> player's batch, and the caller still gets an answer instead of
+		--> waiting for its timeout.
 		local TrueListener =
 			Blocks.Function(Connection, `Player: Player, {DataValues}, InvocationIdentifier: number`, "()", true)
 				:Line(`local {ReturnValues};`)
@@ -1744,15 +1536,18 @@ function Declarations.Function(Declaration: Parser.Function)
 				:Line("if not IsPlayerActive(Player) then return end")
 				:Line("Load(PlayersMap[Player])")
 				:Compare("Success", "true", "Not")
-				:Line(`local Frame = BeginMessage({Index})`)
-				:Line("local InvocationOffset = Allocate(1)")
-				:Line("buffer.writeu8(State.SendBuffer, InvocationOffset, InvocationIdentifier)")
-				:Line("local SuccessOffset = Allocate(1)")
-				:Line("buffer.writeu8(State.SendBuffer, SuccessOffset, 0)")
-				:Line("EndMessage(Frame)")
+				:Line(`RuntimeSupport.WriteInvocationFailure({Index}, InvocationIdentifier, "HandlerError")`)
 				:Line(`warn(\`"{Name}" encountered an error, \{Error\}\`)`)
 				:Branch("Default")
-				:Line(`{Util.GetPath(ReturnIdentifier, true, Scope)}({ReturnArguments}, InvocationIdentifier)`)
+				:Line("local Cursor, InstanceCount, StringId = Frame.Mark()")
+				:Line(
+					`local Wrote, WriteError = pcall({Util.GetPath(ReturnIdentifier, true, Scope)}, {ReturnArguments}, InvocationIdentifier)`
+				)
+				:Line("if not Wrote then")
+				:Line("Frame.Rewind(Cursor, InstanceCount, StringId)", 3)
+				:Line(`RuntimeSupport.WriteInvocationFailure({Index}, InvocationIdentifier, "HandlerError")`, 3)
+				:Line(`warn(\`"{Name}" returned a value that could not be sent, \{WriteError\}\`)`, 3)
+				:Line("end")
 				:End()
 				:Line("PlayersMap[Player] = Save()")
 				:End()
@@ -1772,10 +1567,10 @@ function Declarations.Function(Declaration: Parser.Function)
 			:Wrap(`local Success, {ReturnArguments} = pcall(`, ")")
 
 		--> The reply leg: source is the server, so no auth/policy/rate limit.
-		AddReceiveGuards(Block, Name, "Reliable", Value, true)
+		AddReceiveGuards(Block, Name, "Reliable", Index, Value, true)
 		AddGuardedByteRead(Block, "InvocationIdentifier", "Reliable")
 		Block:Lines(Deserialize.Content, Block.Indent + 1)
-		AddAfterReceive(Block, Name, "Reliable", `table.pack({ReturnArguments})`)
+		AddAfterReceive(Block, Name, "Reliable", Index, `table.pack({ReturnArguments})`)
 		--> Through ResumeInvocation, not task.spawn: InvocationIdentifier is a u8
 		--> read straight off the wire, so this is the one resume path an attacker
 		--> can aim. The guard refuses to resume a thread that is not parked on this
@@ -1784,8 +1579,23 @@ function Declarations.Function(Declaration: Parser.Function)
 		Block:Compare("Invocation", "nil", "Not"):Line(`ResumeInvocation(Invocation, Success, {ReturnArguments})`):End()
 
 		local Error = `"There was an exception while processing \\"{Name}\\"."`
-		local InvokeMaxPending = NumberLiteral(Value.MaxPendingInvokes, Options.MaxPendingInvokes or 256)
-		local InvokeTimeout = NumberLiteral(Value.InvokeTimeoutSeconds, Options.InvokeTimeoutSeconds or 0)
+		--> nil defers to RuntimeConfig at call time, which is where the
+		--> profile's defaults and Configure() put their values. Baking the
+		--> schema option in here is what made the profile timeouts inert.
+		local InvokeMaxPending = if Value.MaxPendingInvokes then tostring(Value.MaxPendingInvokes) else "nil"
+		local InvokeTimeout = if Value.InvokeTimeoutSeconds then tostring(Value.InvokeTimeoutSeconds) else "nil"
+		local DataWriter = Util.GetPath(DataIdentifier, true, Scope)
+		local SendInvocation = `local Written, WriteError = {WriteEventCall(
+			Name,
+			"Reliable",
+			"nil",
+			'"Queue"',
+			Value.Priority or "Gameplay",
+			"nil",
+			DataWriter,
+			`{DataArguments}, InvocationIdentifier`
+		)}`
+		local NotSent = `error(WriteError or "[Cheeto]: \\"{Name}\\" was not sent.", 2)`
 		--> Register AFTER the payload is written, never before. Serialization can
 		--> throw (a value out of range, a dead Instance, a malformed argument), and
 		--> registering first left an entry in Calls whose thread had already
@@ -1793,12 +1603,10 @@ function Declarations.Function(Declaration: Parser.Function)
 		--> a later packet naming that stale id resumed a thread that was by then
 		--> parked somewhere else entirely -- stealing that resume and hanging it.
 		local Contents = Blocks.Block()
+			:Line(`CheckInvocationCapacity("{Name}", {InvokeMaxPending})`)
 			:Line("local InvocationIdentifier = Invoke()")
-			:Line("local PreviousCursor = Frame.Cursor()")
-			:Line(`{Util.GetPath(DataIdentifier, true, Scope)}({DataArguments}, InvocationIdentifier)`)
-			:Line(
-				`TrackEventSend("{Name}", "Reliable", Frame.Cursor() - PreviousCursor, nil, table.pack({DataArguments}))`
-			)
+			:Line(SendInvocation)
+			:Line(`if not Written then {NotSent} end`)
 			:Line(
 				`RegisterInvocation(InvocationIdentifier, coroutine.running(), "{Name}", {InvokeMaxPending}, {InvokeTimeout})`
 			)
@@ -1820,8 +1628,10 @@ function Declarations.Function(Declaration: Parser.Function)
 
 			local Promise = Blocks
 				.Function("", "Resolve, Reject, OnCancel")
+				:Line(`CheckInvocationCapacity("{Name}", {InvokeMaxPending})`)
 				:Line("local InvocationIdentifier = Invoke()")
-				:Line(`{Util.GetPath(DataIdentifier, true, Scope)}({DataArguments}, InvocationIdentifier)`)
+				:Line(SendInvocation)
+				:Line(`if not Written then {NotSent} end`)
 				--> After the payload, same reason as the coroutine path above.
 				:Line(
 					`RegisterInvocation(InvocationIdentifier, coroutine.running(), "{Name}", {InvokeMaxPending}, {InvokeTimeout})`
@@ -1866,6 +1676,7 @@ function Declarations.Channel(Declaration: Parser.Channel)
 	local Channel = IsUnreliable and Channels.Unreliable or Channels.Reliable
 	local Block = IsUnreliable and Unreliables or Reliables
 	local Index = Channel.Count
+	CheckEndpointCapacity(Reliability, Index)
 	local Indent = Util.GetScopeIndent(Scope)
 	local Type = Generators.LuauType(Data, true)
 	local CanDelta = Value.Delta ~= false and GetStructFields(Data) ~= nil
@@ -1905,7 +1716,7 @@ function Declarations.Channel(Declaration: Parser.Channel)
 			Reliables = Block
 		end
 
-		AddReceiveGuards(Block, Declaration.Name, Reliability, Value)
+		AddReceiveGuards(Block, Declaration.Name, Reliability, Index, Value)
 		AddGuardedByteRead(Block, "CHANNEL_MODE", Reliability)
 		local ModeBranch = Block:Compare("CHANNEL_MODE", "0", "Equals")
 		ModeBranch:Line(`local Success, Value = pcall({ReadFullPath})`)
@@ -1934,7 +1745,7 @@ function Declarations.Channel(Declaration: Parser.Channel)
 		ModeBranch:Branch("Default")
 			:Line(`DropPacket({SourceExpression()}, "{Reliability}", "MalformedPacket", Size)`)
 			:End()
-		AddAfterReceive(Block, Declaration.Name, Reliability)
+		AddAfterReceive(Block, Declaration.Name, Reliability, Index)
 
 		local On = Blocks.Function(
 			"On",
@@ -1998,46 +1809,29 @@ function Declarations.Channel(Declaration: Parser.Channel)
 		Events.Push(`local {LastKeyframeName} = 0`)
 
 		local function AddSendBody(Target: string, FunctionBlock: Blocks.Block, Writer: string, Argument: string)
+			local Priority = Value.Priority or "Gameplay"
 			FunctionBlock:Line(`if not IsPlayerActive({Target}) then return end`)
-			if IsReliable then
-				FunctionBlock:Line(`Load(PlayersMap[{Target}])`)
-				AddTrackedWrite(
-					FunctionBlock,
+			FunctionBlock:Line(if IsReliable then `Load(PlayersMap[{Target}])` else "Load()")
+			FunctionBlock:Line(
+				`local Written, WriteError = {WriteEventCall(
 					Declaration.Name,
 					Reliability,
-					`{Writer}({Argument})`,
 					Target,
-					nil,
-					`table.pack({Argument})`,
-					Value.Priority,
-					nil
-				)
+					if IsReliable then '"Queue"' else '"Admit"',
+					Priority,
+					"nil",
+					Writer,
+					Argument
+				)}`
+			)
+			if IsReliable then
 				FunctionBlock:Line(`PlayersMap[{Target}] = Save()`)
 			else
-				FunctionBlock:Line("Load()")
-				AddTrackedWrite(
-					FunctionBlock,
-					Declaration.Name,
-					Reliability,
-					`{Writer}({Argument})`,
-					Target,
-					nil,
-					`table.pack({Argument})`,
-					Value.Priority,
-					nil
-				)
-				FunctionBlock:Lines(UNRELIABLE_BODY, 1)
-				FunctionBlock:Compare(
-					"RuntimeConfig.MaxUnreliablePacketBytes > 0 and Frame.Cursor()",
-					"RuntimeConfig.MaxUnreliablePacketBytes",
-					"Greater"
-				)
-					:Line(`DropPacket({Target}, "Unreliable", "MaxPacketBytes", Frame.Cursor())`)
-					:Branch("Default")
-					:Line(`Unreliable:FireClient({Target}, Buffer, InstancePayload(State.SendInstances))`)
-					:Line(`TrackSend("Unreliable", Frame.Cursor(), {Target})`)
-					:End()
+				FunctionBlock:Line(`if Written then RuntimeSupport.SendUnreliable({Target}, nil) end`)
 			end
+			--> Flushes run from the replication step; raising here would stop
+			--> every other channel and player from flushing this frame.
+			FunctionBlock:Line("if WriteError then warn(WriteError) end")
 		end
 
 		local SetPlayerName = `{LocalPrefix}_SET_PLAYER`
@@ -2766,6 +2560,9 @@ function Generator.Reset()
 	UserTypes = Builder.new()
 	LuauTypes = Builder.new()
 	Return = Builder.new()
+
+	table.clear(ConstraintsEmitted)
+	Events.Push("local EndpointConstraints = { Reliable = {}, Unreliable = {} }")
 
 	--> Reset channels
 	Channels.Reliable.Count = 0

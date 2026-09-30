@@ -1,0 +1,13 @@
+option ClientOutput = "../../Network/ServerOnlyFieldBadClient.luau"
+option ServerOutput = "../../Network/ServerOnlyFieldBadServer.luau"
+
+--> The client receives this event, and policies are only registered on the
+--> server, so the compiler must reject the field instead of emitting a check
+--> that drops every packet.
+event Announcement {
+    From: Server,
+    Type: Reliable,
+    Call: SingleSync,
+    Policy: "admin",
+    Data: u8
+}

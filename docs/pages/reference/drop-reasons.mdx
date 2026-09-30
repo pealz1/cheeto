@@ -38,7 +38,8 @@ These discard one event. They are listed in the order the receive path checks th
 | `MiddlewareRejected` | A per-event `BeforeReceive` hook returned `false` |
 | `AuthRejected` | The [`Auth`](/reference/fields#auth) rule returned something other than `true`, errored, or is not registered |
 | `KillSwitch` | The endpoint or its policy group is [killed](/reference/api/security#kill) |
-| `PolicyRejected` | A [cooldown](/reference/fields#cooldownseconds) is active, the policy denied, errored or is not registered, or [`RequirePolicies`](/reference/options/security#requirepolicies) is on and the endpoint has no `Policy` |
+| `PolicyRejected` | The policy denied, errored or is not registered, the policy group is not registered, or [`RequirePolicies`](/reference/options/security#requirepolicies) is on and the endpoint has no `Policy`, `PolicyGroup` or `Auth` |
+| `Cooldown` | The sender used the endpoint again before its [`CooldownSeconds`](/reference/fields#cooldownseconds) had passed |
 | *custom* | A policy returned `false, "your-reason"` |
 | `ReplayDuplicate` | A predicted event reused a sequence number, or failed [`Idempotency`](/reference/fields#idempotency) |
 | `ReplayStale` | A predicted event's sequence number was too far behind ([`ReplayWindowSize`](/reference/options/limits#replaywindowsize)) |

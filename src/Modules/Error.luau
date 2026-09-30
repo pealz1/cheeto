@@ -73,6 +73,7 @@ local Error = {
 	ParserUnknownOption = 2003,
 	ParserUnexpectedSymbol = 2004,
 	ParserExpectedExtraToken = 2005,
+	ParserRemovedOption = 2006,
 
 	AnalyzeReferenceInvalidType = 3001,
 	AnalyzeInvalidOptionalType = 3002,
@@ -90,6 +91,9 @@ local Error = {
 	AnalyzeUnknownImport = 3014,
 	AnalyzeErrorWhileImporting = 3015,
 	AnalyzeOptionAfterStart = 3016,
+	AnalyzeIneffectiveField = 3017,
+	AnalyzeWireIdConflict = 3018,
+	AnalyzeTooManyEndpoints = 3019,
 }
 
 Error.__index = Error
