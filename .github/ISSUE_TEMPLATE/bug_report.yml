@@ -1,0 +1,65 @@
+name: Bug report
+description: Something in the compiler, the generated code or the plugin does not work as documented
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. Please search [existing issues](https://github.com/pealz1/cheeto/issues) first.
+        Security problems should be reported privately, see [SECURITY.md](https://github.com/pealz1/cheeto/blob/main/SECURITY.md).
+  - type: input
+    id: version
+    attributes:
+      label: Cheeto version
+      description: Output of `cheeto --version`, or the plugin version.
+      placeholder: "1.0.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Compiler / CLI
+        - Generated runtime
+        - Studio plugin
+        - extras/security
+        - Documentation
+    validations:
+      required: true
+  - type: textarea
+    id: schema
+    attributes:
+      label: Minimal schema
+      description: The smallest `.cheeto` file that reproduces the problem.
+      render: cheeto
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Compile the schema with `cheeto network --yes`
+        2. Fire `DealDamage` from the client
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behaviour
+      description: Include error messages and output. Screenshots help for plugin issues.
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      placeholder: "Windows 11, Rokit 1.1.0, Roblox Studio 0.690"
