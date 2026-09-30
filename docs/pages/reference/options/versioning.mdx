@@ -1,6 +1,6 @@
 ---
 title: "Versioning"
-description: "Schema version options, the capability handshake, and the protocol options that were removed."
+description: "Schema version options, the schema fingerprint and the handshake that enforces it."
 ---
 
 import { Callout } from 'nextra/components'
@@ -14,17 +14,19 @@ import { Spec } from '../../../components/Reference'
 | [`SchemaVersion`](#schemaversion) | number | `1` |
 | [`MinimumSchemaVersion`](#minimumschemaversion) | number | `1` |
 | [`EnableProtocolHandshake`](#enableprotocolhandshake) | boolean | `true` |
-| [`ProtocolVersion`](#protocolversion) | number | `2`, the only accepted value |
+| [`IncompatiblePeerAction`](#incompatiblepeeraction) | `Drop` \| `Kick` | `Drop`, or `Kick` with `SecurityPreset = Maximum` |
 
 For how these fit together, see [Schema versioning](/concepts/schema-versioning).
+
+## The schema fingerprint
+
+Every build carries a fingerprint of its wire layout, a 16-digit hex string in [`Schema.Hash`](/reference/api/schema#hash) and `cheeto.lock`. It is computed from each endpoint's name, kind, channel, wire id, deprecated id, payload type (including ranges, components and field names) and delivery mode, plus the encoding options. Two builds with the same fingerprint encode every endpoint identically. Whitespace, comments, declaration order that does not change ids, and options that do not touch the wire leave it unchanged.
 
 ## `Version`
 
 <Spec type="number (0–65535)" default={<code>1</code>} />
 
-The version of this schema. It is sent in the handshake, stamped on captures and state, and written to `cheeto.lock`. Increase it whenever a change alters the wire layout: adding, removing or reordering endpoints, or changing an endpoint's data type.
-
-The runtime's schema hash is derived from this number (`schema-<Version>`), so two different schemas with the same `Version` look identical to the handshake.
+A version number you choose for this schema. It is sent in the handshake, stamped on captures and state, and written to `cheeto.lock`, and compared against the peer's [`MinimumSchemaVersion`](#minimumschemaversion). It is separate from the fingerprint: you do not need to raise it for the handshake to notice a wire change, but raising it gives you a readable number in logs.
 
 ```cheeto copy
 option Version = 7
@@ -40,7 +42,7 @@ Alias of [`Version`](#version). When both are set, `SchemaVersion` wins.
 
 <Spec type="number (0–65535)" default={<code>1</code>} />
 
-The oldest schema version this build accepts in a peer's handshake. A peer reporting an older version is marked incompatible and its handshake frame is dropped with `IncompatibleProtocol`.
+The oldest schema version this build accepts in a peer's handshake. A peer with a lower version is incompatible even when its fingerprint matches.
 
 ```cheeto copy
 option Version = 7
@@ -51,25 +53,35 @@ option MinimumSchemaVersion = 7
 
 <Spec type="boolean" default={<code>true</code>} />
 
-Each module writes a small capability frame (protocol, schema version, minimum version, schema hash) into the first batch it sends. Every client therefore reports its version to the server, and the server records one entry per player in [`Protocol.Peers`](/reference/api/protocol#peers) and [`Protocol.Info`](/reference/api/protocol#info). The server writes its own frame only once per server, into the first batch it produces, so most clients never receive it. Nothing on the client depends on it.
+Each side writes a small frame with its schema version, minimum version and fingerprint: the client into its first batch, the server into the first batch of every player. The receiver records the peer in [`Protocol.Peers`](/reference/api/protocol#peers) and [`Protocol.Info`](/reference/api/protocol#info) and compares the fingerprint with its own.
 
-<Callout type="warning">
-An incompatible handshake is recorded and reported, but later packets from that peer are still decoded. The handshake tells you a mismatch happened; it does not block the peer. Check `Protocol.Info(player).Peer.Compatible` if you want to act on it. See [Limitations](/limitations#the-handshake-does-not-block-mismatched-peers).
-</Callout>
+When they differ on the server, the frame is dropped with `IncompatibleProtocol`, and every later packet from that player is dropped before decoding, because it would be read against the wrong layout. What else happens is set by [`IncompatiblePeerAction`](#incompatiblepeeraction). A client that receives a different fingerprint from the server warns in its output; the server decides who stays.
 
-## `ProtocolVersion`
+## `IncompatiblePeerAction`
 
-<Spec type="number" default={<code>2</code>} values={<>only <code>2</code></>} />
+<Spec type="identifier" default={<><code>Drop</code>, or <code>Kick</code> with <code>SecurityPreset = Maximum</code></>} values={<><code>Drop</code>, <code>Kick</code></>} />
 
-Cheeto has one wire protocol, internally numbered 2. This option exists so older schemas keep compiling; any value other than `2` is a compile error, and `Configure` rejects changing it. You never need to write it. See [Wire protocol](/concepts/wire-protocol).
+What the server does with a player whose handshake names another schema:
+
+| Value | Effect |
+| --- | --- |
+| `Drop` | The player stays in the game; its packets are dropped and reported with `IncompatibleProtocol`. |
+| `Kick` | As `Drop`, and the player is kicked with a message asking them to rejoin. |
+
+In Roblox, clients and servers of one place version normally run the same module, so a mismatch usually means a modified client or a stale server during an update.
+
+```cheeto copy
+option IncompatiblePeerAction = Kick
+```
 
 ## Removed options
 
-These options are still recognized so the compiler can give a clear error, and they fail compilation if present:
+These options fail compilation with the error `Option "…" was removed`. Cheeto has a single wire protocol, so there is nothing to choose; delete the line.
 
-| Option | Error |
-| --- | --- |
-| `ProtocolMode` | `ProtocolMode was removed; omit it instead of using Legacy or Negotiated.` |
-| `AcceptProtocolVersion1` | `AcceptProtocolVersion1 was removed; protocol v1 is not supported.` |
+| Option |
+| --- |
+| `ProtocolVersion` |
+| `ProtocolMode` |
+| `AcceptProtocolVersion1` |
 
-Delete the line to fix the error.
+`Configure` rejects them as unknown runtime options.

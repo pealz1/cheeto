@@ -12,6 +12,7 @@ local Blocks = require("@self/Blocks")
 local GenerateTypescript = require("@self/Typescript")
 local Prefabs = require("@self/Prefabs")
 local Util = require("@self/Util")
+local Wire = require("@self/Wire")
 
 local Sources = {
 	Base = require("./Templates/Base"),
@@ -178,6 +179,8 @@ local Reliables: Blocks.Block
 local Unreliables: Blocks.Block
 local Return: Builder.Builder
 local Options: Parser.Options
+local Assigned: { [Parser.Declaration]: Wire.Assignment } = {}
+local SchemaFingerprint = ""
 
 local Generators = {}
 local Declarations = {}
@@ -278,12 +281,17 @@ local function RuntimeConfigLines(): { string }
 	if not table.find({ "Observe", "Report", "Correct", "Kick" }, CharacterIntegrityMode) then
 		error('CharacterIntegrityMode must be "Observe", "Report", "Correct", or "Kick".')
 	end
+	local IncompatiblePeerAction = Options.IncompatiblePeerAction or (if MaximumSecurity then "Kick" else "Drop")
+	if IncompatiblePeerAction ~= "Drop" and IncompatiblePeerAction ~= "Kick" then
+		error('IncompatiblePeerAction must be "Drop" or "Kick".')
+	end
 	return {
 		"local RuntimeConfig = {\n",
 		`\tEnableProtocolHandshake = {BooleanLiteral(Options.EnableProtocolHandshake, true)},\n`,
+		`\tIncompatiblePeerAction = "{IncompatiblePeerAction}",\n`,
 		`\tSchemaVersion = {NumberLiteral(SchemaVersion, 1)},\n`,
 		`\tMinimumSchemaVersion = {NumberLiteral(Options.MinimumSchemaVersion, 1)},\n`,
-		`\tSchemaHash = "schema-{SchemaVersion}",\n`,
+		`\tSchemaHash = "{SchemaFingerprint}",\n`,
 		`\tSecurityProfile = "{Profile}",\n`,
 		`\tSecurityPreset = "{SecurityPreset}",\n`,
 		`\tMaxReliablePacketBytes = {NumberLiteral(Options.MaxReliablePacketBytes, MaxPacketBytes)},\n`,
@@ -383,15 +391,15 @@ local function RuntimeConfigLines(): { string }
 	}
 end
 
---> Endpoint numbers are one byte and 252-255 are control frames.
-local MAX_ENDPOINTS_PER_CHANNEL = 252
-
-local function CheckEndpointCapacity(Reliability: string, Count: number)
-	if Count >= MAX_ENDPOINTS_PER_CHANNEL then
-		error(
-			`A schema can declare at most {MAX_ENDPOINTS_PER_CHANNEL} {string.lower(Reliability)} endpoints. Split the schema, or move endpoints to the other channel.`
-		)
+--> The number this endpoint is sent under, and the condition that matches
+--> it on receive (which also accepts a DeprecatedId, so peers built before
+--> a renumbering keep working).
+local function EndpointId(Declaration: Parser.Declaration): (number, string)
+	local Assignment = Assigned[Declaration]
+	if Assignment.Alias ~= nil then
+		return Assignment.Id, `{Assignment.Id} or Index == {Assignment.Alias}`
 	end
+	return Assignment.Id, tostring(Assignment.Id)
 end
 
 local function SourceExpression(): string
@@ -434,7 +442,16 @@ local function QueueLimit(Value: { [string]: any }): string
 	return NumberLiteral(Value.MaxQueuedEvents, Options.MaxQueuedEvents or 256)
 end
 
-local function AbortReadLine(): string
+--> What a server-side drop answers with. Set while a server receive branch
+--> is generated: the endpoint's name and id, and the expression holding the
+--> invocation id for a function. The client learns why its call or
+--> prediction failed instead of waiting for a timeout.
+local Rejecting: { Name: string, Index: number, Invocation: string }? = nil
+
+local function AbortReadLine(Reason: string?): string
+	if Context == "Server" and Rejecting ~= nil and Reason ~= nil then
+		return `RuntimeSupport.RejectReceive(Player, "{Rejecting.Name}", {Rejecting.Index}, {Rejecting.Invocation}, {Reason}) RecoverMessage() continue`
+	end
 	return "RecoverMessage() continue"
 end
 
@@ -529,7 +546,9 @@ local function AddReceiveGuards(
 	--> small cap drop the event whenever it shared a batch with large ones.
 	if Value.MaxPacketBytes then
 		Block:Line(
-			`if Frame.MessageSize() > {Value.MaxPacketBytes} then DropPacket({Source}, "{Reliability}", "MaxPacketBytes", Size) {AbortReadLine()} end`
+			`if Frame.MessageSize() > {Value.MaxPacketBytes} then DropPacket({Source}, "{Reliability}", "MaxPacketBytes", Size) {AbortReadLine(
+				'"MaxPacketBytes"'
+			)} end`
 		)
 	end
 
@@ -551,21 +570,28 @@ local function AddReceiveGuards(
 		`if not CheckRateLimit({Source}, "{Name}", {NumberLiteral(
 			Value.RateLimitPerSecond,
 			Options.RateLimitPerSecond or 0
-		)}, {NumberLiteral(Value.RateLimitBurst, Options.RateLimitBurst or Options.RateLimitPerSecond or 0)}) then {AbortReadLine()} end`
+		)}, {NumberLiteral(Value.RateLimitBurst, Options.RateLimitBurst or Options.RateLimitPerSecond or 0)}) then {AbortReadLine(
+			'"RateLimit"'
+		)} end`
 	)
 	Block:Line(
-		`if not RunHooks("BeforeReceive", \{ Name = "{Name}", Source = {Source}, Channel = "{Reliability}", Size = Size \}) then DropPacket({Source}, "{Reliability}", "MiddlewareRejected", Size) {AbortReadLine()} end`
+		`if not RunHooks("BeforeReceive", \{ Name = "{Name}", Source = {Source}, Channel = "{Reliability}", Size = Size \}) then DropPacket({Source}, "{Reliability}", "MiddlewareRejected", Size) {AbortReadLine(
+			'"MiddlewareRejected"'
+		)} end`
 	)
 	if Value.Auth then
 		Block:Line(
-			`if not CheckAuth("{Value.Auth}", \{ Name = "{Name}", Source = {Source}, Channel = "{Reliability}", Size = Size \}) then DropPacket({Source}, "{Reliability}", "AuthRejected", Size) {AbortReadLine()} end`
+			`if not CheckAuth("{Value.Auth}", \{ Name = "{Name}", Source = {Source}, Channel = "{Reliability}", Size = Size \}) then DropPacket({Source}, "{Reliability}", "AuthRejected", Size) {AbortReadLine(
+				'"AuthRejected"'
+			)} end`
 		)
 	end
 	Block:Line(
-		`if not CheckPolicy({Source}, "{Name}", "{Reliability}", {OptionalString(Value.Policy)}, {OptionalString(
-			Value.PolicyGroup
-		)}, {ConstraintsReference(Reliability, Index, Value)}, Size) then {AbortReadLine()} end`
+		`local PolicyAllowed, PolicyReason = CheckPolicy({Source}, "{Name}", "{Reliability}", {OptionalString(
+			Value.Policy
+		)}, {OptionalString(Value.PolicyGroup)}, {ConstraintsReference(Reliability, Index, Value)}, Size)`
 	)
+	Block:Line(`if not PolicyAllowed then {AbortReadLine("PolicyReason")} end`)
 end
 
 local function AddAfterReceive(
@@ -578,7 +604,9 @@ local function AddAfterReceive(
 )
 	local Source = SourceExpression()
 	Block:Line(
-		`if not RuntimeSupport.ValidateDecodedPayload("{Name}", {Source}, "{Reliability}", {PayloadExpression or "nil"}, Size) then {AbortReadLine()} end`
+		`if not RuntimeSupport.ValidateDecodedPayload("{Name}", {Source}, "{Reliability}", {PayloadExpression or "nil"}, Size) then {AbortReadLine(
+			'"Canonicalization"'
+		)} end`
 	)
 
 	--> The Validate hook: the ONE place a constraint about the decoded payload can be
@@ -596,7 +624,9 @@ local function AddAfterReceive(
 				Reliability,
 				Index,
 				Value
-			)}, Payload = {PayloadExpression or "nil"} \}) then DropPacket({Source}, "{Reliability}", "ConstraintRejected", Size) {AbortReadLine()} end`
+			)}, Payload = {PayloadExpression or "nil"} \}) then DropPacket({Source}, "{Reliability}", "ConstraintRejected", Size) {AbortReadLine(
+				'"ConstraintRejected"'
+			)} end`
 		)
 	end
 	Block:Line(
@@ -604,7 +634,7 @@ local function AddAfterReceive(
 	)
 	if Context == "Server" then
 		Block:Line("if Frame.HasPredictionId() then")
-		Block:Line("Load(PlayersMap[Player])", Block.Indent + 1)
+		Block:Line("Load(PlayersMap[Player], true)", Block.Indent + 1)
 		Block:Line(`WritePredictionAckPayload("{Name}", true, nil)`, Block.Indent + 1)
 		Block:Line("PlayersMap[Player] = Save()", Block.Indent + 1)
 		Block:Line("end")
@@ -634,14 +664,7 @@ local function AddDecodeFailureGuard(Block: Blocks.Block, Name: string, Reliabil
 	Failure:Line(
 		`RunHooks("Error", \{ Name = "{Name}", Source = {Source}, Channel = "{Reliability}", Error = {ErrorExpression} \})`
 	)
-	if Context == "Server" then
-		Failure:Line("if Frame.HasPredictionId() then")
-		Failure:Line("Load(PlayersMap[Player])", Failure.Indent + 1)
-		Failure:Line(`WritePredictionAckPayload("{Name}", false, "MalformedPacket")`, Failure.Indent + 1)
-		Failure:Line("PlayersMap[Player] = Save()", Failure.Indent + 1)
-		Failure:Line("end")
-	end
-	Failure:Line(AbortReadLine())
+	Failure:Line(AbortReadLine('"MalformedPacket"'))
 	Failure:End()
 end
 
@@ -1079,8 +1102,7 @@ function Declarations.Event(Declaration: Parser.Event)
 	local Block = IsUnreliable and Unreliables or Reliables
 	local Channel = IsUnreliable and Channels.Unreliable or Channels.Reliable
 
-	local Index = Channel.Count
-	CheckEndpointCapacity(Reliability, Index)
+	local Index, Match = EndpointId(Declaration)
 	local Queue = `Queue.{Reliability}[{Index}]`
 	local Connection = `Events.{Reliability}[{Index}]`
 
@@ -1117,8 +1139,8 @@ function Declarations.Event(Declaration: Parser.Event)
 		end
 
 		Events.Push(`{Queue} = table.create(256)`)
-		Block = (Channel.Listening == false) and Block:Compare("Index", Index, "Equals")
-			or Block:Branch("Conditional", "Index", Index, "Equals")
+		Block = (Channel.Listening == false) and Block:Compare("Index", Match, "Equals")
+			or Block:Branch("Conditional", "Index", Match, "Equals")
 
 		--> Update event block to branch block
 		if IsUnreliable then
@@ -1155,6 +1177,7 @@ function Declarations.Event(Declaration: Parser.Event)
 			end
 		end
 
+		Rejecting = { Name = Declaration.Name, Index = Index, Invocation = "nil" }
 		AddReceiveGuards(Block, Declaration.Name, Reliability, Index, Value)
 		Block:Line(`local Success, {Arguments} = pcall({Util.GetPath(Identifier, false, Scope)})`)
 		AddDecodeFailureGuard(Block, Declaration.Name, Reliability, DecodeError)
@@ -1185,7 +1208,7 @@ function Declarations.Event(Declaration: Parser.Event)
 			local QueueFallback = ListenerBound:Branch("Default")
 			local QueueFull = QueueFallback:Compare(`#{Queue}`, QueueLimit(Value), "GreaterOrEquals")
 			QueueFull:Line(`DropPacket({SourceExpression()}, "{Reliability}", "QueueFull", Size)`)
-				:Line(AbortReadLine())
+				:Line(AbortReadLine('"QueueFull"'))
 				:Branch("Default")
 				:Line(`table.insert({Queue}, \{{ListenerArguments}\} :: \{any\})`)
 				:End()
@@ -1218,8 +1241,8 @@ function Declarations.Event(Declaration: Parser.Event)
 		Body.PushLines(Listener.Content, 0, Indent + 1)
 	elseif Value.From ~= Context and IsPolling then
 		Events.Push(`{Queue} = CreateQueue()`)
-		Block = (Channel.Listening == false) and Block:Compare("Index", Index, "Equals")
-			or Block:Branch("Conditional", "Index", Index, "Equals")
+		Block = (Channel.Listening == false) and Block:Compare("Index", Match, "Equals")
+			or Block:Branch("Conditional", "Index", Match, "Equals")
 
 		if IsUnreliable then
 			Unreliables = Block
@@ -1228,10 +1251,11 @@ function Declarations.Event(Declaration: Parser.Event)
 		end
 
 		Channel.Listening = true
+		Rejecting = { Name = Declaration.Name, Index = Index, Invocation = "nil" }
 		AddReceiveGuards(Block, Declaration.Name, Reliability, Index, Value)
 		Block:Compare(`{Queue}.size`, QueueLimit(Value), "GreaterOrEquals")
 			:Line(`DropPacket({SourceExpression()}, "{Reliability}", "QueueFull", Size)`)
-			:Line(AbortReadLine())
+			:Line(AbortReadLine('"QueueFull"'))
 			:Branch("Default")
 			:Line(`local Success, {Arguments} = pcall({Util.GetPath(Identifier, false, Scope)})`)
 			:Lines(
@@ -1336,7 +1360,7 @@ function Declarations.Event(Declaration: Parser.Event)
 
 		local Fire = Blocks.Function(Casing.Fire, `Player: Player, {Values}`, "()", true)
 		if IsReliable then
-			Fire:Line("Load(PlayersMap[Player])")
+			Fire:Line("Load(PlayersMap[Player], true)")
 			Fire:Line(
 				`local Written, WriteError = {WriteEventCall(
 					Declaration.Name,
@@ -1417,6 +1441,7 @@ function Declarations.Event(Declaration: Parser.Event)
 		Body.PushLines(FireGroup:Wrap("", ",").Content, 0, Indent + 1)
 	end
 
+	Rejecting = nil
 	Channel.Count += 1
 
 	Body.Push(`\},`, 0, Indent)
@@ -1446,8 +1471,7 @@ function Declarations.Function(Declaration: Parser.Function)
 	local Block = Reliables
 	local Channel = Channels.Reliable
 
-	local Index = Channel.Count
-	CheckEndpointCapacity("Reliable", Index)
+	local Index, Match = EndpointId(Declaration)
 	local Queue = `Queue.Reliable[{Index}]`
 	local Connection = `Events.Reliable[{Index}]`
 
@@ -1485,16 +1509,17 @@ function Declarations.Function(Declaration: Parser.Function)
 
 	--> Create queue and event branch
 	Events.Push(`{Queue} = table.create(256)`)
-	Block = (Channel.Listening == false) and Block:Compare("Index", Index, "Equals")
-		or Block:Branch("Conditional", "Index", Index, "Equals")
+	Block = (Channel.Listening == false) and Block:Compare("Index", Match, "Equals")
+		or Block:Branch("Conditional", "Index", Match, "Equals")
 
 	--> Update event block to branch block
 	Reliables = Block
 
 	if Context == "Server" then
-		--> Data recieve body
-		AddReceiveGuards(Block, Name, "Reliable", Index, Value)
+		--> The invocation id comes first so every drop below can answer it.
 		AddGuardedByteRead(Block, "InvocationIdentifier", "Reliable")
+		Rejecting = { Name = Name, Index = Index, Invocation = "InvocationIdentifier" }
+		AddReceiveGuards(Block, Name, "Reliable", Index, Value)
 		local DecodeError = string.split(DataArguments, ",")[1] or "Value"
 		Block:Line(`local Success, {DataArguments} = pcall({Util.GetPath(DataIdentifier, false, Scope)})`)
 		AddDecodeFailureGuard(Block, Name, "Reliable", DecodeError)
@@ -1504,11 +1529,12 @@ function Declarations.Function(Declaration: Parser.Function)
 			:Branch("Default")
 			:Compare(`#{Queue}`, QueueLimit(Value), "GreaterOrEquals")
 			:Line(`DropPacket(Player, "Reliable", "QueueFull", Size)`)
-			:Line(AbortReadLine())
+			:Line(AbortReadLine('"QueueFull"'))
 			:Branch("Default")
 			:Line(`table.insert({Queue}, \{Player, {DataArguments}, InvocationIdentifier\} :: \{any\})`)
 			:End()
 			:End()
+		Rejecting = nil
 
 		--> Data listener body
 		local FlushQueue = Blocks.Function("", "", "()")
@@ -1534,7 +1560,7 @@ function Declarations.Function(Declaration: Parser.Function)
 				:Line(`local {ReturnValues};`)
 				:Lines(Serialize.Content, 1)
 				:Line("if not IsPlayerActive(Player) then return end")
-				:Line("Load(PlayersMap[Player])")
+				:Line("Load(PlayersMap[Player], true)")
 				:Compare("Success", "true", "Not")
 				:Line(`RuntimeSupport.WriteInvocationFailure({Index}, InvocationIdentifier, "HandlerError")`)
 				:Line(`warn(\`"{Name}" encountered an error, \{Error\}\`)`)
@@ -1675,8 +1701,7 @@ function Declarations.Channel(Declaration: Parser.Channel)
 	local IsUnreliable = Reliability == "Unreliable"
 	local Channel = IsUnreliable and Channels.Unreliable or Channels.Reliable
 	local Block = IsUnreliable and Unreliables or Reliables
-	local Index = Channel.Count
-	CheckEndpointCapacity(Reliability, Index)
+	local Index, Match = EndpointId(Declaration)
 	local Indent = Util.GetScopeIndent(Scope)
 	local Type = Generators.LuauType(Data, true)
 	local CanDelta = Value.Delta ~= false and GetStructFields(Data) ~= nil
@@ -1707,8 +1732,8 @@ function Declarations.Channel(Declaration: Parser.Channel)
 		Events.Push(`local {SnapshotName}: {Type}? = nil`)
 		Events.Push(`local {VersionName} = 0`)
 
-		Block = (Channel.Listening == false) and Block:Compare("Index", Index, "Equals")
-			or Block:Branch("Conditional", "Index", Index, "Equals")
+		Block = (Channel.Listening == false) and Block:Compare("Index", Match, "Equals")
+			or Block:Branch("Conditional", "Index", Match, "Equals")
 
 		if IsUnreliable then
 			Unreliables = Block
@@ -1811,7 +1836,7 @@ function Declarations.Channel(Declaration: Parser.Channel)
 		local function AddSendBody(Target: string, FunctionBlock: Blocks.Block, Writer: string, Argument: string)
 			local Priority = Value.Priority or "Gameplay"
 			FunctionBlock:Line(`if not IsPlayerActive({Target}) then return end`)
-			FunctionBlock:Line(if IsReliable then `Load(PlayersMap[{Target}])` else "Load()")
+			FunctionBlock:Line(if IsReliable then `Load(PlayersMap[{Target}], true)` else "Load()")
 			FunctionBlock:Line(
 				`local Written, WriteError = {WriteEventCall(
 					Declaration.Name,
@@ -2493,7 +2518,12 @@ function Generators.Event(
 		if Function == "Return" then
 			Types.u8.Write("1", Write)
 			Types.u8.Read("Success", Read)
-			Read:Compare("Success", "1", "Not"):Line('error("Server encountered an error.")'):End()
+			--> A failed reply carries the reason the server gave: the drop
+			--> reason when the call never reached the handler, or HandlerError.
+			local DisplayName = string.gsub(Identifier, "^FUNCTION_RETURN_", "")
+			Read:Compare("Success", "1", "Not")
+				:Line(`error(\`[Cheeto]: The server rejected "{DisplayName}": \{ReadStringValue(1)\}\`, 0)`)
+				:End()
 		end
 	end
 
@@ -2562,6 +2592,7 @@ function Generator.Reset()
 	Return = Builder.new()
 
 	table.clear(ConstraintsEmitted)
+	Rejecting = nil
 	Events.Push("local EndpointConstraints = { Reliable = {}, Unreliable = {} }")
 
 	--> Reset channels
@@ -2638,6 +2669,8 @@ function Generator.Generate(FileContext: Context, AbstractSyntaxTree: Parser.Bod
 	Generator.Reset()
 	Context = FileContext
 	Options = AbstractSyntaxTree.Value.Options
+	Assigned = Wire.Assign(AbstractSyntaxTree.Value.Declarations, (AbstractSyntaxTree.Value :: any).Lock)
+	SchemaFingerprint = Wire.Fingerprint(AbstractSyntaxTree, Assigned)
 	Casing = Settings.GetCasing((Options.Casing :: Settings.Case) or "Pascal")
 
 	--> Setup noop
@@ -2693,6 +2726,8 @@ function Generator.Generate(FileContext: Context, AbstractSyntaxTree: Parser.Bod
 		Reliables.Indent + 1
 	)
 	Reliables:Line("EndReadMessage()", Reliables.Indent + 1)
+	--> The rest of a packet from a peer on another schema is not decoded.
+	Reliables:Line(`if RuntimeSupport.IsPeerBlocked({SourceExpression()}) then break end`, Reliables.Indent + 1)
 	Reliables:Line("continue", Reliables.Indent + 1)
 	Reliables:Line("end")
 	Reliables:Line("if Index == PREDICTION_ACK_INDEX then")
@@ -2726,6 +2761,8 @@ function Generator.Generate(FileContext: Context, AbstractSyntaxTree: Parser.Bod
 		Unreliables.Indent + 1
 	)
 	Unreliables:Line("EndReadMessage()", Unreliables.Indent + 1)
+	--> The rest of a packet from a peer on another schema is not decoded.
+	Unreliables:Line(`if RuntimeSupport.IsPeerBlocked({SourceExpression()}) then break end`, Unreliables.Indent + 1)
 	Unreliables:Line("continue", Unreliables.Indent + 1)
 	Unreliables:Line("end")
 	Unreliables:Line("if Index == PREDICTION_ACK_INDEX then")
@@ -2871,6 +2908,8 @@ function Generator.GenerateRuntime(FileContext: Context, AbstractSyntaxTree: Par
 	Generator.Reset()
 	Context = FileContext
 	Options = AbstractSyntaxTree.Value.Options
+	Assigned = Wire.Assign(AbstractSyntaxTree.Value.Declarations, (AbstractSyntaxTree.Value :: any).Lock)
+	SchemaFingerprint = Wire.Fingerprint(AbstractSyntaxTree, Assigned)
 	Casing = Settings.GetCasing((Options.Casing :: Settings.Case) or "Pascal")
 
 	local Source = if Context == "Client" then Sources.Client else Sources.Server
@@ -2899,6 +2938,8 @@ function Generator.GenerateShared(AbstractSyntaxTree: Parser.Body): string
 	Generator.Reset()
 	Context = "Shared"
 	Options = AbstractSyntaxTree.Value.Options
+	Assigned = Wire.Assign(AbstractSyntaxTree.Value.Declarations, (AbstractSyntaxTree.Value :: any).Lock)
+	SchemaFingerprint = Wire.Fingerprint(AbstractSyntaxTree, Assigned)
 	Casing = Settings.GetCasing((Options.Casing :: Settings.Case) or "Pascal")
 
 	--> Parse declarations

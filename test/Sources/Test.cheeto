@@ -721,3 +721,21 @@ function SlowFunction {
     Data: u8,
     Return: u8
 }
+
+--> Two strings in one message: with string dictionaries the second one used
+--> to be sent as a reference into the broadcast's own table, which no
+--> recipient's batch shares.
+event ServerPair {
+    From: Server,
+    Type: Reliable,
+    Call: ManyAsync,
+    Data: (string, string)
+}
+
+--> Denied by policy in the tests, so the server answers with the reason.
+function GuardedFunction {
+    Yield: Coroutine,
+    Policy: "guarded",
+    Data: u8,
+    Return: u8
+}

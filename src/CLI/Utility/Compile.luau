@@ -3,6 +3,7 @@
 ---- Imports ----
 
 local fs = require("@lune/fs")
+local serde = require("@lune/serde")
 local stdio = require("@lune/stdio")
 
 local Error = require("../../Modules/Error")
@@ -10,6 +11,7 @@ local Generator = require("../../Generator")
 local GetDefinitionFilePath = require("./GetDefinitionFilePath")
 local Parser = require("../../Parser")
 local PathParser = require("../../Modules/Path")
+local Wire = require("../../Generator/Wire")
 
 ---- Settings ----
 
@@ -79,6 +81,34 @@ local function CreateDirectoryIfNotFound(Path: string, Options: CompileOptions)
 	error("User refused prompt to create directory")
 end
 
+local function LockPath(FilePath: string): string
+	return `{PathParser.Directory(FilePath) or "./"}cheeto.lock`
+end
+
+--> cheeto.lock next to the schema pins endpoint ids across edits. A lock
+--> written before ids were recorded per channel carries no usable ids and is
+--> ignored until it is rewritten.
+local function ReadLock(FilePath: string): Wire.Lock?
+	local Target = LockPath(FilePath)
+	if not fs.isFile(Target) then
+		return nil
+	end
+
+	local Success, Lock = pcall(serde.decode, "json" :: "json", fs.readFile(Target))
+	if not Success or type(Lock) ~= "table" then
+		error(`{Target} is not valid JSON. Fix it or delete it and run --write-lock.`)
+	end
+
+	if type(Lock.endpoints) ~= "table" then
+		return nil
+	end
+	return Lock :: any
+end
+
+local function AttachLock(Ast: Parser.Body, FilePath: string)
+	(Ast.Value :: any).Lock = ReadLock(FilePath)
+end
+
 ---- Public Functions ----
 
 function Utility.Compile(Path: string, Options: CompileOptions)
@@ -94,6 +124,7 @@ function Utility.Compile(Path: string, Options: CompileOptions)
 
 	local ParseStart = os.clock()
 	local AbstractSyntaxTree = SourceParser:Parse(Source)
+	AttachLock(AbstractSyntaxTree, FilePath)
 	local ParseTime = (os.clock() - ParseStart)
 
 	if Options.OutputAbstractSyntaxTree then
@@ -230,7 +261,9 @@ local function ParseForUtility(Path: string, Options: CompileOptions): (Parser.B
 	local Source = fs.readFile(FilePath)
 	local FileDirectory = PathParser.Directory(FilePath) or "./"
 	local SourceParser = Parser.new(FileDirectory, PathParser.NameWithExtension(FilePath))
-	return SourceParser:Parse(Source), Source, FilePath
+	local Ast = SourceParser:Parse(Source)
+	AttachLock(Ast, FilePath)
+	return Ast, Source, FilePath
 end
 
 local function WalkDeclarations(Declarations: { Parser.Declaration }, Callback: (Parser.Declaration) -> ())
@@ -510,52 +543,64 @@ local function JsonString(Value: string): string
 	return `"{Value}"`
 end
 
-local function LockPath(FilePath: string): string
-	return `{PathParser.Directory(FilePath) or "./"}cheeto.lock`
+local function SortedKeys(Map: { [string]: any }): { string }
+	local Keys = {}
+	for Key in Map do
+		table.insert(Keys, Key)
+	end
+	table.sort(Keys)
+	return Keys
 end
 
 local function LockContent(Ast: Parser.Body): string
 	local FileOptions = Ast.Value.Options
 	local Schema = SchemaVersion(FileOptions)
+	local Assignments = Wire.Assign(Ast.Value.Declarations, (Ast.Value :: any).Lock)
 	local Lines = {
 		"{",
-		`\t"protocol": 2,`,
 		`\t"schemaVersion": {Schema},`,
 		`\t"minimumSchemaVersion": {FileOptions.MinimumSchemaVersion or 1},`,
-		`\t"schemaHash": "schema-{Schema}",`,
-		`\t"compatibility": "strict-v2-schema-hash",`,
+		`\t"schemaHash": {JsonString(Wire.Fingerprint(Ast, Assignments))},`,
 		`\t"options": \{`,
 		`\t\t"securityProfile": {JsonString(FileOptions.SecurityProfile or "Development")},`,
 		`\t\t"requirePolicies": {tostring(FileOptions.RequirePolicies == true)},`,
 		`\t\t"maxReliablePacketBytes": {FileOptions.MaxReliablePacketBytes or FileOptions.MaxPacketBytes or 1048576},`,
 		`\t\t"maxUnreliablePacketBytes": {FileOptions.MaxUnreliablePacketBytes or FileOptions.MaxPacketBytes or 1000}`,
 		"\t},",
-		`\t"wireIds": \{`,
+		`\t"endpoints": \{`,
 	}
 
-	local First = true
-	local NextId = 0
-	WalkDeclarations(Ast.Value.Declarations, function(Declaration)
-		if Declaration.Type == "Event" or Declaration.Type == "Function" or Declaration.Type == "Channel" then
-			NextId += 1
-			local Value = Declaration.Value :: any
-			local Id = Value.WireId or Value.ReservedId or Value.DeprecatedId or NextId
-			if not First then
-				Lines[#Lines] ..= ","
+	--> Endpoints that left the schema stay in the lock as retired, so their
+	--> ids are never handed to something else.
+	local Entries: { [string]: string } = {}
+	for _, Assignment in Assignments do
+		local Value = Assignment.Declaration.Value :: any
+		local Shape = Wire.Hash(Wire.EndpointDescription(Assignment))
+		local Alias = if Assignment.Alias ~= nil then `, "deprecatedId": {Assignment.Alias}` else ""
+		local Reserved = if Value.ReservedId ~= nil then `, "reservedId": {Value.ReservedId}` else ""
+		Entries[Assignment.Name] =
+			`\{ "kind": {JsonString(Assignment.Kind)}, "channel": {JsonString(Assignment.Channel)}, "id": {Assignment.Id}{Alias}{Reserved}, "shape": {JsonString(
+				Shape
+			)} \}`
+	end
+	local Previous = (Ast.Value :: any).Lock
+	if Previous and Previous.endpoints then
+		for Name, Entry in Previous.endpoints do
+			if Entries[Name] == nil and type(Entry.id) == "number" and type(Entry.channel) == "string" then
+				Entries[Name] =
+					`\{ "kind": {JsonString(tostring(Entry.kind))}, "channel": {JsonString(Entry.channel)}, "id": {Entry.id}, "retired": true \}`
 			end
-			First = false
-			table.insert(
-				Lines,
-				`\t\t{JsonString(Declaration.Name)}: \{ "id": {Id}, "kind": {JsonString(Declaration.Type)}, "deprecated": {tostring(
-					Value.DeprecatedId ~= nil
-				)}, "reserved": {tostring(Value.ReservedId ~= nil)} \}`
-			)
 		end
-	end)
+	end
+
+	local Names = SortedKeys(Entries)
+	for Index, Name in Names do
+		table.insert(Lines, `\t\t{JsonString(Name)}: {Entries[Name]}{if Index < #Names then "," else ""}`)
+	end
 
 	table.insert(Lines, "\t},")
-	table.insert(Lines, `\t"typeHashes": \{`)
-	First = true
+	table.insert(Lines, `\t"types": \{`)
+	local Types: { [string]: string } = {}
 	WalkDeclarations(Ast.Value.Declarations, function(Declaration)
 		if
 			Declaration.Type ~= "Scope"
@@ -563,16 +608,13 @@ local function LockContent(Ast: Parser.Body): string
 			and Declaration.Type ~= "Function"
 			and Declaration.Type ~= "Channel"
 		then
-			if not First then
-				Lines[#Lines] ..= ","
-			end
-			First = false
-			table.insert(
-				Lines,
-				`\t\t{JsonString(Declaration.Name)}: {JsonString(`{Declaration.Type}:{Declaration.Name}`)}`
-			)
+			Types[Declaration.Name] = Wire.Hash(Wire.Describe(Declaration))
 		end
 	end)
+	local TypeNames = SortedKeys(Types)
+	for Index, Name in TypeNames do
+		table.insert(Lines, `\t\t{JsonString(Name)}: {JsonString(Types[Name])}{if Index < #TypeNames then "," else ""}`)
+	end
 	table.insert(Lines, "\t}")
 	table.insert(Lines, "}")
 	return table.concat(Lines, "\n") .. "\n"
@@ -718,7 +760,7 @@ function Utility.Compatibility(Path: string, Options: CompileOptions)
 	local FileOptions = Ast.Value.Options
 	local RuntimeSchema = SchemaVersion(FileOptions)
 	local MinimumSchema = FileOptions.MinimumSchemaVersion or 1
-	local Hash = `schema-{RuntimeSchema}`
+	local Hash = Wire.Fingerprint(Ast, Wire.Assign(Ast.Value.Declarations, (Ast.Value :: any).Lock))
 	Message("green", Options, "Cheeto schema compatibility:")
 	print("peerSchema,peerHash,result")
 	print(`{MinimumSchema - 1},{Hash},reject:schema-too-old`)
@@ -765,10 +807,22 @@ function Utility.CheckLock(Path: string, Options: CompileOptions)
 	if not fs.isFile(Target) then
 		error(`Missing cheeto.lock at {Target}. Run --write-lock intentionally.`)
 	end
-	local Actual = fs.readFile(Target)
+	--> Git may check the file out with CRLF line endings.
+	local Actual = string.gsub(fs.readFile(Target), "\r\n", "\n")
 	if Actual ~= Expected then
+		local ExpectedLines = string.split(Expected, "\n")
+		local ActualSet = {}
+		for _, Line in string.split(Actual, "\n") do
+			ActualSet[Line] = true
+		end
+		local Changed = {}
+		for _, Line in ExpectedLines do
+			if not ActualSet[Line] and #Changed < 12 then
+				table.insert(Changed, `  {Line}`)
+			end
+		end
 		error(
-			"cheeto.lock differs from the current schema. Review wire IDs and run --write-lock only for intentional changes."
+			`cheeto.lock differs from the current schema. Lines the schema now produces:\n{table.concat(Changed, "\n")}\nReview the wire changes and run --write-lock only if they are intentional.`
 		)
 	end
 	Message("green", Options, "cheeto.lock matches the current schema.")

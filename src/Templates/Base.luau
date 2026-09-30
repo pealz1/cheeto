@@ -24,6 +24,7 @@ local RecieveFrameEnd = 0
 --> swapped -- growth and packet boundaries, not per field.
 local State = {
     SendPredictionId = nil :: number?,
+    SendInterning = true,
     RecieveSize = 64,
     SendBuffer = SendBuffer,
     RecieveBuffer = RecieveBuffer,
@@ -71,7 +72,8 @@ type BufferSave = {
     BitByte: number,
     BitCount: number,
     StringIds: {[string]: number},
-    NextStringId: number
+    NextStringId: number,
+    Intern: boolean
 }
 
 type Invocation = {
@@ -311,6 +313,8 @@ local RecieveStrings: {[number]: string} = {}
 local NextSendStringId = 1
 local NextRecieveStringId = 1
 local RuntimeSupport = {}
+--> Set by the server half of the runtime when it loads.
+RuntimeSupport.IsServer = false
 
 local function CloneBuffer(Source: buffer?, Start: number?, Size: number?): buffer?
     if Source == nil then
@@ -3121,6 +3125,9 @@ function RuntimeSupport.ReadCapabilityHandshake(Source: any, Channel: string, Pa
     end
 
     local Compatible = RuntimeSupport.IsPeerCompatible(WireFormat, SchemaVersion, SchemaHash)
+    if not Compatible and not RuntimeSupport.IsServer then
+        warn(`[Cheeto]: The server runs schema {SchemaHash} (version {SchemaVersion}); this client runs {RuntimeConfig.SchemaHash} (version {RuntimeConfig.SchemaVersion}).`)
+    end
     RuntimeState.PeerCapabilities[RuntimeSupport.PeerKey(Source)] = {
         WireFormat = WireFormat,
         SchemaVersion = SchemaVersion,
@@ -3148,10 +3155,27 @@ function RuntimeSupport.ReadCapabilityHandshake(Source: any, Channel: string, Pa
 
     if not Compatible then
         DropPacket(Source, Channel, "IncompatibleProtocol", PacketSize)
+        if RuntimeSupport.IsServer and RuntimeConfig.IncompatiblePeerAction == "Kick" then
+            pcall(function()
+                Source:Kick("This server runs a different version of the game. Please rejoin.")
+            end)
+        end
         return false
     end
 
     return true
+end
+
+--> A peer whose handshake named a different schema is not decoded: its
+--> packets would be read against the wrong layout. Enforced by the server;
+--> a client only warns, since the server decides who stays.
+function RuntimeSupport.IsPeerBlocked(Source: any): boolean
+    if not RuntimeSupport.IsServer then
+        return false
+    end
+
+    local Peer = RuntimeState.PeerCapabilities[RuntimeSupport.PeerKey(Source)]
+    return Peer ~= nil and Peer.Compatible == false
 end
 
 function RuntimeSupport.ProtocolInfo(Source: any?)
@@ -3507,7 +3531,9 @@ function RuntimeSupport.WriteEvent(
         return false, nil
     end
 
-    RuntimeSupport.QueueCapabilityHandshake(nil)
+    if not RuntimeSupport.IsServer then
+        RuntimeSupport.QueueCapabilityHandshake(nil)
+    end
 
     local Cursor, InstanceCount, StringId = Frame.Mark()
     local PreviousPredictionId = State.SendPredictionId
@@ -3582,6 +3608,11 @@ local function ValidateIncoming(Source: any, Channel: string, IncomingBuffer: an
     end
 
     local Size = buffer.len(IncomingBuffer)
+    if RuntimeSupport.IsPeerBlocked(Source) then
+        DropPacket(Source, Channel, TransportError.IncompatibleProtocol, Size)
+        return nil
+    end
+
     local Limit = if Channel == "Reliable" then RuntimeConfig.MaxReliablePacketBytes else RuntimeConfig.MaxUnreliablePacketBytes
     if Limit > 0 and Size > Limit then
         DropPacket(Source, Channel, "MaxPacketBytes", Size)
@@ -4088,17 +4119,26 @@ local function RecoverMessage()
     RecieveMessageStart = 0
 end
 
+--> With string dictionaries on, every string starts with a marker: 0 is a
+--> literal, 1 is a literal the receiver remembers, and n >= 2 refers to the
+--> (n - 1)th remembered string of this packet. Only a peer's own batch
+--> interns: a broadcast is serialized once into a scratch buffer and copied
+--> into many batches, so ids assigned there would not match any of them.
 local function WriteStringValue(Value: string, LengthBytes: number)
     if RuntimeConfig.UseStringDictionaries then
-        local Existing = SendStringIds[Value]
-        if Existing then
-            WriteVarint(Existing)
-            return
-        end
+        if not State.SendInterning then
+            WriteVarint(0)
+        else
+            local Existing = SendStringIds[Value]
+            if Existing then
+                WriteVarint(Existing + 1)
+                return
+            end
 
-        WriteVarint(0)
-        SendStringIds[Value] = NextSendStringId
-        NextSendStringId += 1
+            WriteVarint(1)
+            SendStringIds[Value] = NextSendStringId
+            NextSendStringId += 1
+        end
     end
 
     local Length = #Value
@@ -4108,12 +4148,13 @@ local function WriteStringValue(Value: string, LengthBytes: number)
 end
 
 local function ReadStringValue(LengthBytes: number): string
+    local Marker = 0
     if RuntimeConfig.UseStringDictionaries then
-        local Identifier = ReadVarint()
-        if Identifier > 0 then
-            local Value = RecieveStrings[Identifier]
+        Marker = ReadVarint()
+        if Marker >= 2 then
+            local Value = RecieveStrings[Marker - 1]
             if Value == nil then
-                error(`[Cheeto]: Unknown interned string id {Identifier}.`)
+                error(`[Cheeto]: Unknown interned string id {Marker - 1}.`)
             end
 
             return Value
@@ -4122,7 +4163,7 @@ local function ReadStringValue(LengthBytes: number): string
 
     local Length = ReadLength(LengthBytes)
     local Value = buffer.readstring(RecieveBuffer, Read(Length), Length)
-    if RuntimeConfig.UseStringDictionaries then
+    if Marker == 1 then
         RecieveStrings[NextRecieveStringId] = Value
         NextRecieveStringId += 1
     end
@@ -4671,7 +4712,8 @@ local function Save(): BufferSave
         BitByte = SendBitByte,
         BitCount = SendBitCount,
         StringIds = SendStringIds,
-        NextStringId = NextSendStringId
+        NextStringId = NextSendStringId,
+        Intern = State.SendInterning
     }
 end
 
@@ -4679,7 +4721,10 @@ end
 --> buffer is usually some peer's pending batch, still referenced by its saved
 --> state: pooling it let the next allocation hand the same memory to another
 --> peer and overwrite messages that had not been sent yet.
-local function Load(Save: BufferSave?)
+--> Peer is true when the state being loaded is a peer's own batch (which
+--> interns strings), false or nil for a scratch buffer.
+local function Load(Save: BufferSave?, Peer: boolean?)
+    State.SendInterning = if Save then Save.Intern == true else Peer == true
     if Save then
         SendSize = Save.Size
         SendCursor = Save.Cursor
@@ -4796,11 +4841,13 @@ local function CheckInvocationCapacity(Name: string, MaxPending: number?)
     end
 end
 
+--> A failed reply: the invocation id, a zero success byte and the reason.
 function RuntimeSupport.WriteInvocationFailure(Index: number, Identifier: number, Reason: string?)
     local Message = BeginMessage(Index)
     local Offset = Allocate(2)
     buffer.writeu8(SendBuffer, Offset, Identifier)
     buffer.writeu8(SendBuffer, Offset + 1, 0)
+    WriteStringValue(string.sub(Reason or "Rejected", 1, 255), 1)
     EndMessage(Message)
 end
 
@@ -5001,6 +5048,8 @@ local function ClearPlayerRuntimeState(Player: Player)
     RuntimeState.Abuse[Player] = nil
     RuntimeState.Idempotency[Player] = nil
     RuntimeState.PlayerZones[Player] = nil
+    RuntimeState.PeerCapabilities[Player] = nil
+    RuntimeState.PeerHandshakesSent[Player] = nil
     RuntimeState.ClientShield.LastReport[Player] = nil
     RuntimeState.ClientShield.Integrity.Peers[Player] = nil
     RuntimeState.ClientShield.Integrity.LastEvidence[Player] = nil

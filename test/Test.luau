@@ -2602,6 +2602,155 @@ RunClosure("Access fields on server-sent endpoints are rejected", function()
 	)
 end)
 
+RunClosure("A call the server drops is answered with the reason", function()
+	Server.Security.RegisterPolicy("guarded", function()
+		return false, "NotAllowed"
+	end)
+	Server.GuardedFunction.On(function(_, Value)
+		return Value
+	end)
+	Client.Configure({ InvokeTimeoutSeconds = 2 })
+	local Started = os.clock()
+	local Ok, Error = pcall(Client.GuardedFunction.Invoke, 1)
+	Client.Configure({ InvokeTimeoutSeconds = 0 })
+	assert(not Ok, "Expected the denied call to fail.")
+	assert(string.find(tostring(Error), "NotAllowed", 1, true), `Expected the policy's reason, got {tostring(Error)}.`)
+	assert(os.clock() - Started < 1, "The client waited for its timeout instead of the server's answer.")
+
+	Server.Security.RegisterPolicy("guarded", function()
+		return true
+	end)
+	assert(Client.GuardedFunction.Invoke(7) == 7, "Expected the allowed call to return its value.")
+end)
+
+RunClosure("A dropped prediction is rolled back with the reason", function()
+	local Reasons = {}
+	local Release = Client.Use("Rollback", function(Context)
+		table.insert(Reasons, Context.Reason)
+	end)
+	Server.Security.RegisterPolicy("damage", nil :: any)
+	Client.ReliableClient.Predict(3)
+	Client.StepReplication()
+	task.wait(1 / 30)
+	Server.StepReplication()
+	task.wait(1 / 30)
+	Server.Security.RegisterPolicy("damage", AllowDamage)
+	Release()
+	assert(Reasons[1] == "PolicyRejected", `Expected a PolicyRejected rollback, got {tostring(Reasons[1])}.`)
+end)
+
+RunClosure("Every player receives the server handshake", function()
+	Server.StepReplication()
+	task.wait(1 / 30)
+	local Peer = Client.Protocol.Info().Peer
+	assert(Peer ~= nil, "The client never received the server's handshake.")
+	assert(Peer.SchemaHash == Server.Schema.Hash, `Handshake carried {tostring(Peer.SchemaHash)}.`)
+	assert(Peer.Compatible == true, "The client rejected a server on the same schema.")
+	assert(#Server.Schema.Hash == 16, `Expected a 16-digit schema fingerprint, got {Server.Schema.Hash}.`)
+end)
+
+RunClosure("A peer on another schema is not decoded", function()
+	local function Handshake(Hash: string): buffer
+		local Payload = buffer.create(7 + #Hash)
+		buffer.writeu8(Payload, 0, 2)
+		buffer.writeu8(Payload, 1, 2)
+		buffer.writeu16(Payload, 2, 2)
+		buffer.writeu16(Payload, 4, 1)
+		buffer.writeu8(Payload, 6, #Hash)
+		buffer.writestring(Payload, 7, Hash)
+		local Packet = buffer.create(4 + buffer.len(Payload))
+		buffer.writeu8(Packet, 0, 254)
+		buffer.writeu8(Packet, 1, 0)
+		buffer.writeu8(Packet, 2, buffer.len(Payload))
+		buffer.writeu8(Packet, 3, 0)
+		buffer.copy(Packet, 4, Payload)
+		return Packet
+	end
+
+	local Seen = 0
+	local Release = Server.UnconstrainedClient.On(function()
+		Seen += 1
+	end)
+	local ServerReliable = ServerEnvironment.Instances.CHEETO_RELIABLE_REMOTE.OnServerEvent
+	FireSignalSync(ServerReliable, Shared.Player, Handshake("0000000000000000"), {})
+	assert(Server.Protocol.Peers[Shared.Player].Compatible == false, "Expected the wrong fingerprint to be recorded.")
+	Client.UnconstrainedClient.Fire(1)
+	Client.StepReplication()
+	task.wait(1 / 30)
+	assert(Seen == 0, "The server decoded a packet from a peer on another schema.")
+
+	--> Back to a matching handshake for the rest of the suite.
+	Server.Protocol.Peers[Shared.Player] = nil
+	Client.UnconstrainedClient.Fire(1)
+	Client.StepReplication()
+	task.wait(1 / 30)
+	Release()
+	assert(Seen == 1, "Expected delivery again once the peer matched.")
+end)
+
+RunClosure("Broadcast strings stay correct with string dictionaries", function()
+	Server.Configure({ UseStringDictionaries = true })
+	Client.Configure({ UseStringDictionaries = true })
+	local Received = {}
+	local Release = Client.ServerPair.On(function(First, Second)
+		table.insert(Received, `{First}/{Second}`)
+	end)
+	Server.ServerPair.Fire(Shared.Player, "alpha", "alpha")
+	Server.ServerPair.FireAll("beta", "beta")
+	Server.ServerPair.Fire(Shared.Player, "alpha", "gamma")
+	Server.StepReplication()
+	task.wait(1 / 30)
+	Release()
+	Server.Configure({ UseStringDictionaries = false })
+	Client.Configure({ UseStringDictionaries = false })
+	assert(
+		table.concat(Received, " ") == "alpha/alpha beta/beta alpha/gamma",
+		`Strings were decoded against the wrong table: {table.concat(Received, " ")}`
+	)
+end)
+
+RunClosure("Wire ids honour WireId, reservations, aliases and the lock", function()
+	local Parser = require("../src/Parser")
+	local Wire = require("../src/Generator/Wire")
+	local function Parse(Source: string)
+		return Parser.new("./", "WireIds.cheeto"):Parse(Source)
+	end
+	local function Ids(Body, Lock)
+		local Result = {}
+		for _, Assignment in Wire.Assign(Body.Value.Declarations, Lock) do
+			Result[Assignment.Name] = Assignment.Id
+		end
+		return Result
+	end
+	local function Event(Name: string, Extra: string?): string
+		return `event {Name} \{ From: Client, Type: Reliable, Call: SingleAsync, {Extra or ""} Data: u8 \}\n`
+	end
+
+	local Pinned = Ids(Parse(Event("A") .. Event("B", "WireId: 0,") .. Event("C", "ReservedId: 1,")))
+	assert(Pinned.B == 0 and Pinned.A == 2 and Pinned.C == 3, `Unexpected ids: {Format(Pinned)}`)
+
+	local Aliased = Parse(Event("A") .. Event("B", "DeprecatedId: 0,"))
+	for _, Assignment in Wire.Assign(Aliased.Value.Declarations, nil) do
+		if Assignment.Name == "B" then
+			assert(Assignment.Alias == 0 and Assignment.Id ~= 0, "Expected B to keep answering on its old id.")
+		end
+	end
+
+	--> Reordering and removing endpoints keeps the ids the lock recorded.
+	local Lock = {
+		endpoints = {
+			A = { kind = "Event", channel = "Reliable", id = 0 },
+			B = { kind = "Event", channel = "Reliable", id = 1 },
+			Gone = { kind = "Event", channel = "Reliable", id = 2, retired = true },
+		},
+	}
+	local Stable = Ids(Parse(Event("C") .. Event("B") .. Event("A")), Lock)
+	assert(Stable.A == 0 and Stable.B == 1 and Stable.C == 3, `Lock ids were not kept: {Format(Stable)}`)
+
+	local Conflict = pcall(Ids, Parse(Event("A", "WireId: 4,") .. Event("B", "WireId: 4,")))
+	assert(not Conflict, "Expected two endpoints pinned to one id to fail.")
+end)
+
 RunClosure("Fuzz malformed packets", function()
 	Server.Configure({
 		MaxReliablePacketBytes = 256,
@@ -2643,6 +2792,9 @@ RunClosure("Fuzz malformed packets", function()
 	for _ = 1, tonumber(process.env.CHEETO_FUZZ_N) or 128 do
 		local Size = math.random(1, 96)
 		local Packet = RandomBuffer(Size)
+		--> A random handshake frame can mark the peer incompatible; forget it
+		--> so every iteration still reaches the decoder.
+		table.clear(Server.Protocol.Peers)
 		FireSignalSync(ServerReliable, Shared.Player, Packet, {})
 		FireSignalSync(ServerUnreliable, Shared.Player, Packet, {})
 		FireSignalSync(ClientReliable, Packet, {})

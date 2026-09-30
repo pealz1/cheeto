@@ -121,6 +121,8 @@ do
     RuntimeSupport.InstallRemoteDecoys(GetRemoteParent(), RuntimeConfig.RemoteDecoyCount)
 end
 
+RuntimeSupport.IsServer = true
+
 --> Copies the event sitting in the loaded scratch buffer into each
 --> recipient's pending reliable batch. Bytes are accounted per recipient,
 --> which is what the backpressure limits are defined against.
@@ -136,12 +138,32 @@ function RuntimeSupport.BroadcastReliable(List: {Player}, Except: Player?, Prior
             continue
         end
 
-        Load(PlayersMap[Player])
+        Load(PlayersMap[Player], true)
         local Position = Allocate(Size)
         buffer.copy(SendBuffer, Position, Source, 0, Size)
         table.move(Instances, 1, #Instances, #SendInstances + 1, SendInstances)
         PlayersMap[Player] = Save()
     end
+end
+
+--> Answers a call or prediction the server dropped before its handler ran,
+--> so the client can fail fast with the reason. Events sent without a
+--> prediction get no answer; nothing on the client is waiting for one.
+function RuntimeSupport.RejectReceive(Player: Player, Name: string, Index: number, InvocationIdentifier: number?, Reason: string?)
+    if InvocationIdentifier == nil and not Frame.HasPredictionId() then
+        return
+    end
+    if not IsPlayerActive(Player) then
+        return
+    end
+
+    Load(PlayersMap[Player], true)
+    if InvocationIdentifier ~= nil then
+        RuntimeSupport.WriteInvocationFailure(Index, InvocationIdentifier, Reason)
+    else
+        WritePredictionAckPayload(Name, false, Reason)
+    end
+    PlayersMap[Player] = Save()
 end
 
 --> Sends the event in the loaded scratch buffer on the unreliable remote.
@@ -172,7 +194,7 @@ function RuntimeSupport.SendUnreliable(Targets: any, Except: Player?)
 end
 
 local function QueueClientIntegrityChallenge(Player: Player, ChallengeId: number, Nonce: number)
-    Load(PlayersMap[Player])
+    Load(PlayersMap[Player], true)
     RuntimeSupport.WriteClientIntegrityChallenge(ChallengeId, Nonce)
     PlayersMap[Player] = Save()
 end
@@ -203,6 +225,18 @@ local function StepReplication()
     RuntimeSupport.StepClientIntegrity(ActivePlayers, QueueClientIntegrityChallenge)
     RuntimeSupport.StepCharacterIntegrity(ActivePlayers)
     RunStateFlushers()
+    --> Every player gets the server's handshake once, even one the server
+    --> never sends anything else to, so its client can check the schema.
+    if RuntimeConfig.EnableProtocolHandshake then
+        for _, Player in ActivePlayers do
+            if not RuntimeState.PeerHandshakesSent[Player] then
+                Load(PlayersMap[Player], true)
+                RuntimeSupport.WriteCapabilityHandshake()
+                PlayersMap[Player] = Save()
+                RuntimeState.PeerHandshakesSent[Player] = true
+            end
+        end
+    end
     for Player, Send in PlayersMap do
         Load(Send)
         FlushBits()
