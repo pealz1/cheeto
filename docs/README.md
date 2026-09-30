@@ -1,23 +1,31 @@
-# Nextra Docs Template 
+# Cheeto documentation
 
-This is a template for creating documentation with [Nextra](https://nextra.site).
+The source for [pealz1.github.io/cheeto](https://pealz1.github.io/cheeto), built with [Nextra](https://nextra.site).
 
-[**Live Demo →**](https://nextra-docs-template.vercel.app)
+## Local development
 
-[![](.github/screenshot.png)](https://nextra-docs-template.vercel.app)
+Requires Node.js 20 or later.
 
-## Quick Start
+```sh
+npm ci
+npm run dev
+```
 
-Click the button to clone this repository and deploy it on Vercel:
+Then open http://localhost:3000.
 
-[![](https://vercel.com/button)](https://vercel.com/new/clone?s=https%3A%2F%2Fgithub.com%2Fshuding%2Fnextra-docs-template&showOptionalTeamCreation=false)
+## Building
 
-## Local Development
+```sh
+npm run build
+```
 
-First, run `pnpm i` to install the dependencies.
+The static site is written to `out/`. Set `NEXT_PUBLIC_BASE_PATH` when the site is served from a sub-path, for example `NEXT_PUBLIC_BASE_PATH=/cheeto` for a GitHub Pages project site. The deploy workflow sets it automatically.
 
-Then, run `pnpm dev` to start the development server and visit localhost:3000.
+## Layout
 
-## License
-
-This project is licensed under the MIT License.
+| Path | Contents |
+| --- | --- |
+| `pages/` | Documentation pages, one `.mdx` file per page, ordered by `_meta.json` |
+| `components/Landing/` | The home page |
+| `styles/globals.css` | Theme overrides for the docs layout |
+| `public/syntax/` | The `.cheeto` TextMate grammar and code theme |

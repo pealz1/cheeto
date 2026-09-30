@@ -1,22 +1,19 @@
 {
-  "name": "nextra-docs-template",
-  "version": "0.0.1",
-  "description": "Nextra docs template",
+  "name": "cheeto-docs",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Documentation site for Cheeto",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "start": "next start"
+    "start": "npx serve out"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/shuding/nextra-docs-template.git"
+    "url": "git+https://github.com/pealz1/cheeto.git",
+    "directory": "docs"
   },
-  "author": "Shu Ding <g@shud.in>",
   "license": "MIT",
-  "bugs": {
-    "url": "https://github.com/shuding/nextra-docs-template/issues"
-  },
-  "homepage": "https://github.com/shuding/nextra-docs-template#readme",
   "dependencies": {
     "next": "^14.2.21",
     "nextra": "^2.13.4",
@@ -26,6 +23,10 @@
   },
   "devDependencies": {
     "@types/node": "18.11.10",
-    "typescript": "^4.9.3"
+    "typescript": "^4.9.3",
+    "@types/react": "^18.3.12"
+  },
+  "engines": {
+    "node": ">=20"
   }
 }
