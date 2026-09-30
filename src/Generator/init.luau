@@ -608,9 +608,7 @@ end
 local function AddGuardedByteRead(Block: Blocks.Block, Variable: string, Reliability: string)
 	local Source = SourceExpression()
 	local OkName = `{Variable}Ok`
-	Block:Line(
-		`local {OkName}, {Variable} = pcall(function() return buffer.readu8(State.RecieveBuffer, Read(1)) end)`
-	)
+	Block:Line(`local {OkName}, {Variable} = pcall(function() return buffer.readu8(State.RecieveBuffer, Read(1)) end)`)
 	local Failure = Block:Compare(OkName, "true", "Not")
 	Failure:Line(`DropPacket({Source}, "{Reliability}", "MalformedPacket", Size)`)
 	Failure:Line(AbortReadLine())

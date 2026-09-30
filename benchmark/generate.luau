@@ -109,7 +109,8 @@ local Metrics = {
 }
 
 local function WriteBenchResults(Name: string, Results: { [string]: Benchmark })
-	local Output = `\n## [{Name}](https://github.com/pealz1/cheeto/blob/main/benchmark/src/shared/benches/{Name}.luau)\n`
+	local Output =
+		`\n## [{Name}](https://github.com/pealz1/cheeto/blob/main/benchmark/src/shared/benches/{Name}.luau)\n`
 
 	for Index, Metric in Metrics do
 		if Index > 1 then
