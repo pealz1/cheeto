@@ -20,10 +20,6 @@ updates:
       docs:
         patterns: ["*"]
     ignore:
-      # Nextra 3+ is a rewrite of the docs theme; upgrade deliberately
-      - dependency-name: nextra
-        update-types: ["version-update:semver-major"]
-      - dependency-name: nextra-theme-docs
-        update-types: ["version-update:semver-major"]
-      - dependency-name: next
+      # Next 14 + Nextra 2 pin React 18 and TypeScript 4/5; majors move together as one deliberate upgrade
+      - dependency-name: "*"
         update-types: ["version-update:semver-major"]
