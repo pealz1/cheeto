@@ -85,7 +85,7 @@ npm ci
 npm run dev
 ```
 
-Pages live in `docs/pages` as MDX. The sidebar order comes from each folder's `_meta.json`.
+Pages live in `docs/content` as MDX. The sidebar order comes from each folder's `_meta.ts`.
 
 ## Pull requests
 

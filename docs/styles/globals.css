@@ -90,25 +90,25 @@ samp {
 
 /* --------------------------------------------------------------- navbar */
 
-.nextra-nav-container-blur {
+.nextra-navbar-blur {
   background: var(--paper) !important;
   backdrop-filter: none !important;
   box-shadow: none !important;
   border-bottom: 1px solid var(--rule-strong);
 }
 
-.nextra-nav-container nav {
+.nextra-navbar nav {
   font-family: var(--font-mono), monospace;
   font-size: var(--step--1);
   letter-spacing: 0.02em;
   text-transform: uppercase;
 }
 
-.nextra-nav-container nav a {
+.nextra-navbar nav a {
   color: var(--ink-soft);
 }
 
-.nextra-nav-container nav a:hover {
+.nextra-navbar nav a:hover {
   color: var(--accent);
 }
 
@@ -147,7 +147,7 @@ samp {
   box-shadow: none !important;
 }
 
-.nextra-search ul {
+.nextra-search-results {
   border-radius: 0 !important;
   background: var(--paper-raised) !important;
   border: 1px solid var(--rule-strong) !important;
@@ -160,40 +160,40 @@ samp {
 
 /* -------------------------------------------------------------- sidebar */
 
-.nextra-sidebar-container {
+.nextra-sidebar {
   border-right: 1px solid var(--rule);
 }
 
-.nextra-sidebar-container a,
-.nextra-sidebar-container button {
+.nextra-sidebar a,
+.nextra-sidebar button {
   border-radius: 0 !important;
   font-size: 0.9rem;
   color: var(--ink-soft) !important;
 }
 
-.nextra-sidebar-container a:hover,
-.nextra-sidebar-container button:hover {
+.nextra-sidebar a:hover,
+.nextra-sidebar button:hover {
   background: var(--paper-sunk) !important;
   color: var(--ink) !important;
 }
 
-.nextra-sidebar-container li.active > a {
+.nextra-sidebar a[class~='x:bg-primary-100'] {
   background: transparent !important;
   color: var(--accent) !important;
   font-weight: 600;
   box-shadow: inset 2px 0 0 var(--accent);
 }
 
-.nextra-sidebar-container > div > ul > li > button,
-.nextra-sidebar-container > div > ul > li > a {
+.nextra-sidebar > .nextra-scrollbar > ul > li > button,
+.nextra-sidebar > .nextra-scrollbar > ul > li > a {
   font-family: var(--font-mono), monospace;
   font-size: 0.75rem;
   letter-spacing: 0.06em;
   text-transform: uppercase;
 }
 
-.nextra-sidebar-container [class*='nx-bottom-0'],
-.nextra-toc [class*='nx-bottom-0'] {
+.nextra-sidebar-footer,
+.nextra-toc .nextra-border {
   background: var(--paper) !important;
   box-shadow: none !important;
   border-top: 1px solid var(--rule);
@@ -209,15 +209,15 @@ samp {
 
 /* -------------------------------------------------------------- content */
 
-.nextra-content h1,
-.nextra-content h2,
-.nextra-content h3 {
+.cheeto-content h1,
+.cheeto-content h2,
+.cheeto-content h3 {
   font-family: var(--font-sans), sans-serif;
   letter-spacing: -0.01em;
   color: var(--ink);
 }
 
-.nextra-content h1 {
+.cheeto-content h1 {
   font-variation-settings: 'wdth' 72;
   font-weight: 800 !important;
   font-size: var(--step-3) !important;
@@ -227,7 +227,7 @@ samp {
   border-bottom: 2px solid var(--ink);
 }
 
-.nextra-content h2 {
+.cheeto-content h2 {
   font-variation-settings: 'wdth' 80;
   font-weight: 700 !important;
   font-size: var(--step-2) !important;
@@ -236,18 +236,18 @@ samp {
   margin-top: var(--space-6) !important;
 }
 
-.nextra-content h3 {
+.cheeto-content h3 {
   font-weight: 700 !important;
   font-size: var(--step-1) !important;
 }
 
-.nextra-content p,
-.nextra-content li {
+.cheeto-content p,
+.cheeto-content li {
   color: var(--ink-soft);
   line-height: 1.7;
 }
 
-.nextra-content :not(pre) > code {
+.cheeto-content :not(pre) > code {
   border-radius: 0 !important;
   border: 1px solid var(--rule) !important;
   background: var(--paper-raised) !important;
@@ -256,7 +256,7 @@ samp {
   padding: 0.1em 0.35em !important;
 }
 
-.nextra-content a:not(.nextra-card) {
+.cheeto-content a:not(.nextra-card) {
   color: var(--ink) !important;
   text-decoration: underline !important;
   text-decoration-color: var(--accent) !important;
@@ -265,19 +265,19 @@ samp {
   transition: color var(--dur-fast) var(--ease-out);
 }
 
-.nextra-content a:not(.nextra-card):hover {
+.cheeto-content a:not(.nextra-card):hover {
   color: var(--accent) !important;
 }
 
 /* Code blocks read as figures: a ruled frame with a mono caption bar. */
-.nextra-code-block pre,
-.nextra-content pre {
+.nextra-code pre,
+.cheeto-content pre {
   border-radius: 0 !important;
   border: 1px solid var(--rule-strong);
   background: #17140f !important;
 }
 
-.nextra-code-block > div:first-child:not(:only-child) {
+.nextra-code > div:first-child:not(:only-child) {
   border-radius: 0 !important;
   background: var(--paper-sunk) !important;
   border: 1px solid var(--rule-strong);
@@ -289,7 +289,7 @@ samp {
   color: var(--muted) !important;
 }
 
-.nextra-code-block button {
+.nextra-code button {
   border-radius: 0 !important;
 }
 
@@ -301,25 +301,25 @@ samp {
   color: var(--ink-soft) !important;
 }
 
-.nextra-content table {
+.cheeto-content table {
   border-collapse: collapse;
   font-size: 0.92rem;
   border-top: 2px solid var(--ink);
   border-bottom: 2px solid var(--ink);
 }
 
-.nextra-content table tr,
-.nextra-content table td,
-.nextra-content table th {
+.cheeto-content table tr,
+.cheeto-content table td,
+.cheeto-content table th {
   border: 0 !important;
   background: transparent !important;
 }
 
-.nextra-content table tr {
+.cheeto-content table tr {
   border-bottom: 1px solid var(--rule) !important;
 }
 
-.nextra-content table th {
+.cheeto-content table th {
   font-family: var(--font-mono), monospace;
   font-size: 0.72rem;
   font-weight: 600;
@@ -330,13 +330,13 @@ samp {
   border-bottom: 1px solid var(--rule-strong) !important;
 }
 
-.nextra-content [role='tab'] {
+.cheeto-content [role='tab'] {
   border-radius: 0 !important;
   font-family: var(--font-mono), monospace;
   font-size: 0.8rem;
 }
 
-.nextra-content [role='tab'][aria-selected='true'] {
+.cheeto-content [role='tab'][aria-selected='true'] {
   color: var(--accent) !important;
   border-color: var(--accent) !important;
 }
@@ -353,7 +353,7 @@ samp {
   font-family: var(--font-mono), monospace;
 }
 
-.nextra-content img {
+.cheeto-content img {
   border: 1px solid var(--rule-strong);
 }
 
@@ -402,7 +402,7 @@ samp {
   color: var(--bad);
 }
 
-.nextra-content .ref-sig-code {
+.cheeto-content .ref-sig-code {
   display: block;
   padding: var(--space-3);
   overflow-x: auto;
@@ -444,8 +444,8 @@ samp {
   color: var(--ink);
 }
 
-/* Sidebar group headings from _meta separators. */
-.cheeto-sidebar-group {
+/* Sidebar group headings from _meta separators: the only text-only items. */
+.nextra-sidebar li:not(:has(a, button)) {
   display: block;
   padding-top: var(--space-2);
   border-top: 1px solid var(--rule-strong);
@@ -462,10 +462,6 @@ samp {
 footer {
   background: var(--paper) !important;
   border-top: 2px solid var(--ink);
-}
-
-footer > div:first-child {
-  display: none;
 }
 
 .cheeto-footer {

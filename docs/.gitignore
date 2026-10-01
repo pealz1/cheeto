@@ -12,3 +12,7 @@
 /**/.next
 /**/.env
 tsconfig.tsbuildinfo
+
+# Written by `next dev` on every run
+/AGENTS.md
+/CLAUDE.md

@@ -1,4 +1,6 @@
-{
+import type { MetaRecord } from 'nextra'
+
+export default {
   "event": "event",
   "function": "function",
   "channel": "channel",
@@ -10,4 +12,4 @@
   "scope": "scope",
   "import": "import",
   "export": "export"
-}
+} satisfies MetaRecord

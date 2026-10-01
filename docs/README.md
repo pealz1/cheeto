@@ -25,7 +25,8 @@ The static site is written to `out/`. Set `NEXT_PUBLIC_BASE_PATH` when the site 
 
 | Path | Contents |
 | --- | --- |
-| `pages/` | Documentation pages, one `.mdx` file per page, ordered by `_meta.json` |
+| `content/` | Documentation pages, one `.mdx` file per page, ordered by `_meta.ts` |
+| `app/` | The site shell: layout, navbar, footer and the route that renders `content/` |
 | `components/Landing/` | The home page |
 | `styles/globals.css` | Theme overrides for the docs layout |
 | `public/syntax/` | The `.cheeto` TextMate grammar and code theme |

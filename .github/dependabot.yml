@@ -20,6 +20,6 @@ updates:
       docs:
         patterns: ["*"]
     ignore:
-      # Next 14 + Nextra 2 pin React 18 and TypeScript 4/5; majors move together as one deliberate upgrade
+      # Nextra pins the Next and React majors it supports; majors move together as one deliberate upgrade
       - dependency-name: "*"
         update-types: ["version-update:semver-major"]

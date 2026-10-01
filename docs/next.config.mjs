@@ -1,30 +1,25 @@
 import { readFileSync } from 'fs'
 import nextra from 'nextra'
-import { BUNDLED_LANGUAGES, getHighlighter } from 'shiki'
+import { bundledLanguages, createHighlighter } from 'shiki'
 
 // GitHub Pages serves project sites from /<repo>. The deploy workflow passes the
 // right prefix through NEXT_PUBLIC_BASE_PATH (empty when a custom domain is set).
 const basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? ''
 
+const readJson = (path) => JSON.parse(readFileSync(path, 'utf8'))
+const cheeto = { ...readJson('./public/syntax/cheeto.tmLanguage.json'), name: 'cheeto' }
+
+// The highlighter options hold functions, which Turbopack cannot pass to its
+// loaders, so the docs build with webpack (see the scripts in package.json).
 const withNextra = nextra({
-  theme: 'nextra-theme-docs',
-  themeConfig: './theme.config.tsx',
   defaultShowCopyCode: true,
   mdxOptions: {
     rehypePrettyCodeOptions: {
-      theme: JSON.parse(readFileSync('./public/syntax/mocha.json', 'utf8')),
+      theme: readJson('./public/syntax/mocha.json'),
       getHighlighter: (options) =>
-        getHighlighter({
+        createHighlighter({
           ...options,
-          langs: [
-            ...BUNDLED_LANGUAGES,
-            {
-              id: 'cheeto',
-              scopeName: 'source.cheeto',
-              aliases: [],
-              path: '../../public/syntax/cheeto.tmLanguage.json'
-            }
-          ]
+          langs: [...Object.keys(bundledLanguages).filter((lang) => lang !== 'mermaid'), cheeto]
         })
     }
   }

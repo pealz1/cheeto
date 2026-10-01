@@ -6,7 +6,7 @@ import { join } from 'node:path'
 
 const docs = new URL('..', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1')
 const src = join(docs, '..', 'src')
-const pages = join(docs, 'pages')
+const pages = join(docs, 'content')
 const read = (path) => readFileSync(path, 'utf8')
 const failures = []
 

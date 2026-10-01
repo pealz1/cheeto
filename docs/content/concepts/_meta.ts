@@ -1,4 +1,6 @@
-{
+import type { MetaRecord } from 'nextra'
+
+export default {
   "how-it-works": "How Cheeto works",
   "receive-pipeline": "The receive pipeline",
   "wire-protocol": "Wire protocol",
@@ -9,4 +11,4 @@
   "state-channels": "State channels",
   "interest-and-routing": "Audiences and routing",
   "schema-versioning": "Schema versioning"
-}
+} satisfies MetaRecord

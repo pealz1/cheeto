@@ -1,4 +1,6 @@
-{
+import type { MetaRecord } from 'nextra'
+
+export default {
   "ranges": "Ranges",
   "numbers": "Numbers",
   "strings": "string",
@@ -11,4 +13,4 @@
   "optionals": "Optionals",
   "arrays": "Arrays",
   "unknown": "unknown"
-}
+} satisfies MetaRecord

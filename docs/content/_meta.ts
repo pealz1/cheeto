@@ -1,10 +1,12 @@
-{
+import type { MetaRecord } from 'nextra'
+
+export default {
   "index": {
     "title": "Home",
     "type": "page",
     "display": "hidden",
     "theme": {
-      "layout": "raw",
+      "layout": "full",
       "sidebar": false,
       "toc": false,
       "breadcrumb": false,
@@ -32,7 +34,6 @@
   "releases": {
     "title": "Releases",
     "type": "page",
-    "href": "https://github.com/pealz1/cheeto/releases",
-    "newWindow": true
+    "href": "https://github.com/pealz1/cheeto/releases"
   }
-}
+} satisfies MetaRecord

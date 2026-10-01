@@ -1,4 +1,6 @@
-{
+import type { MetaRecord } from 'nextra'
+
+export default {
   "overview": "Security model",
   "maximum-security": "Profiles and presets",
   "auth-rules": "Auth rules",
@@ -16,4 +18,4 @@
   "character-integrity": "Character integrity",
   "violations": "Violations and abuse scores",
   "security-toolkit": "Standalone toolkit"
-}
+} satisfies MetaRecord

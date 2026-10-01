@@ -1,4 +1,6 @@
-{
+import type { MetaRecord } from 'nextra'
+
+export default {
   "index": "Overview",
   "-- schema": {
     "type": "separator",
@@ -26,4 +28,4 @@
   },
   "cli": "Command line",
   "lockfile": "cheeto.lock format"
-}
+} satisfies MetaRecord
