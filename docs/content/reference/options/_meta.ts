@@ -1,4 +1,6 @@
-{
+import type { MetaRecord } from 'nextra'
+
+export default {
   "overview": "All options",
   "output": "Output and modules",
   "runtime": "Runtime features",
@@ -11,4 +13,4 @@
   "client-integrity": "Client integrity",
   "character-integrity": "Character integrity",
   "remote-hardening": "Remote hardening"
-}
+} satisfies MetaRecord

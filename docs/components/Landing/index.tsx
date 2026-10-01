@@ -1,3 +1,5 @@
+'use client'
+
 import Link from 'next/link'
 import { CSSProperties, useCallback, useEffect, useMemo, useState } from 'react'
 import { SAMPLES, tokenize } from './code'

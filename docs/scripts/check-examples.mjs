@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os'
 import { join, relative } from 'node:path'
 
 const root = process.cwd()
-const pagesDir = join(root, 'docs', 'pages')
+const pagesDir = join(root, 'docs', 'content')
 const declaration = /^(export\s+)?(event|function|channel|type|struct|enum|map|set|scope)\s/m
 const header = 'option ClientOutput = "out/Client.luau"\noption ServerOutput = "out/Server.luau"\n'
 

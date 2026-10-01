@@ -1,4 +1,6 @@
-{
+import type { MetaRecord } from 'nextra'
+
+export default {
   "module": "Network module",
   "event": "Event endpoint",
   "function": "Function endpoint",
@@ -18,4 +20,4 @@
   "inspector": "Inspector",
   "schema": "Schema",
   "diagnostics": "Diagnostics"
-}
+} satisfies MetaRecord
