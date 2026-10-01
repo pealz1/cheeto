@@ -160,24 +160,30 @@ samp {
 
 /* -------------------------------------------------------------- sidebar */
 
-.nextra-sidebar {
+.nextra-sidebar,
+.nextra-mobile-nav {
   border-right: 1px solid var(--rule);
 }
 
 .nextra-sidebar a,
-.nextra-sidebar button {
+.nextra-sidebar button,
+.nextra-mobile-nav a,
+.nextra-mobile-nav button {
   border-radius: 0 !important;
   font-size: 0.9rem;
   color: var(--ink-soft) !important;
 }
 
 .nextra-sidebar a:hover,
-.nextra-sidebar button:hover {
+.nextra-sidebar button:hover,
+.nextra-mobile-nav a:hover,
+.nextra-mobile-nav button:hover {
   background: var(--paper-sunk) !important;
   color: var(--ink) !important;
 }
 
-.nextra-sidebar a[class~='x:bg-primary-100'] {
+.nextra-sidebar a[class~='x:bg-primary-100'],
+.nextra-mobile-nav a[class~='x:bg-primary-100'] {
   background: transparent !important;
   color: var(--accent) !important;
   font-weight: 600;
@@ -185,7 +191,9 @@ samp {
 }
 
 .nextra-sidebar > .nextra-scrollbar > ul > li > button,
-.nextra-sidebar > .nextra-scrollbar > ul > li > a {
+.nextra-sidebar > .nextra-scrollbar > ul > li > a,
+.nextra-mobile-nav > .nextra-scrollbar > li > button,
+.nextra-mobile-nav > .nextra-scrollbar > li > a {
   font-family: var(--font-mono), monospace;
   font-size: 0.75rem;
   letter-spacing: 0.06em;
@@ -445,7 +453,8 @@ samp {
 }
 
 /* Sidebar group headings from _meta separators: the only text-only items. */
-.nextra-sidebar li:not(:has(a, button)) {
+.nextra-sidebar li:not(:has(a, button)),
+.nextra-mobile-nav li:not(:has(a, button)) {
   display: block;
   padding-top: var(--space-2);
   border-top: 1px solid var(--rule-strong);
