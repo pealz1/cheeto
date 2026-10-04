@@ -4728,12 +4728,6 @@ function RuntimeSupport.StartClientShield()
             "saveinstance",
             "synsaveinstance",
         }
-        local WeakServices = {
-            { Name = "WebSocketService", Reason = TransportError.DexExplorer, Weight = 8 },
-            { Name = "InsertService", Reason = TransportError.InfiniteYield, Weight = 4 },
-            { Name = "UGCValidationService", Reason = TransportError.SaveInstance, Weight = 4 },
-            { Name = "ScriptContext", Reason = TransportError.SaveInstance, Weight = 4 },
-        }
 
         local RunServiceSuccess, RunService = pcall(function()
             return game:GetService("RunService")
@@ -4933,26 +4927,6 @@ function RuntimeSupport.StartClientShield()
             end
         end
 
-        local function ProbeWeakService(ServiceName: string, Reason: string, Weight: number)
-            local Success, Service = pcall(function()
-                return game:GetService(ServiceName)
-            end)
-            if not Success or Service == nil then
-                return
-            end
-
-            local Weak = setmetatable({ Service }, { __mode = "v" })
-            Service = nil
-            pcall(collectgarbage, "collect")
-            task.wait(0.15)
-            pcall(collectgarbage, "collect")
-            task.wait(0.15)
-
-            if Weak[1] ~= nil then
-                ReportLocal(Reason, `weak-service:{ServiceName}`, Weight, RuntimeConfig.ClientShieldStrict)
-            end
-        end
-
         local function ProbeTextChatTripwire()
             local Success, TextChatService = pcall(function()
                 return game:GetService("TextChatService")
@@ -5019,10 +4993,6 @@ function RuntimeSupport.StartClientShield()
             ProbeStackHooks()
             ProbeGuiTree()
             ProbeSaveInstance()
-
-            local WeakIndex = ((RuntimeState.ClientShield.Local.Sweep - 1) % #WeakServices) + 1
-            local WeakProbe = WeakServices[WeakIndex]
-            ProbeWeakService(WeakProbe.Name, WeakProbe.Reason, WeakProbe.Weight)
 
             if RuntimeState.ClientShield.Local.Sweep % 8 == 1 then
                 ProbeTextChatTripwire()

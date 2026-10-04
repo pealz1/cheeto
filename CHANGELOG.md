@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- The client shield's weak-service probe reported every live player. It forced a collection with `collectgarbage("collect")`, which Roblox does not allow (only `"count"`), so the service it watched was never collected and the probe always reported `DexExplorer`, `InfiniteYield` or `SaveInstance`. The probe is removed. The shield is off in Studio, so this only showed on live servers. Regenerate the client module.
+
 ## [1.1.2] - 2026-09-30
 
 ### Fixed
