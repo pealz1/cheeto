@@ -2973,6 +2973,60 @@ RunClosure("Bare output file names land next to the schema", function()
 	assert(Written, "Bare output names were not written next to the schema.")
 end)
 
+RunClosure("Capture keeps exactly the newest entries", function()
+	--> Trimming is batched, so reads must still see only the newest Limit
+	--> entries, oldest first.
+	local Drain = Server.IdempotentFire.On(function() end)
+	Client.Capture.Clear()
+	Client.Capture.Start({ Limit = 4 })
+	for Value = 1, 11 do
+		Client.IdempotentFire.Fire(Value)
+	end
+	local Entries = Client.Capture.Entries()
+	Client.Capture.Stop()
+	Client.Capture.Clear()
+	Client.StepReplication()
+	task.wait(1 / 30)
+	Drain()
+	assert(#Entries == 4, `Expected 4 captured entries, got {#Entries}.`)
+	for Index, Entry in Entries do
+		assert(Entry.PayloadSummary == `table(1={7 + Index})`, `Entry {Index} is out of order: {Entry.PayloadSummary}`)
+	end
+end)
+
+RunClosure("Schema strings with quotes generate loadable modules", function()
+	fs.writeDir("./Sources/Quotes")
+	fs.writeFile(
+		"./Sources/Quotes/Q.cheeto",
+		table.concat({
+			'option ClientOutput = "C.luau"',
+			'option ServerOutput = "S.luau"',
+			"option ClientShieldKickMessage = 'say \"bye\" now'",
+			"option CaptureRedactions = 'a\"b'",
+			"event Ping { From: Client, Type: Reliable, Call: ManyAsync, Policy: 'x\"y', Data: enum 'K\"d' { [\"Two Words\"] { A: u8 }, Plain { B: u8 } } }",
+		}, "\n")
+	)
+	local Result = process.exec(
+		"lune",
+		{ "run", Compiler, "../../test/Sources/Quotes/Q", "--", "--yes" },
+		{ cwd = "../src/CLI" }
+	)
+	local Sources = {}
+	if Result.ok then
+		Sources = { fs.readFile("./Sources/Quotes/C.luau"), fs.readFile("./Sources/Quotes/S.luau") }
+	end
+	fs.removeDir("./Sources/Quotes")
+	assert(Result.ok, `Quoted schema failed to compile:\n{Result.stderr}`)
+	for _, Source in Sources do
+		local Compiled, Error = pcall(luau.compile, Source)
+		assert(Compiled, `A module generated from quoted strings does not load: {Error}`)
+	end
+	assert(
+		string.find(Sources[1], 'ClientShieldKickMessage = "say \\"bye\\" now"', 1, true),
+		"The kick message was not escaped."
+	)
+end)
+
 RunClosure("Circular imports fail with a readable error", function()
 	fs.writeDir("./Sources/Cycle")
 	fs.writeFile(

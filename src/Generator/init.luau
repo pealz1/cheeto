@@ -200,14 +200,14 @@ end
 
 local function FormatKey(Key: string): string
 	if not IsValidIdentifier(Key) then
-		return `["{Key}"]`
+		return `[{Util.Quote(Key)}]`
 	end
 	return Key
 end
 
 local function FormatIndex(Index: string): string
 	if not IsValidIdentifier(Index) then
-		return `["{Index}"]`
+		return `[{Util.Quote(Index)}]`
 	end
 	return `.{Index}`
 end
@@ -225,11 +225,11 @@ local function BooleanLiteral(Value: boolean?, Default: boolean): string
 end
 
 local function StringLiteral(Value: string?, Default: string): string
-	return `"{Value or Default}"`
+	return Util.Quote(Value or Default)
 end
 
 local function OptionalString(Value: string?): string
-	return if Value == nil then "nil" else `"{Value}"`
+	return if Value == nil then "nil" else Util.Quote(Value)
 end
 
 local function RuntimeConfigLines(): { string }
@@ -292,8 +292,8 @@ local function RuntimeConfigLines(): { string }
 		`\tSchemaVersion = {NumberLiteral(SchemaVersion, 1)},\n`,
 		`\tMinimumSchemaVersion = {NumberLiteral(Options.MinimumSchemaVersion, 1)},\n`,
 		`\tSchemaHash = "{SchemaFingerprint}",\n`,
-		`\tSecurityProfile = "{Profile}",\n`,
-		`\tSecurityPreset = "{SecurityPreset}",\n`,
+		`\tSecurityProfile = {Util.Quote(Profile)},\n`,
+		`\tSecurityPreset = {Util.Quote(SecurityPreset)},\n`,
 		`\tMaxReliablePacketBytes = {NumberLiteral(Options.MaxReliablePacketBytes, MaxPacketBytes)},\n`,
 		`\tMaxUnreliablePacketBytes = {NumberLiteral(
 			Options.MaxUnreliablePacketBytes,
@@ -335,7 +335,7 @@ local function RuntimeConfigLines(): { string }
 		`\tRequirePolicies = {BooleanLiteral(Options.RequirePolicies, MaximumSecurity)},\n`,
 		`\tEnableMicroProfiler = {BooleanLiteral(Options.EnableMicroProfiler, true)},\n`,
 		`\tEnableHoneypots = {BooleanLiteral(Options.EnableHoneypots, true)},\n`,
-		`\tCaptureRedactions = "{Options.CaptureRedactions or ""}",\n`,
+		`\tCaptureRedactions = {Util.Quote(Options.CaptureRedactions or "")},\n`,
 		`\tCaptureLimit = {NumberLiteral(Options.CaptureLimit, 1024)},\n`,
 		`\tEnableInspector = {BooleanLiteral(Options.EnableInspector, false)},\n`,
 		`\tEnableReplicationAdapters = {BooleanLiteral(Options.EnableReplicationAdapters, true)},\n`,
@@ -595,7 +595,7 @@ local function AddReceiveGuards(
 	)
 	if Value.Auth then
 		Block:Line(
-			`if not CheckAuth("{Value.Auth}", \{ Name = "{Name}", Source = {Source}, Channel = "{Reliability}", Size = Size \}) then DropPacket({Source}, "{Reliability}", "AuthRejected", Size) {AbortReadLine(
+			`if not CheckAuth({Util.Quote(Value.Auth)}, \{ Name = "{Name}", Source = {Source}, Channel = "{Reliability}", Size = Size \}) then DropPacket({Source}, "{Reliability}", "AuthRejected", Size) {AbortReadLine(
 				'"AuthRejected"'
 			)} end`
 		)
@@ -1142,7 +1142,7 @@ function Declarations.TagEnum(Declaration: Parser.TagEnum, Read: Blocks.Block, W
 
 	--> Body
 	local Tag = Value.Tag
-	local Header = `"{Values[1].Name}"`
+	local Header = Util.Quote(Values[1].Name)
 	local TagIndex = `{Variable}{FormatIndex(Tag)}`
 
 	Types.u8.Read(`Tag`, Read)
@@ -1154,7 +1154,7 @@ function Declarations.TagEnum(Declaration: Parser.TagEnum, Read: Blocks.Block, W
 	Write = Write:Compare(TagIndex, Header, "Equals")
 
 	for Index, Variant in Values do
-		local Name = `"{Variant.Name}"`
+		local Name = Util.Quote(Variant.Name)
 		if Index > 1 then
 			Read = Read:Branch("Conditional", "Tag", tostring(Index - 1), "Equals")
 			Write = Write:Branch("Conditional", TagIndex, Name, "Equals")
@@ -1428,7 +1428,7 @@ function Declarations.Event(Declaration: Parser.Event)
 			)
 			if Deferred then
 				Target:Line(
-					`if Written then RuntimeSupport.DeferLatest("{LatestKey}", "Server", nil, "{Reliability}", "{Priority}", {PredictionId}) end`
+					`if Written then RuntimeSupport.DeferLatest({Util.Quote(LatestKey)}, "Server", nil, "{Reliability}", "{Priority}", {PredictionId}) end`
 				)
 			elseif not IsReliable then
 				Target:Line(`if Written then RuntimeSupport.SendUnreliable(nil, nil, "{Priority}") end`)
@@ -1483,7 +1483,7 @@ function Declarations.Event(Declaration: Parser.Event)
 			Fire:Line("Load()")
 			Fire:Line(Send("Player"))
 			Fire:Line(
-				`if Written then RuntimeSupport.DeferLatest("{LatestKey}", Player, nil, "{Reliability}", "{Priority}", nil) end`
+				`if Written then RuntimeSupport.DeferLatest({Util.Quote(LatestKey)}, Player, nil, "{Reliability}", "{Priority}", nil) end`
 			)
 		elseif IsReliable then
 			Fire:Line("Load(PlayersMap[Player], true)")
@@ -1506,7 +1506,7 @@ function Declarations.Event(Declaration: Parser.Event)
 			Function:Line("if WriteError then error(WriteError, 2) end")
 			if Deferred then
 				Function:Line(
-					`if Written then RuntimeSupport.DeferLatest("{LatestKey}", {List}, {Except}, "{Reliability}", "{Priority}", nil) end`
+					`if Written then RuntimeSupport.DeferLatest({Util.Quote(LatestKey)}, {List}, {Except}, "{Reliability}", "{Priority}", nil) end`
 				)
 			elseif IsReliable then
 				Function:Line(`if Written then RuntimeSupport.BroadcastReliable({List}, {Except}, "{Priority}") end`)
@@ -2493,7 +2493,7 @@ function Generators.LuauType(
 		local Literals = {}
 
 		for Index, Variant in Value.Values do
-			local TagField = `{FormatKey(Value.Tag)}: "{Variant.Name}"`
+			local TagField = `{FormatKey(Value.Tag)}: {Util.Quote(Variant.Name)}`
 			local ValueType = Generators.LuauType(Variant)
 			table.insert(Literals, `\{ {TagField},{string.sub(ValueType, 2)}`)
 		end
@@ -3054,7 +3054,11 @@ function Generator.Generate(FileContext: Context, AbstractSyntaxTree: Parser.Bod
 		(if Split then {} else string.split(Source[1], "\r")),
 		Imports.DumpLines(),
 		{ "local SerdesFunctions = {}\n" },
-		{ `local BASE_EVENT_NAME = "{Options.RemoteScope and Options.RemoteScope .. "_" or ""}CHEETO"\n` },
+		{
+			`local BASE_EVENT_NAME = {Util.Quote(
+				(if Options.RemoteScope then Options.RemoteScope .. "_" else "") .. "CHEETO"
+			)}\n`,
+		},
 		RuntimeConfigLines(),
 		(if Split then RuntimeBindingLines() else string.split(Sources.Base, "\r")),
 		(if Options.SyncValidation then SYNC_VALIDATION_BODY else {}),

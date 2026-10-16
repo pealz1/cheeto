@@ -474,11 +474,33 @@ function RuntimeSupport.RecordCapture(Entry: {[string]: any})
         Entry.Payload = nil
     end
 
-    table.insert(RuntimeState.Capture.Entries, Entry)
+    local Entries = RuntimeState.Capture.Entries
     local Limit = RuntimeState.Capture.Limit or RuntimeConfig.CaptureLimit
-    while #RuntimeState.Capture.Entries > Limit do
-        table.remove(RuntimeState.Capture.Entries, 1)
+    if Limit <= 0 then
+        table.clear(Entries)
+        return
     end
+
+    --> Trimmed in bulk once twice the limit is held, and read through
+    --> CaptureWindow. Removing the oldest entry one at a time shifted the
+    --> whole list on every captured packet.
+    table.insert(Entries, Entry)
+    local Count = #Entries
+    if Count >= Limit * 2 then
+        table.move(Entries, Count - Limit + 1, Count, 1)
+        for Index = Limit + 1, Count do
+            Entries[Index] = nil
+        end
+    end
+end
+
+--> The newest Limit entries, oldest first.
+local function CaptureWindow(): {any}
+    local Entries = RuntimeState.Capture.Entries
+    local Limit = math.max(0, RuntimeState.Capture.Limit or RuntimeConfig.CaptureLimit)
+    local Count = #Entries
+    local First = math.max(1, Count - Limit + 1)
+    return table.move(Entries, First, Count, 1, table.create(Count - First + 1))
 end
 
 function RuntimeSupport.StartCapture(Options: {[string]: any}?)
@@ -502,7 +524,7 @@ function RuntimeSupport.ClearCapture()
 end
 
 function RuntimeSupport.CaptureEntries()
-    return table.clone(RuntimeState.Capture.Entries)
+    return CaptureWindow()
 end
 
 function RuntimeSupport.ReplayCapture(Entries: {{[string]: any}}, Handlers: {[string]: (any) -> any}?)
@@ -3304,7 +3326,7 @@ local function GetMetrics()
 
     Copy.PendingInvokes = PendingInvokes
     Copy.PendingInvokesByName = table.clone(PendingInvokesByName)
-    Copy.CapturedPackets = #RuntimeState.Capture.Entries
+    Copy.CapturedPackets = math.min(#RuntimeState.Capture.Entries, math.max(0, RuntimeState.Capture.Limit or RuntimeConfig.CaptureLimit))
     return Copy
 end
 

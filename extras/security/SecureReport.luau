@@ -2,11 +2,11 @@
 --[[
 	Signed report helpers for the security channel.
 
-	The server issues each client a random per-session secret and a rolling nonce.
-	Every client message (a detection report or a heartbeat) is signed over the
-	current nonce + a monotonic sequence number + the payload, then the server
-	re-issues a fresh nonce. That stops naive replay and off-the-shelf spoofing of
-	a "clean" heartbeat.
+	The server issues each client a random per-session secret and nonce on every
+	handshake. Every client message (a detection report or a heartbeat) is signed
+	over the secret + nonce + a strictly increasing sequence number + the payload,
+	and the server rejects any sequence it has already seen. That stops naive
+	replay and off-the-shelf spoofing of a "clean" heartbeat.
 
 	Honest limit: the session secret lives in client memory, so an exploiter who
 	reads this script can reproduce the signature. The signature is defence in
