@@ -52,15 +52,19 @@ remote.OnServerEvent:Connect(function(player: Player, message)
 		return
 	end
 
-	--> Handshake: (re)issue a fresh session.
+	--> Handshake: (re)issue a fresh session. A repeat hello keeps the original
+	--> join time and last heartbeat: resetting them handed out a new grace
+	--> window per hello, so a client with its detector removed could send one
+	--> every few seconds and never reach the heartbeat timeout.
 	if message.k == "hello" then
 		local now = os.clock()
+		local previous = sessions[player]
 		sessions[player] = {
 			secret = newToken(),
 			nonce = newToken(),
 			seq = 0,
-			lastSeen = now,
-			handshakeAt = now,
+			lastSeen = if previous then previous.lastSeen else now,
+			handshakeAt = if previous then previous.handshakeAt else now,
 		}
 		remote:FireClient(player, {
 			k = "challenge",

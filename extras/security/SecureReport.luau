@@ -21,7 +21,10 @@ local function hash(text: string, seed: number?): number
 	local value = bit32.band(seed or 0x811C9DC5, 0xFFFFFFFF)
 	for index = 1, #text do
 		value = bit32.bxor(value, string.byte(text, index))
-		value = bit32.band((value * 16777619) % 4294967296, 0xFFFFFFFF)
+		--> 16777619 = 2^24 + 403. The direct product reaches 2^56, past the
+		--> 2^53 doubles hold exactly, so the low bits of the hash were rounding
+		--> noise. Split, every term stays exact.
+		value = (bit32.lshift(value, 24) + value * 403) % 4294967296
 		value = bit32.bxor(value, bit32.rshift(value, 13))
 	end
 	return bit32.band(value, 0xFFFFFFFF)

@@ -132,6 +132,13 @@ do
 	assert(not SecureReport.verify(secret, "nonce-02", seq, kind, payload, signature), "replayed nonce must fail")
 	assert(not SecureReport.verify(secret, nonce, seq + 1, kind, payload, signature), "wrong seq must fail")
 	assert(not SecureReport.verify(secret, nonce, seq, kind, payload, "short"), "malformed signature must fail")
+	--> Reference values from exact integer arithmetic: the hash multiply used
+	--> to overflow double precision and drift from them.
+	assert(SecureReport.hash("cheeto_report_v1") == 0xB205AE3D, "hash must match the exact reference")
+	assert(
+		SecureReport.hash("the quick brown fox", 0x6D2B79F5) == 0x5BB48BBE,
+		"seeded hash must match the exact reference"
+	)
 	Ok("Signed report verifies, and tamper/replay/malformed all rejected")
 end
 
