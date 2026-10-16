@@ -2973,6 +2973,24 @@ RunClosure("Bare output file names land next to the schema", function()
 	assert(Written, "Bare output names were not written next to the schema.")
 end)
 
+RunClosure("Circular imports fail with a readable error", function()
+	fs.writeDir("./Sources/Cycle")
+	fs.writeFile(
+		"./Sources/Cycle/A.cheeto",
+		'option ClientOutput = "C.luau"\noption ServerOutput = "S.luau"\nimport "B"\nevent Ping { From: Client, Type: Reliable, Call: ManyAsync, Data: u8 }'
+	)
+	fs.writeFile("./Sources/Cycle/B.cheeto", 'import "A"\nstruct Foo { X: u8 }')
+	local Result = process.exec(
+		"lune",
+		{ "run", Compiler, "../../test/Sources/Cycle/A", "--", "--yes" },
+		{ cwd = "../src/CLI" }
+	)
+	fs.removeDir("./Sources/Cycle")
+	local Output = Result.stdout .. Result.stderr
+	assert(not Result.ok, "A circular import compiled.")
+	assert(string.find(Output, "Circular import", 1, true), `Expected a circular import error, got:\n{Output}`)
+end)
+
 RunClosure("Rate limits can be changed at runtime", function()
 	local Seen = 0
 	local Release = Server.UnconstrainedClient.On(function()
