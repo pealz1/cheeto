@@ -1252,9 +1252,19 @@ function Declarations.Event(Declaration: Parser.Event)
 			end
 
 			local PathExpr = IsSingle and Connection or "Listener"
-			local CallExpr = IsSync and `{PathExpr}({ListenerArguments})`
-				or `task.spawn({PathExpr}, {ListenerArguments})`
-			CallListener = CallListener:Line(CallExpr)
+			if IsSync then
+				--> Under pcall: a Sync listener runs inside the packet loop, so its
+				--> error used to abandon every later message in the packet (an
+				--> Async listener's error stays in its own thread).
+				CallListener = CallListener:Line(
+					`local ListenerOk, ListenerError = pcall({PathExpr}, {ListenerArguments})`
+				)
+				CallListener = CallListener:Line(
+					`if not ListenerOk then RuntimeSupport.ReportListenerError("{Declaration.Name}", {SourceExpression()}, "{Reliability}", ListenerError) end`
+				)
+			else
+				CallListener = CallListener:Line(`task.spawn({PathExpr}, {ListenerArguments})`)
+			end
 
 			--> Reached only if the listener returned without yielding. If it did
 			--> yield, this line is skipped for now and SerdesThread stays set,
@@ -1298,7 +1308,7 @@ function Declarations.Event(Declaration: Parser.Event)
 			QueueFull:Line(`DropPacket({SourceExpression()}, "{Reliability}", "QueueFull", Size)`)
 				:Line(AbortReadLine('"QueueFull"'))
 				:Branch("Default")
-				:Line(`table.insert({Queue}, \{{ListenerArguments}\} :: \{any\})`)
+				:Line(`table.insert({Queue}, table.pack({ListenerArguments}))`)
 				:End()
 				:End()
 
@@ -1306,7 +1316,10 @@ function Declarations.Event(Declaration: Parser.Event)
 				:Line(`local ReleaseListener = RuntimeSupport.RegisterListener("{Declaration.Name}", Listener)`)
 				:Line(IsSingle and `{Connection} = Listener` or `table.insert({Connection}, Listener)`)
 				:Iterator("Index", "Arguments", Queue)
-				:Line(IsSync and `Listener(table.unpack(Arguments))` or `task.spawn(Listener, table.unpack(Arguments))`)
+				:Line(
+					IsSync and `Listener(table.unpack(Arguments, 1, Arguments.n))`
+						or `task.spawn(Listener, table.unpack(Arguments, 1, Arguments.n))`
+				)
 				:End()
 				:Line(`{Queue} = \{}`)
 				:Lines(Disconnect.Content, 1)
@@ -1617,7 +1630,7 @@ function Declarations.Function(Declaration: Parser.Function)
 			:Line(`DropPacket(Player, "Reliable", "QueueFull", Size)`)
 			:Line(AbortReadLine('"QueueFull"'))
 			:Branch("Default")
-			:Line(`table.insert({Queue}, \{Player, {DataArguments}, InvocationIdentifier\} :: \{any\})`)
+			:Line(`table.insert({Queue}, table.pack(Player, {DataArguments}, InvocationIdentifier))`)
 			:End()
 			:End()
 		Rejecting = nil
@@ -1627,7 +1640,7 @@ function Declarations.Function(Declaration: Parser.Function)
 			:Line(`local EventQueue = {Queue} or \{\}`)
 			:Line(`{Queue} = table.create(16)`)
 			:Iterator("Index", "Arguments", "EventQueue")
-			:Line(`{Connection}(table.unpack(Arguments))`)
+			:Line(`{Connection}(table.unpack(Arguments, 1, Arguments.n))`)
 			:End()
 			:End()
 			:Wrap("task.spawn(", ")")

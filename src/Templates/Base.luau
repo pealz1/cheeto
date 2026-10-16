@@ -589,6 +589,17 @@ local function RunHooks(Name: string, Payload: any): boolean
     return true
 end
 
+function RuntimeSupport.ReportListenerError(Name: string, Source: any, Channel: string, Error: any)
+    MetricAdd("HookErrors", "Listener")
+    warn(`[Cheeto]: Listener for "{Name}" failed: {Error}`)
+    RunHooks("Error", {
+        Name = Name,
+        Source = Source,
+        Channel = Channel,
+        Error = Error
+    })
+end
+
 local function ProfileBegin(Name: string)
     if not RuntimeConfig.EnableMicroProfiler then
         return

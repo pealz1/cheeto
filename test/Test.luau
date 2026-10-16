@@ -3038,6 +3038,33 @@ RunClosure("Roblox datatypes pass the receive-side canonical check", function()
 	assert(Received.When.UnixTimestamp == 1700000000, "DateTime did not arrive intact.")
 end)
 
+RunClosure("Queued tuples keep values after a nil", function()
+	Server.QueuedTupleServer.FireAll(1, nil, nil, 4, nil)
+	Server.StepReplication()
+	task.wait(1 / 30)
+	local Got = nil
+	local Release = Client.QueuedTupleServer.On(function(...)
+		Got = table.pack(...)
+	end)
+	Release()
+	assert(Got ~= nil, "The queued tuple was never delivered.")
+	assert(Got[1] == 1 and Got[4] == 4, `Queued tuple lost a value: {Got[1]}, {Got[4]}.`)
+end)
+
+RunClosure("A failing Sync listener does not drop the rest of the packet", function()
+	local Calls = 0
+	local Release = Server.ReliableClient.On(function()
+		Calls += 1
+		error("listener failure", 0)
+	end)
+	Client.ReliableClient.Fire(1)
+	Client.ReliableClient.Fire(2)
+	Client.StepReplication()
+	task.wait(1 / 30)
+	Release()
+	assert(Calls == 2, `Expected both messages to reach the listener, got {Calls}.`)
+end)
+
 RunClosure("Broadcasts to several players keep every batch intact", function()
 	--> The mock has one player; add a second so batches for two players are
 	--> built in the same frame. Loading one player's batch used to return the

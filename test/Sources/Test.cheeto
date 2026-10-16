@@ -835,3 +835,11 @@ event DatatypeClient {
         When: DateTime
     }
 }
+
+--> Queued until a listener connects; the nil holes must survive the queue.
+event QueuedTupleServer {
+    From: Server,
+    Type: Reliable,
+    Call: ManySync,
+    Data: (u8, u16?, u16?, u8, u8?)
+}
