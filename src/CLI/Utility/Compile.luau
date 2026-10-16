@@ -66,7 +66,10 @@ local function FormatTime(Time: number): string
 end
 
 local function CreateDirectoryIfNotFound(Path: string, Options: CompileOptions)
-	local Directory = PathParser.Directory(Path) or "./"
+	local Directory = PathParser.Directory(Path)
+	if Directory == nil or Directory == "" then
+		Directory = "./"
+	end
 	if fs.isDir(Directory) then
 		return
 	end
@@ -148,22 +151,25 @@ function Utility.Compile(Path: string, Options: CompileOptions)
 	local ClientTypescriptPath
 	local ServerTypescriptPath
 
+	--> Components keeps the trailing separator on Directory (or returns "" for a
+	--> bare file name), so joining with another "/" turned "Client.luau" into
+	--> the absolute path "/Client.luau" and wrote it at the filesystem root.
 	do
 		local Directory, Filename = PathParser.Components(ClientOutputPath)
 		local TypescriptFilename = if Filename == "init" then "index" else Filename
-		ClientOutputPath = `{Directory}/{Filename}.luau`
+		ClientOutputPath = `{Directory}{Filename}.luau`
 		ClientTypescriptPath = if PathParser.PathType(ClientOutputPath) == "absolute"
-			then `{Directory}/{TypescriptFilename}.d.ts`
-			else `{FileDirectory}{Directory}/{TypescriptFilename}.d.ts`
+			then `{Directory}{TypescriptFilename}.d.ts`
+			else `{FileDirectory}{Directory}{TypescriptFilename}.d.ts`
 	end
 
 	do
 		local Directory, Filename = PathParser.Components(ServerOutputPath)
 		local TypescriptFilename = if Filename == "init" then "index" else Filename
-		ServerOutputPath = `{Directory}/{Filename}.luau`
+		ServerOutputPath = `{Directory}{Filename}.luau`
 		ServerTypescriptPath = if PathParser.PathType(ServerOutputPath) == "absolute"
-			then `{Directory}/{TypescriptFilename}.d.ts`
-			else `{FileDirectory}{Directory}/{TypescriptFilename}.d.ts`
+			then `{Directory}{TypescriptFilename}.d.ts`
+			else `{FileDirectory}{Directory}{TypescriptFilename}.d.ts`
 	end
 
 	local TypesOutput: string
@@ -226,7 +232,7 @@ function Utility.Compile(Path: string, Options: CompileOptions)
 		assert(FileOptions.RuntimeRequire, "RuntimeRequire must be set alongside RuntimeOutput.")
 
 		local RuntimeDirectory, RuntimeFilename = PathParser.Components(FileOptions.RuntimeOutput)
-		local RuntimePath = `{RuntimeDirectory}/{RuntimeFilename}.luau`
+		local RuntimePath = `{RuntimeDirectory}{RuntimeFilename}.luau`
 		local RuntimeOutput = if PathParser.PathType(RuntimePath) == "absolute"
 			then RuntimePath
 			else `{FileDirectory}{RuntimePath}`

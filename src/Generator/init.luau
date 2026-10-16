@@ -617,6 +617,11 @@ local function AddAfterReceive(
 	Value: { [string]: any }?
 )
 	local Source = SourceExpression()
+	--> Packed once: every use below used to build its own table.pack per event.
+	if PayloadExpression ~= nil then
+		Block:Line(`local DecodedPayload = {PayloadExpression}`)
+		PayloadExpression = "DecodedPayload"
+	end
 	Block:Line(
 		`if not RuntimeSupport.ValidateDecodedPayload("{Name}", {Source}, "{Reliability}", {PayloadExpression or "nil"}, Size) then {AbortReadLine(
 			'"Canonicalization"'
@@ -1256,9 +1261,8 @@ function Declarations.Event(Declaration: Parser.Event)
 				--> Under pcall: a Sync listener runs inside the packet loop, so its
 				--> error used to abandon every later message in the packet (an
 				--> Async listener's error stays in its own thread).
-				CallListener = CallListener:Line(
-					`local ListenerOk, ListenerError = pcall({PathExpr}, {ListenerArguments})`
-				)
+				CallListener =
+					CallListener:Line(`local ListenerOk, ListenerError = pcall({PathExpr}, {ListenerArguments})`)
 				CallListener = CallListener:Line(
 					`if not ListenerOk then RuntimeSupport.ReportListenerError("{Declaration.Name}", {SourceExpression()}, "{Reliability}", ListenerError) end`
 				)

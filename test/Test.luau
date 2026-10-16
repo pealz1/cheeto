@@ -2955,6 +2955,24 @@ RunClosure("Large schemas and UseColon compile and load", function()
 	end
 end)
 
+RunClosure("Bare output file names land next to the schema", function()
+	fs.writeDir("./Sources/BareOutput")
+	fs.writeFile(
+		"./Sources/BareOutput/Bare.cheeto",
+		'option ClientOutput = "BareClient.luau"\noption ServerOutput = "BareServer.luau"\nevent Ping { From: Client, Type: Reliable, Call: ManyAsync, Data: u8 }'
+	)
+	local Result = process.exec(
+		"lune",
+		{ "run", Compiler, "../../test/Sources/BareOutput/Bare", "--", "--yes" },
+		{ cwd = "../src/CLI" }
+	)
+	local Written = fs.isFile("./Sources/BareOutput/BareClient.luau")
+		and fs.isFile("./Sources/BareOutput/BareServer.luau")
+	fs.removeDir("./Sources/BareOutput")
+	assert(Result.ok, `Bare output schema failed to compile:\n{Result.stderr}`)
+	assert(Written, "Bare output names were not written next to the schema.")
+end)
+
 RunClosure("Rate limits can be changed at runtime", function()
 	local Seen = 0
 	local Release = Server.UnconstrainedClient.On(function()
@@ -3031,7 +3049,10 @@ RunClosure("Roblox datatypes pass the receive-side canonical check", function()
 	Client.StepReplication()
 	task.wait(1 / 30)
 	Release()
-	assert((Server.Stats().DroppedPackets.Canonicalization or 0) == Before, "A datatype payload was dropped as Canonicalization.")
+	assert(
+		(Server.Stats().DroppedPackets.Canonicalization or 0) == Before,
+		"A datatype payload was dropped as Canonicalization."
+	)
 	assert(Received ~= nil, "The datatype event never arrived.")
 	assert(Received.Position.X == 3 and Received.Position.Y == -4, "Vector2 did not arrive intact.")
 	assert(Received.Size.X.Offset == 10 and Received.Size.Y.Scale == 1, "UDim2 did not arrive intact.")
