@@ -1261,8 +1261,9 @@ function Declarations.Event(Declaration: Parser.Event)
 				--> Under pcall: a Sync listener runs inside the packet loop, so its
 				--> error used to abandon every later message in the packet (an
 				--> Async listener's error stays in its own thread).
-				CallListener =
-					CallListener:Line(`local ListenerOk, ListenerError = pcall({PathExpr}, {ListenerArguments})`)
+				CallListener = CallListener:Line(
+					`local ListenerOk, ListenerError = xpcall({PathExpr}, debug.traceback, {ListenerArguments})`
+				)
 				CallListener = CallListener:Line(
 					`if not ListenerOk then RuntimeSupport.ReportListenerError("{Declaration.Name}", {SourceExpression()}, "{Reliability}", ListenerError) end`
 				)

@@ -153,7 +153,7 @@ function Utility.Compile(Path: string, Options: CompileOptions)
 
 	--> Components keeps the trailing separator on Directory (or returns "" for a
 	--> bare file name), so joining with another "/" turned "Client.luau" into
-	--> the absolute path "/Client.luau" and wrote it at the filesystem root.
+	--> the absolute path "/Client.luau" and the compile tried to write there.
 	do
 		local Directory, Filename = PathParser.Components(ClientOutputPath)
 		local TypescriptFilename = if Filename == "init" then "index" else Filename
@@ -712,7 +712,8 @@ function Utility.Benchmark(Path: string, Options: CompileOptions)
 		ServerBytes = 220_000 + Endpoints * 8_000,
 		ClientBytes = 220_000 + Endpoints * 6_000,
 		--> The shared artifact embeds the whole runtime, so it tracks runtime size.
-		TypesBytes = 250_000,
+		--> Raised from 250 KB when receive validation grew per-datatype checks.
+		TypesBytes = 260_000,
 		GenerateSeconds = 2,
 		--> Per message, averaged over every measured endpoint. Generous on
 		--> purpose: CI machines are slow and noisy; this catches regressions

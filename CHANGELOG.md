@@ -8,6 +8,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- Every packet carrying a `Vector2`, `UDim`, `UDim2`, `DateTime`, `BrickColor`, `Rect`, `NumberRange`, `Ray`, `Region3`, `TweenInfo` or sequence was dropped on arrival as `Canonicalization`: the receive-side validator only knew `Vector3`, `CFrame` and `Color3`. These datatypes are now accepted, with their float components checked for NaN and infinity. Regenerate both modules.
+- A client could make the server allocate up to 1 GB with two tiny reliable fragments, because the declared total size was never checked. Reassembly is now capped at `MaxReliablePacketBytes` and must match the bytes actually received.
+- A Sync listener that raised an error abandoned every later message in the same packet, including function replies. Sync listeners now run under `xpcall`; the error is reported with its traceback through `warn` and the `Error` hook.
+- Queued events and function calls lost arguments after a nil: `(1, nil, nil, 4, nil)` reached a late listener as `(1)`.
+- `PlayerRemoving` left coalesced payloads and partial fragment assemblies behind, and `FlushCoalesced` kept an empty bucket for every target it had flushed.
+- The replay window swept every tracked sequence on every packet once full. It now sweeps at twice its capacity.
+- The receive and send paths built capture and hook payload tables per event even with capture off and no hooks registered, and packed each decoded payload twice.
+- `CaptureLimit` was ignored until `Configure` ran, `transport.flush` telemetry reported the queue sizes after zeroing them, and the `Listener` hook reported a stale count on disconnect.
+- An output option without a folder, such as `ClientOutput = "Client.luau"`, failed to compile because the path became `/Client.luau`.
+- A circular `import` recursed until the stack overflowed and printed the path hundreds of times. It is now an `E3014` error. Import errors are no longer prefixed with the parser's own location once per nesting level.
+- Watch mode swallowed every recompile error.
+- `extras/security`: a repeated `hello` reset the join grace window, so a client with its detector removed could avoid the heartbeat-timeout kick indefinitely. The report signature hash also lost its low bits to floating-point rounding; signatures change, so update the client and server scripts together.
 - The client shield's weak-service probe reported every live player. It forced a collection with `collectgarbage("collect")`, which Roblox does not allow (only `"count"`), so the service it watched was never collected and the probe always reported `DexExplorer`, `InfiniteYield` or `SaveInstance`. The probe is removed. The shield is off in Studio, so this only showed on live servers. Regenerate the client module.
 
 ## [1.1.2] - 2026-09-30

@@ -1851,6 +1851,65 @@ function RuntimeSupport.IsFiniteNumber(Value: any): boolean
     return type(Value) == "number" and Value == Value and Value ~= math.huge and Value ~= -math.huge
 end
 
+--> True when every argument is a finite number. Select, not a table, so the
+--> per-value check allocates nothing.
+local function AllFinite(...: any): boolean
+    for Index = 1, select("#", ...) do
+        if not RuntimeSupport.IsFiniteNumber((select(Index, ...))) then
+            return false
+        end
+    end
+    return true
+end
+
+--> The decoders read these datatypes straight from floats on the wire, so a
+--> crafted packet can carry NaN or infinity in any component.
+local FiniteDatatypes: {[string]: (any) -> boolean} = {
+    UDim = function(Value)
+        return AllFinite(Value.Scale, Value.Offset)
+    end,
+    UDim2 = function(Value)
+        return AllFinite(Value.X.Scale, Value.X.Offset, Value.Y.Scale, Value.Y.Offset)
+    end,
+    Rect = function(Value)
+        return AllFinite(Value.Min.X, Value.Min.Y, Value.Max.X, Value.Max.Y)
+    end,
+    NumberRange = function(Value)
+        return AllFinite(Value.Min, Value.Max)
+    end,
+    Ray = function(Value)
+        local Origin, Direction = Value.Origin, Value.Direction
+        return AllFinite(Origin.X, Origin.Y, Origin.Z, Direction.X, Direction.Y, Direction.Z)
+    end,
+    Region3 = function(Value)
+        local Position, Size = Value.CFrame.Position, Value.Size
+        return AllFinite(Position.X, Position.Y, Position.Z, Size.X, Size.Y, Size.Z)
+    end,
+    TweenInfo = function(Value)
+        return AllFinite(Value.Time, Value.DelayTime)
+    end,
+    DateTime = function(Value)
+        return AllFinite(Value.UnixTimestampMillis)
+    end,
+    NumberSequence = function(Value)
+        for _, Keypoint in Value.Keypoints do
+            if not AllFinite(Keypoint.Time, Keypoint.Value, Keypoint.Envelope) then
+                return false
+            end
+        end
+        return true
+    end,
+    ColorSequence = function(Value)
+        for _, Keypoint in Value.Keypoints do
+            local Color = Keypoint.Value
+            if not AllFinite(Keypoint.Time, Color.R, Color.G, Color.B) then
+                return false
+            end
+        end
+        return true
+    end,
+}
+
 local function ValidateCanonicalValue(Source: any, Name: string, Channel: string, Value: any, Depth: number, Budget: any): boolean
     Budget.Operations += 1
     if Budget.Operations > RuntimeConfig.MaxDecodeOperations then
@@ -1938,11 +1997,20 @@ local function ValidateCanonicalValue(Source: any, Name: string, Channel: string
     elseif Kind == "buffer" then
         Budget.Bytes += buffer.len(Value)
     elseif Kind == "function" or Kind == "thread" then
-        --> Nothing the generated decoder produces. Every other kind (UDim2,
-        --> DateTime, BrickColor, Rect, ...) is a datatype the schema declared
-        --> and was rejected here, which dropped every packet that carried one.
+        --> Nothing the generated decoder produces. Every other kind is a
+        --> datatype the schema declared; they were all rejected here, which
+        --> dropped every packet that carried a UDim2, DateTime, Rect, ...
         DropPacket(Source, Channel, TransportError.Canonicalization, Budget.Bytes, Name)
         return false
+    else
+        local IsFinite = FiniteDatatypes[Kind]
+        if IsFinite ~= nil then
+            local Success, Finite = pcall(IsFinite, Value)
+            if not Success or not Finite then
+                DropPacket(Source, Channel, TransportError.Canonicalization, Budget.Bytes, Name)
+                return false
+            end
+        end
     end
 
     return true
@@ -4362,6 +4430,15 @@ function RuntimeSupport.TryReassembleReliableFragment(Source: any, Packet: buffe
     end
 
     if Assembly.Received < Assembly.Count then
+        return nil, nil, false
+    end
+
+    --> Holds even with MaxReliablePacketBytes = 0: a sender's chunks always sum
+    --> to the size it declared, so the buffer below is never larger than what
+    --> was actually received.
+    if Assembly.ReceivedBytes ~= Assembly.OriginalSize then
+        ById[FragmentId] = nil
+        DropPacket(Source, "Reliable", TransportError.MalformedPacket, Size)
         return nil, nil, false
     end
 

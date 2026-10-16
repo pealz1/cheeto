@@ -3075,6 +3075,30 @@ RunClosure("Roblox datatypes pass the receive-side canonical check", function()
 	assert(Received.Position.X == 3 and Received.Position.Y == -4, "Vector2 did not arrive intact.")
 	assert(Received.Size.X.Offset == 10 and Received.Size.Y.Scale == 1, "UDim2 did not arrive intact.")
 	assert(Received.When.UnixTimestamp == 1700000000, "DateTime did not arrive intact.")
+
+	--> Accepting these kinds must not let non-finite components through.
+	Received = nil
+	local ReleaseNaN = Server.DatatypeClient.On(function(_, Value)
+		Received = Value
+	end)
+	Client.DatatypeClient.Fire({
+		Position = Roblox.Vector2.new(0 / 0, 1),
+		Size = Roblox.UDim2.new(0, 0, 0, 0),
+		When = BaseEnvironment.DateTime.fromUnixTimestamp(1),
+	})
+	Client.DatatypeClient.Fire({
+		Position = Roblox.Vector2.new(1, 1),
+		Size = Roblox.UDim2.new(math.huge, 0, 0, 0),
+		When = BaseEnvironment.DateTime.fromUnixTimestamp(1),
+	})
+	Client.StepReplication()
+	task.wait(1 / 30)
+	ReleaseNaN()
+	assert(Received == nil, "A non-finite datatype component was delivered.")
+	assert(
+		(Server.Stats().DroppedPackets.Canonicalization or 0) == Before + 2,
+		"Non-finite datatype components were not dropped as Canonicalization."
+	)
 end)
 
 RunClosure("Queued tuples keep values after a nil", function()
