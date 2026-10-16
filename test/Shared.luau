@@ -89,11 +89,15 @@ local function GetEnvironment()
 
 	local DateTime = {}
 	function DateTime.fromUnixTimestamp(Timestamp: number): DateTime
-		return table.freeze({ UnixTimestamp = Timestamp, __typeof = "DateTime" })
+		return table.freeze({ UnixTimestamp = Timestamp, UnixTimestampMillis = Timestamp * 1000, __typeof = "DateTime" })
 	end
 
 	function DateTime.fromUnixTimestampMillis(TimestampMillis: number): DateTime
-		return table.freeze({ UnixTimestampMillis = TimestampMillis, __typeof = "DateTime" })
+		return table.freeze({
+			UnixTimestamp = TimestampMillis // 1000,
+			UnixTimestampMillis = TimestampMillis,
+			__typeof = "DateTime",
+		})
 	end
 
 	local BrickColor = {}

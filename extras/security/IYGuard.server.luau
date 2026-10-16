@@ -2,13 +2,16 @@
 --[[
 	Server guard for the IY detection channel.
 
-	- Issues each client a per-session secret + nonce on handshake.
+	- Issues each client a per-session secret + nonce on handshake (the nonce is
+	  fixed for the session; the strictly increasing sequence blocks replay).
 	- Verifies every signed client message (monotonic sequence blocks replay).
 	- Kicks on a verified detection report.
 	- Kicks a client that completed the handshake then goes silent past the
 	  heartbeat timeout (detector removed or its reports blocked) — with a grace
 	  window after join and lag-hitch forgiveness so legitimate players are never
 	  falsely kicked.
+	- Kicks a client that never completes the handshake within HandshakeTimeout
+	  of joining (detector removed before it could say hello).
 
 	Place this Script and its sibling modules (Config, SecureReport) in
 	ServerScriptService (or anywhere the server runs it).
@@ -35,9 +38,12 @@ type Session = {
 }
 
 local sessions: { [Player]: Session } = {}
+--> Join time of every player that has not said hello yet.
+local pending: { [Player]: number } = {}
 
 local function kick(player: Player)
 	sessions[player] = nil
+	pending[player] = nil
 	pcall(function()
 		player:Kick(Config.KickMessage)
 	end)
@@ -52,15 +58,20 @@ remote.OnServerEvent:Connect(function(player: Player, message)
 		return
 	end
 
-	--> Handshake: (re)issue a fresh session.
+	--> Handshake: (re)issue a fresh session. A repeat hello keeps the original
+	--> join time and last heartbeat: resetting them handed out a new grace
+	--> window per hello, so a client with its detector removed could send one
+	--> every few seconds and never reach the heartbeat timeout.
 	if message.k == "hello" then
 		local now = os.clock()
+		pending[player] = nil
+		local previous = sessions[player]
 		sessions[player] = {
 			secret = newToken(),
 			nonce = newToken(),
 			seq = 0,
-			lastSeen = now,
-			handshakeAt = now,
+			lastSeen = if previous then previous.lastSeen else now,
+			handshakeAt = if previous then previous.handshakeAt else now,
 		}
 		remote:FireClient(player, {
 			k = "challenge",
@@ -101,8 +112,20 @@ remote.OnServerEvent:Connect(function(player: Player, message)
 	--> "heartbeat" only needs to refresh lastSeen, done above.
 end)
 
+local function track(player: Player)
+	if sessions[player] == nil then
+		pending[player] = os.clock()
+	end
+end
+
+Players.PlayerAdded:Connect(track)
+for _, player in Players:GetPlayers() do
+	track(player)
+end
+
 Players.PlayerRemoving:Connect(function(player)
 	sessions[player] = nil
+	pending[player] = nil
 end)
 
 --> Timeout enforcement with lag forgiveness.
@@ -118,7 +141,16 @@ RunService.Heartbeat:Connect(function()
 		for _, session in sessions do
 			session.lastSeen = now
 		end
+		for player in pending do
+			pending[player] = now
+		end
 		return
+	end
+
+	for player, joinedAt in pending do
+		if (now - joinedAt) > Config.HandshakeTimeout then
+			kick(player)
+		end
 	end
 
 	for player, session in sessions do

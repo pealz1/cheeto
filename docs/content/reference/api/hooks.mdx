@@ -102,14 +102,14 @@ Runs after an event is decoded and passes validation, just before its listener i
 Runs for every dropped packet or event, in either direction.
 
 ```lua
-{ Name: string?, Source: any, Channel: string, Reason: string, Size: number }
+{ Name: string?, Source: any, Channel: string, Reason: string, Size: number, Direction: "receive" | "send" }
 ```
 
-`Reason` is one of the [drop reasons](/reference/drop-reasons), or a custom reason returned by a policy.
+`Reason` is one of the [drop reasons](/reference/drop-reasons), or a custom reason returned by a policy. For a `"send"` drop, `Source` is the peer the packet was going to.
 
 ## Error
 
-Runs when an event's payload fails to decode, just before it is dropped as `MalformedPacket`.
+Runs when an event's payload fails to decode, just before it is dropped as `MalformedPacket`, and when a `Sync` listener raises an error. The listener's error is also printed with `warn`, including its traceback, and the rest of the packet is still processed.
 
 ```lua
 { Name: string, Source: Player | "Server", Channel: string, Error: string }
@@ -117,7 +117,7 @@ Runs when an event's payload fails to decode, just before it is dropped as `Malf
 
 ## Violation
 
-Runs for every drop and for every client shield, client integrity and character integrity report. [`Security.OnViolation`](/reference/api/security#onviolation) is a shortcut that registers this hook. The context is a [`ViolationReport`](/reference/violation-report).
+Runs for every received drop and for every client shield, client integrity and character integrity report. Send-side drops are not violations: the peer they were going to did nothing. [`Security.OnViolation`](/reference/api/security#onviolation) is a shortcut that registers this hook. The context is a [`ViolationReport`](/reference/violation-report).
 
 ## Predict
 

@@ -1,7 +1,7 @@
 {
 	"schemaVersion": 2,
 	"minimumSchemaVersion": 1,
-	"schemaHash": "72fec735edcef69b",
+	"schemaHash": "f03b70a60ce424cc",
 	"options": {
 		"securityProfile": "Development",
 		"requirePolicies": false,
@@ -24,6 +24,7 @@
 		"ClientPollEvent": { "kind": "Event", "channel": "Reliable", "id": 2, "shape": "da9d10c17f08ffe3" },
 		"ClientUnreliablePollEvent": { "kind": "Event", "channel": "Unreliable", "id": 1, "shape": "5f33fe1c3eff7a9a" },
 		"ConstrainedClient": { "kind": "Event", "channel": "Reliable", "id": 41, "shape": "08f839630f0f1eb9" },
+		"DatatypeClient": { "kind": "Event", "channel": "Reliable", "id": 65, "shape": "9ce2640acd67fe88" },
 		"DistanceClient": { "kind": "Event", "channel": "Reliable", "id": 56, "shape": "a35fe4aa9dc3810c" },
 		"DynamicArray": { "kind": "Event", "channel": "Reliable", "id": 15, "shape": "aadac01ee6ae5e74" },
 		"DynamicMap": { "kind": "Event", "channel": "Reliable", "id": 14, "shape": "03569fd6e42fd414" },
@@ -62,6 +63,7 @@
 		"PartyState": { "kind": "Channel", "channel": "Reliable", "id": 59, "shape": "99a2f1613096e313" },
 		"PlayerEvent": { "kind": "Event", "channel": "Reliable", "id": 16, "shape": "377432bb6572597d" },
 		"PlayerState": { "kind": "Channel", "channel": "Reliable", "id": 0, "shape": "2cae0ebaf2331abc" },
+		"QueuedTupleServer": { "kind": "Event", "channel": "Reliable", "id": 66, "shape": "e47706af0b33400d" },
 		"Reference": { "kind": "Event", "channel": "Reliable", "id": 34, "shape": "a1db2782925148c8" },
 		"ReferenceArray": { "kind": "Event", "channel": "Reliable", "id": 35, "shape": "2f945228c2e7cfce" },
 		"ReferenceOptional": { "kind": "Event", "channel": "Reliable", "id": 36, "shape": "4424835015399576" },

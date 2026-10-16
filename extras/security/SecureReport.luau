@@ -2,11 +2,11 @@
 --[[
 	Signed report helpers for the security channel.
 
-	The server issues each client a random per-session secret and a rolling nonce.
-	Every client message (a detection report or a heartbeat) is signed over the
-	current nonce + a monotonic sequence number + the payload, then the server
-	re-issues a fresh nonce. That stops naive replay and off-the-shelf spoofing of
-	a "clean" heartbeat.
+	The server issues each client a random per-session secret and nonce on every
+	handshake. Every client message (a detection report or a heartbeat) is signed
+	over the secret + nonce + a strictly increasing sequence number + the payload,
+	and the server rejects any sequence it has already seen. That stops naive
+	replay and off-the-shelf spoofing of a "clean" heartbeat.
 
 	Honest limit: the session secret lives in client memory, so an exploiter who
 	reads this script can reproduce the signature. The signature is defence in
@@ -21,7 +21,10 @@ local function hash(text: string, seed: number?): number
 	local value = bit32.band(seed or 0x811C9DC5, 0xFFFFFFFF)
 	for index = 1, #text do
 		value = bit32.bxor(value, string.byte(text, index))
-		value = bit32.band((value * 16777619) % 4294967296, 0xFFFFFFFF)
+		--> 16777619 = 2^24 + 403. The direct product reaches 2^56, past the
+		--> 2^53 doubles hold exactly, so the low bits of the hash were rounding
+		--> noise. Split, every term stays exact.
+		value = (bit32.lshift(value, 24) + value * 403) % 4294967296
 		value = bit32.bxor(value, bit32.rshift(value, 13))
 	end
 	return bit32.band(value, 0xFFFFFFFF)
