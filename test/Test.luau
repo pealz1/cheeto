@@ -3027,6 +3027,51 @@ RunClosure("Schema strings with quotes generate loadable modules", function()
 	)
 end)
 
+RunClosure("A killed send is one drop and no violation", function()
+	local Violations = 0
+	local ReleaseViolation = Server.Security.OnViolation(function()
+		Violations += 1
+	end)
+	local Before = table.clone(Server.Stats().DroppedPackets)
+	Server.Security.Kill("ReliableServer", "test")
+	Server.ReliableServer.FireAll(1)
+	Server.Security.Unkill("ReliableServer")
+	ReleaseViolation()
+	local After = Server.Stats().DroppedPackets
+	assert((After.KillSwitch or 0) == (Before.KillSwitch or 0) + 1, "Expected one KillSwitch drop.")
+	assert(
+		(After.MiddlewareRejected or 0) == (Before.MiddlewareRejected or 0),
+		"A killed send was also counted as MiddlewareRejected."
+	)
+	assert(Violations == 0, "A send this server refused was scored against the recipient.")
+end)
+
+RunClosure("Handles are swept on expiry and when their owner leaves", function()
+	local Leaving = { Name = "Leaving", Parent = {} }
+	local Owned = Server.Handles.Register({}, Leaving :: any)
+	local Capability = Server.Handles.IssueCapability({}, Leaving :: any, { Use = true }, 60)
+	ServerEnvironment.Services.Players.PlayerRemoving:Fire(Leaving)
+	task.wait(1 / 30)
+	assert(Server.Handles.Resolve(Owned) == nil, "A leaving player's handle survived.")
+	assert(Server.Handles.ValidateCapability(Capability) == nil, "A leaving player's capability survived.")
+
+	local Object = {}
+	local Expiring = Server.Handles.Register(Object, nil, os.clock() + 0.01)
+	task.wait(1.1)
+	Server.StepReplication()
+	assert(Server.Handles.Register(Object) ~= Expiring, "An expired handle was never swept.")
+end)
+
+RunClosure("Transport snapshots are copies", function()
+	local Snapshot = Client.Transport.Snapshot().__server
+	assert(Snapshot ~= nil, "Expected the client's server peer in the snapshot.")
+	Snapshot.Priority.Gameplay.Bytes = 999999
+	assert(
+		Client.Transport.Snapshot().__server.Priority.Gameplay.Bytes ~= 999999,
+		"Editing a snapshot changed the runtime's accounting."
+	)
+end)
+
 RunClosure("Circular imports fail with a readable error", function()
 	fs.writeDir("./Sources/Cycle")
 	fs.writeFile(

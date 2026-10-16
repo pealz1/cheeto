@@ -262,6 +262,7 @@ local RuntimeState = {
     Capabilities = {} :: {[number]: any},
     NextHandleId = 0,
     NextCapabilityId = 0,
+    LastHandleSweep = 0,
     Capture = {
         Enabled = false,
         Entries = {},
@@ -720,7 +721,12 @@ local function ReportViolation(Source: any, Name: string, Channel: string, Reaso
     return Score
 end
 
-local function DropPacket(Source: any, Channel: string, Reason: string, Size: number?, Name: string?)
+--> Direction "send" is for packets this side refused to send (kill switch,
+--> backpressure, size). Those used to be captured with the receive buffer as
+--> their bytes and scored as a violation against the player they were going
+--> TO, who did nothing.
+local function DropPacket(Source: any, Channel: string, Reason: string, Size: number?, Name: string?, Direction: string?)
+    local Outgoing = Direction == "send"
     MetricAdd("DroppedPackets", Reason)
     if Reason == "RateLimit" then
         MetricAdd("RateLimitHits", Channel)
@@ -734,26 +740,32 @@ local function DropPacket(Source: any, Channel: string, Reason: string, Size: nu
         MetricAdd("ValidationFailures", Channel)
     end
 
-    RuntimeSupport.RecordCapture({
-        Name = Name,
-        Direction = "receive",
-        Source = tostring(Source),
-        Channel = Channel,
-        Status = "dropped",
-        Reason = Reason,
-        Size = Size or 0,
-        RawBuffer = if typeof(RecieveBuffer) == "buffer" then RecieveBuffer else nil,
-        RawInstances = State.RecieveInstances
-    })
+    if CaptureActive() then
+        RuntimeSupport.RecordCapture({
+            Name = Name,
+            Direction = if Outgoing then "send" else "receive",
+            Source = if Outgoing then nil else tostring(Source),
+            Target = if Outgoing then tostring(Source) else nil,
+            Channel = Channel,
+            Status = "dropped",
+            Reason = Reason,
+            Size = Size or 0,
+            RawBuffer = if not Outgoing and typeof(RecieveBuffer) == "buffer" then RecieveBuffer else nil,
+            RawInstances = if Outgoing then nil else State.RecieveInstances
+        })
+    end
 
     RunHooks("Drop", {
         Name = Name,
         Source = Source,
         Channel = Channel,
         Reason = Reason,
-        Size = Size or 0
+        Size = Size or 0,
+        Direction = if Outgoing then "send" else "receive"
     })
-    ReportViolation(Source, Name or Channel, Channel, Reason, Size, "drop")
+    if not Outgoing then
+        ReportViolation(Source, Name or Channel, Channel, Reason, Size, "drop")
+    end
 end
 
 function RuntimeSupport.CreateRemoteName(Prefix: string?): string
@@ -1694,15 +1706,19 @@ end
 
 local function BeforeSend(Name: string, Channel: string, Target: any?): boolean
     if RuntimeState.KilledRemotes[Name] then
-        DropPacket(Target, Channel, TransportError.KillSwitch)
+        DropPacket(Target, Channel, TransportError.KillSwitch, 0, Name, "send")
         return false
     end
 
-    return RunHooks("BeforeSend", {
+    if not RunHooks("BeforeSend", {
         Name = Name,
         Channel = Channel,
         Target = Target
-    })
+    }) then
+        DropPacket(Target, Channel, TransportError.MiddlewareRejected, 0, Name, "send")
+        return false
+    end
+    return true
 end
 
 local function Use(HookName: string, Callback: (...any) -> any): () -> ()
@@ -2524,6 +2540,28 @@ function RuntimeSupport.RevokeHandle(Handle: number)
     end
 end
 
+--> Expired handles and capabilities were only removed when someone looked
+--> them up, so ones nobody resolved again stayed forever. Swept at most once
+--> a second from the replication step.
+function RuntimeSupport.SweepHandles(Now: number)
+    if Now - RuntimeState.LastHandleSweep < 1 then
+        return
+    end
+    RuntimeState.LastHandleSweep = Now
+
+    for Handle, Entry in RuntimeState.Handles do
+        if Entry.ExpiresAt and Now >= Entry.ExpiresAt then
+            RuntimeState.Handles[Handle] = nil
+            RuntimeState.ObjectToHandle[Entry.Object] = nil
+        end
+    end
+    for Capability, Entry in RuntimeState.Capabilities do
+        if Now >= Entry.ExpiresAt then
+            RuntimeState.Capabilities[Capability] = nil
+        end
+    end
+end
+
 function RuntimeSupport.IssueCapability(Object: any, Owner: Player?, Permissions: {[string]: boolean}?, DurationSeconds: number?): number
     RuntimeState.NextCapabilityId = (RuntimeState.NextCapabilityId + 1) % 2147483647
     if RuntimeState.NextCapabilityId == 0 then
@@ -2607,7 +2645,7 @@ do
         local State = GetTransportState(Target)
         if ShouldShed(State, Priority) then
             State.DroppedLowPriority += 1
-            DropPacket(Target, Channel, TransportError.Backpressure, Size)
+            DropPacket(Target, Channel, TransportError.Backpressure, Size, nil, "send")
             return false
         end
 
@@ -2628,7 +2666,7 @@ do
         local State = GetTransportState(Target)
         if ShouldShed(State, Priority) then
             State.DroppedLowPriority += 1
-            DropPacket(Target, Channel, TransportError.Backpressure, Size)
+            DropPacket(Target, Channel, TransportError.Backpressure, Size, nil, "send")
             return false
         end
 
@@ -2702,14 +2740,25 @@ function RuntimeSupport.UpdateNetworkStats(Target: any, Rtt: number?, Jitter: nu
     end
 end
 
+--> Priority lanes are copied too: a shallow clone handed out the live lane
+--> tables, so a caller could edit the runtime's accounting.
+local function CopyTransportState(State: any): any
+    local Copy = table.clone(State)
+    Copy.Priority = {}
+    for Lane, Counters in State.Priority do
+        Copy.Priority[Lane] = table.clone(Counters)
+    end
+    return Copy
+end
+
 function RuntimeSupport.TransportSnapshot(Target: any?)
     if Target ~= nil then
-        return table.clone(GetTransportState(Target))
+        return CopyTransportState(GetTransportState(Target))
     end
 
     local Snapshot = {}
     for Key, State in RuntimeState.Transport do
-        Snapshot[tostring(Key)] = table.clone(State)
+        Snapshot[tostring(Key)] = CopyTransportState(State)
     end
     return Snapshot
 end
@@ -3547,7 +3596,12 @@ local function ReleaseBuffer(Buffer: buffer?)
         return
     end
 
+    --> Only bucket sizes: RawAllocate's exact-size fallback buffers were pooled
+    --> under keys AcquireBuffer never asks for and sat there unused.
     local Size = buffer.len(Buffer)
+    if Size ~= PoolSize(Size) then
+        return
+    end
     local Pool = BufferPool[Size]
     if Pool == nil then
         Pool = {}
@@ -3857,8 +3911,9 @@ function RuntimeSupport.WriteEvent(
     Writer: (...any) -> (),
     ...: any
 ): (boolean, string?)
+    --> BeforeSend records the drop: a killed remote was counted twice, once
+    --> as KillSwitch and again as MiddlewareRejected.
     if not BeforeSend(Name, Channel, Target) then
-        DropPacket(Target, Channel, TransportError.MiddlewareRejected, 0, Name)
         return false, nil
     end
 
@@ -5558,6 +5613,22 @@ local function ClearPlayerRuntimeState(Player: Player)
     end
     for _, Map in RuntimeState.PlayerInterest do
         Map[Player] = nil
+    end
+    for Handle, Entry in RuntimeState.Handles do
+        if Entry.Owner == Player then
+            RuntimeState.Handles[Handle] = nil
+            RuntimeState.ObjectToHandle[Entry.Object] = nil
+        end
+    end
+    for Capability, Entry in RuntimeState.Capabilities do
+        if Entry.Owner == Player then
+            RuntimeState.Capabilities[Capability] = nil
+        end
+    end
+    for Id, Owner in RuntimeState.KnownIds do
+        if Owner == Player then
+            RuntimeState.KnownIds[Id] = nil
+        end
     end
 end
 
