@@ -822,3 +822,16 @@ function IdempotentFunction {
     Data: u8,
     Return: u8
 }
+
+--> Roblox datatypes other than Vector3, CFrame and Color3 must survive the
+--> receive-side canonical check, not just the Read/Write exports.
+event DatatypeClient {
+    From: Client,
+    Type: Reliable,
+    Call: ManyAsync,
+    Data: struct {
+        Position: Vector2,
+        Size: UDim2,
+        When: DateTime
+    }
+}

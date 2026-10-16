@@ -1,7 +1,7 @@
 {
 	"schemaVersion": 2,
 	"minimumSchemaVersion": 1,
-	"schemaHash": "72fec735edcef69b",
+	"schemaHash": "5eb9b38c67413386",
 	"options": {
 		"securityProfile": "Development",
 		"requirePolicies": false,
@@ -24,6 +24,7 @@
 		"ClientPollEvent": { "kind": "Event", "channel": "Reliable", "id": 2, "shape": "da9d10c17f08ffe3" },
 		"ClientUnreliablePollEvent": { "kind": "Event", "channel": "Unreliable", "id": 1, "shape": "5f33fe1c3eff7a9a" },
 		"ConstrainedClient": { "kind": "Event", "channel": "Reliable", "id": 41, "shape": "08f839630f0f1eb9" },
+		"DatatypeClient": { "kind": "Event", "channel": "Reliable", "id": 65, "shape": "9ce2640acd67fe88" },
 		"DistanceClient": { "kind": "Event", "channel": "Reliable", "id": 56, "shape": "a35fe4aa9dc3810c" },
 		"DynamicArray": { "kind": "Event", "channel": "Reliable", "id": 15, "shape": "aadac01ee6ae5e74" },
 		"DynamicMap": { "kind": "Event", "channel": "Reliable", "id": 14, "shape": "03569fd6e42fd414" },

@@ -1,5 +1,6 @@
 local Format = require("../src/Modules/Format")
-local Vector3 = require("@lune/roblox").Vector3
+local Roblox = require("@lune/roblox")
+local Vector3 = Roblox.Vector3
 local fs = require("@lune/fs")
 local luau = require("@lune/luau")
 local process = require("@lune/process")
@@ -149,6 +150,9 @@ local Client: typeof(require("../Network/Client")) = MockRequire("../Network/Cli
 	DateTime = ClientEnvironment.DateTime,
 	BrickColor = ClientEnvironment.BrickColor,
 	Vector3 = Vector3,
+	Vector2 = Roblox.Vector2,
+	UDim = Roblox.UDim,
+	UDim2 = Roblox.UDim2,
 })
 
 local Server: typeof(require("../Network/Server")) = MockRequire("../Network/Server.luau", {
@@ -157,6 +161,9 @@ local Server: typeof(require("../Network/Server")) = MockRequire("../Network/Ser
 	DateTime = ServerEnvironment.DateTime,
 	BrickColor = ServerEnvironment.BrickColor,
 	Vector3 = Vector3,
+	Vector2 = Roblox.Vector2,
+	UDim = Roblox.UDim,
+	UDim2 = Roblox.UDim2,
 })
 
 --> Helper functions
@@ -1764,6 +1771,36 @@ RunClosure("Transport hardening runtime APIs", function()
 	assert(FragmentedResult == 77, `Expected fragmented reliable packet to reassemble, got {FragmentedResult}.`)
 	FragmentDisconnect()
 
+	--> A fragment's declared total size sizes the reassembly buffer, so it must
+	--> be capped by MaxReliablePacketBytes before anything is stored.
+	local function Varint(Bytes: { number }, Value: number)
+		repeat
+			local Byte = Value % 128
+			Value = math.floor(Value / 128)
+			table.insert(Bytes, if Value > 0 then Byte + 128 else Byte)
+		until Value <= 0
+	end
+	local Payload = {}
+	Varint(Payload, 77) --> fragment id
+	Varint(Payload, 1) --> index
+	Varint(Payload, 2) --> count
+	Varint(Payload, 2 ^ 28) --> claimed total size
+	table.insert(Payload, 1)
+	local Bytes = { 253, 0 }
+	Varint(Bytes, #Payload)
+	Varint(Bytes, 0)
+	table.move(Payload, 1, #Payload, #Bytes + 1, Bytes)
+	local Oversized = buffer.create(#Bytes)
+	for Index, Byte in Bytes do
+		buffer.writeu8(Oversized, Index - 1, Byte)
+	end
+	local OversizedBefore = Server.Stats().DroppedPackets.MaxPacketBytes or 0
+	FireSignalSync(ServerEnvironment.Instances.CHEETO_RELIABLE_REMOTE.OnServerEvent, Shared.Player, Oversized, {})
+	assert(
+		(Server.Stats().DroppedPackets.MaxPacketBytes or 0) == OversizedBefore + 1,
+		"An oversized fragment assembly was accepted."
+	)
+
 	local Violations = 0
 	local ReleaseViolation = Server.Security.OnViolation(function(Context)
 		if Context.Reason == "KillSwitch" or Context.Reason == "PolicyRejected" then
@@ -2976,6 +3013,29 @@ RunClosure("Map ranges, type aliases and idempotent Fire", function()
 	task.wait(1 / 30)
 	Release()
 	assert(Seen == 1, `A replayed idempotent packet was delivered again ({Seen} deliveries).`)
+end)
+
+RunClosure("Roblox datatypes pass the receive-side canonical check", function()
+	--> Only Vector3, CFrame and Color3 were whitelisted, so every event
+	--> carrying a Vector2, UDim2, DateTime and the rest was dropped on arrival.
+	local Received = nil
+	local Release = Server.DatatypeClient.On(function(_, Value)
+		Received = Value
+	end)
+	local Before = Server.Stats().DroppedPackets.Canonicalization or 0
+	Client.DatatypeClient.Fire({
+		Position = Roblox.Vector2.new(3, -4),
+		Size = Roblox.UDim2.new(0.5, 10, 1, -20),
+		When = BaseEnvironment.DateTime.fromUnixTimestamp(1700000000),
+	})
+	Client.StepReplication()
+	task.wait(1 / 30)
+	Release()
+	assert((Server.Stats().DroppedPackets.Canonicalization or 0) == Before, "A datatype payload was dropped as Canonicalization.")
+	assert(Received ~= nil, "The datatype event never arrived.")
+	assert(Received.Position.X == 3 and Received.Position.Y == -4, "Vector2 did not arrive intact.")
+	assert(Received.Size.X.Offset == 10 and Received.Size.Y.Scale == 1, "UDim2 did not arrive intact.")
+	assert(Received.When.UnixTimestamp == 1700000000, "DateTime did not arrive intact.")
 end)
 
 RunClosure("Broadcasts to several players keep every batch intact", function()

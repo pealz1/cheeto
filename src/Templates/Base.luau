@@ -266,7 +266,7 @@ local RuntimeState = {
         Enabled = false,
         Entries = {},
         Redactions = {} :: {[string]: true},
-        Limit = 1024
+        Limit = RuntimeConfig.CaptureLimit
     },
     Inspector = {
         Enabled = false
@@ -431,8 +431,14 @@ function RuntimeSupport.SummarizeValue(Value: any, Depth: number?): string
     return `{Kind}({table.concat(Parts, ",")})`
 end
 
+--> Callers on the per-event path check this before building the entry, so a
+--> disabled capture costs no allocation.
+local function CaptureActive(): boolean
+    return RuntimeState.Capture.Enabled or RuntimeConfig.EnablePacketCapture or RuntimeState.Inspector.Enabled or RuntimeConfig.EnableInspector
+end
+
 function RuntimeSupport.RecordCapture(Entry: {[string]: any})
-    if not RuntimeState.Capture.Enabled and not RuntimeConfig.EnablePacketCapture and not RuntimeState.Inspector.Enabled and not RuntimeConfig.EnableInspector then
+    if not CaptureActive() then
         return
     end
 
@@ -551,6 +557,12 @@ function RuntimeSupport.ReplayRawCapture(Entries: {{[string]: any}}, Injector: (
     end
 
     return Result
+end
+
+--> Same check RunHooks starts with, for callers that would otherwise build a
+--> payload table per packet only for RunHooks to discard it.
+local function HasHooks(Name: string): boolean
+    return RuntimeConfig.EnableMiddleware and #Hooks[Name] > 0
 end
 
 local function RunHooks(Name: string, Payload: any): boolean
@@ -1787,7 +1799,9 @@ do
         --> below anyway, so forgetting it never weakens the check.
         local WindowSize = RuntimeConfig.ReplayWindowSize
         local Capacity = if WindowSize > 0 then WindowSize else 256
-        if Window.Tracked > Capacity and Window.Highest ~= nil then
+        --> At twice capacity: a full window keeps ~Capacity entries after a
+        --> sweep, so sweeping at Capacity + 1 re-ran it on every packet.
+        if Window.Tracked > Capacity * 2 and Window.Highest ~= nil then
             local Highest = Window.Highest
             local Kept = 0
             for SeenSequence, SeenAt in Window.Time do
@@ -1905,15 +1919,17 @@ local function ValidateCanonicalValue(Source: any, Name: string, Channel: string
                 return false
             end
         end
-    elseif Kind == "EnumItem" then
-        return true
-    elseif Kind == "Instance" then
-        return true
+    elseif Kind == "Vector2" then
+        if not RuntimeSupport.IsFiniteNumber(Value.X) or not RuntimeSupport.IsFiniteNumber(Value.Y) or math.abs(Value.X) > 1e9 or math.abs(Value.Y) > 1e9 then
+            DropPacket(Source, Channel, TransportError.Canonicalization, Budget.Bytes, Name)
+            return false
+        end
     elseif Kind == "buffer" then
         Budget.Bytes += buffer.len(Value)
-    elseif Kind == "userdata" then
-        return true
-    elseif Kind ~= "nil" and Kind ~= "boolean" then
+    elseif Kind == "function" or Kind == "thread" then
+        --> Nothing the generated decoder produces. Every other kind (UDim2,
+        --> DateTime, BrickColor, Rect, ...) is a datatype the schema declared
+        --> and was rejected here, which dropped every packet that carried one.
         DropPacket(Source, Channel, TransportError.Canonicalization, Budget.Bytes, Name)
         return false
     end
@@ -2521,6 +2537,7 @@ end
 
 function RuntimeSupport.RecordFlush(Target: any, Channel: string, Size: number)
     local State = GetTransportState(Target)
+    local QueuedBytes, QueuedEvents = State.QueuedBytes, State.QueuedEvents
     State.QueuedBytes = 0
     State.QueuedEvents = 0
     for _, Lane in State.Priority do
@@ -2534,13 +2551,15 @@ function RuntimeSupport.RecordFlush(Target: any, Channel: string, Size: number)
         State.SentPackets += 1
     end
     State.LastFlush = os.clock()
-    EmitTelemetry("transport.flush", {
-        Target = Target,
-        Channel = Channel,
-        Size = Size,
-        QueuedBytes = State.QueuedBytes,
-        QueuedEvents = State.QueuedEvents,
-    })
+    if HasHooks("Telemetry") then
+        EmitTelemetry("transport.flush", {
+            Target = Target,
+            Channel = Channel,
+            Size = Size,
+            QueuedBytes = QueuedBytes,
+            QueuedEvents = QueuedEvents,
+        })
+    end
 end
 
 function RuntimeSupport.ShouldFlush(Target: any, Channel: string, Size: number, Priority: string?): boolean
@@ -2612,7 +2631,7 @@ end
 function RuntimeSupport.FlushCoalesced(Target: any): {[string]: any}
     local BucketKey = RuntimeSupport.PeerKey(Target)
     local Bucket = RuntimeState.Coalesce[BucketKey] or {}
-    RuntimeState.Coalesce[BucketKey] = {}
+    RuntimeState.Coalesce[BucketKey] = nil
     return Bucket
 end
 
@@ -3139,10 +3158,16 @@ function RuntimeSupport.RegisterListener(Name: string, Listener: any): () -> ()
     return function()
         if List[Listener] then
             List[Listener] = nil
+            --> Recounted: the count captured at connect time is stale once
+            --> other listeners have come and gone.
+            local Remaining = 0
+            for _ in List do
+                Remaining += 1
+            end
             RunHooks("Listener", {
                 Name = Name,
                 Listener = Listener,
-                Count = math.max(0, Count - 1),
+                Count = Remaining,
                 Duplicate = false,
                 Action = "disconnect"
             })
@@ -3646,58 +3671,68 @@ end
 local function TrackSend(Channel: string, Size: number, Target: any?)
     MetricAdd("BytesSent", Channel, Size)
     MetricAdd("PacketsSent", Channel)
-    RunHooks("AfterSend", {
-        Channel = Channel,
-        Size = Size,
-        Target = Target
-    })
+    if HasHooks("AfterSend") then
+        RunHooks("AfterSend", {
+            Channel = Channel,
+            Size = Size,
+            Target = Target
+        })
+    end
 end
 
 local function TrackEventSend(Name: string, Channel: string, Size: number, Target: any?, Payload: any?)
     MetricAdd("EventBytesSent", Name, Size)
-    RuntimeSupport.RecordCapture({
-        Name = Name,
-        Direction = "send",
-        Target = tostring(Target),
-        Channel = Channel,
-        Status = "accepted",
-        Size = Size,
-        Payload = Payload,
-        RawBuffer = SendBuffer,
-        RawBufferStart = SendCursor - Size,
-        RawBufferSize = Size,
-        RawInstances = SendInstances
-    })
-    RunHooks("AfterSend", {
-        Name = Name,
-        Channel = Channel,
-        Size = Size,
-        Target = Target
-    })
+    if CaptureActive() then
+        RuntimeSupport.RecordCapture({
+            Name = Name,
+            Direction = "send",
+            Target = tostring(Target),
+            Channel = Channel,
+            Status = "accepted",
+            Size = Size,
+            Payload = Payload,
+            RawBuffer = SendBuffer,
+            RawBufferStart = SendCursor - Size,
+            RawBufferSize = Size,
+            RawInstances = SendInstances
+        })
+    end
+    if HasHooks("AfterSend") then
+        RunHooks("AfterSend", {
+            Name = Name,
+            Channel = Channel,
+            Size = Size,
+            Target = Target
+        })
+    end
 end
 
 local function TrackEventReceive(Name: string, Channel: string, Size: number, Source: any?, Payload: any?)
     MetricAdd("EventBytesReceived", Name, Size)
-    RuntimeSupport.RecordCapture({
-        Name = Name,
-        Direction = "receive",
-        Source = tostring(Source),
-        UserId = TryGetUserId(Source),
-        Channel = Channel,
-        Status = "accepted",
-        Size = Size,
-        Payload = Payload,
-        RawBuffer = RecieveBuffer,
-        RawBufferStart = RecieveMessageStart,
-        RawBufferSize = RecieveCursor - RecieveMessageStart,
-        RawInstances = State.RecieveInstances
-    })
-    RunHooks("AfterReceive", {
-        Name = Name,
-        Source = Source,
-        Channel = Channel,
-        Size = Size
-    })
+    if CaptureActive() then
+        RuntimeSupport.RecordCapture({
+            Name = Name,
+            Direction = "receive",
+            Source = tostring(Source),
+            UserId = TryGetUserId(Source),
+            Channel = Channel,
+            Status = "accepted",
+            Size = Size,
+            Payload = Payload,
+            RawBuffer = RecieveBuffer,
+            RawBufferStart = RecieveMessageStart,
+            RawBufferSize = RecieveCursor - RecieveMessageStart,
+            RawInstances = State.RecieveInstances
+        })
+    end
+    if HasHooks("AfterReceive") then
+        RunHooks("AfterReceive", {
+            Name = Name,
+            Source = Source,
+            Channel = Channel,
+            Size = Size
+        })
+    end
 end
 
 --> Every generated send goes through here. Writer serializes the payload
@@ -4244,8 +4279,18 @@ function RuntimeSupport.TryReassembleReliableFragment(Source: any, Packet: buffe
         or FragmentIndex > FragmentCount
         or FragmentCount <= 1
         or OriginalSize <= 0
+        or FragmentCount > OriginalSize
     then
         DropPacket(Source, "Reliable", TransportError.MalformedPacket, Size)
+        return nil, nil, false
+    end
+
+    --> OriginalSize comes off the wire and sizes the buffer.create below, so an
+    --> unbounded one let any client make the server allocate up to a gigabyte
+    --> with two tiny fragments. Senders never fragment past this limit.
+    local MaxSize = RuntimeConfig.MaxReliablePacketBytes
+    if MaxSize > 0 and OriginalSize > MaxSize then
+        DropPacket(Source, "Reliable", TransportError.MaxPacketBytes, Size)
         return nil, nil, false
     end
 
@@ -4288,6 +4333,13 @@ function RuntimeSupport.TryReassembleReliableFragment(Source: any, Packet: buffe
 
     if Assembly.Parts[FragmentIndex] == nil then
         local ChunkLength = PayloadEnd - Cursor
+        --> Parts are held until the assembly completes, so their total must not
+        --> outgrow the size the sender declared.
+        if Assembly.ReceivedBytes + ChunkLength > Assembly.OriginalSize then
+            ById[FragmentId] = nil
+            DropPacket(Source, "Reliable", TransportError.MalformedPacket, Size)
+            return nil, nil, false
+        end
         local Chunk = buffer.create(ChunkLength)
         buffer.copy(Chunk, 0, Packet, Cursor, ChunkLength)
         Assembly.Parts[FragmentIndex] = Chunk
@@ -5363,6 +5415,8 @@ local function ClearPlayerRuntimeState(Player: Player)
     RuntimeState.UnreliableBatches[Player] = nil
     RuntimeState.Latest[Player] = nil
     RuntimeState.RecieveSequences[Player] = nil
+    RuntimeState.Coalesce[Player] = nil
+    RuntimeState.Fragments[Player] = nil
     RuntimeState.ClientShield.LastReport[Player] = nil
     RuntimeState.ClientShield.Integrity.Peers[Player] = nil
     RuntimeState.ClientShield.Integrity.LastEvidence[Player] = nil
