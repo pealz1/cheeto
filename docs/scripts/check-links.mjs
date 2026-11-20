@@ -26,7 +26,7 @@ for (const file of htmlFiles(out)) {
 
 const failures = new Set()
 for (const [route, { html }] of pages) {
-  for (const [, raw] of html.matchAll(/href="([^"]+)"/g)) {
+  for (const [, raw] of html.matchAll(/\shref="([^"]+)"/g)) {
     const href = raw.replace(/&amp;/g, '&')
     if (/^(https?:|mailto:|data:)/.test(href) || href.startsWith('/_next/')) continue
     if (basePath && href.startsWith(`${basePath}/_next/`)) continue

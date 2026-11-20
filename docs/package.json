@@ -8,7 +8,8 @@
     "dev": "next dev --webpack",
     "build": "next build --webpack",
     "postbuild": "pagefind --site .next/server/app --output-path out/_pagefind && node scripts/check-links.mjs",
-    "start": "npx serve out"
+    "start": "npx serve out",
+    "postinstall": "patch-package"
   },
   "repository": {
     "type": "git",
@@ -17,23 +18,28 @@
   },
   "license": "MIT",
   "dependencies": {
-    "next": "^16.3.8",
+    "next": "^16.4.6",
     "nextra": "^4.6.1",
     "nextra-theme-docs": "^4.6.1",
-    "react": "^19.3.0",
-    "react-dom": "^19.3.0",
-    "shiki": "^3.23.0"
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "shiki": "^4.6.0"
   },
   "devDependencies": {
-    "@types/node": "^22.20.4",
+    "@types/node": "^22.20.5",
     "@types/react": "^19.3.0",
-    "pagefind": "^1.5.2",
-    "typescript": "^6.0.3"
+    "pagefind": "^1.6.0",
+    "typescript": "^6.0.3",
+    "patch-package": "^8.0.1"
   },
   "engines": {
     "node": ">=20"
   },
   "overrides": {
-    "zod": "~4.3.6"
+    "zod": "^4.6.7",
+    "katex": "^0.19.1",
+    "@ts-morph/common": {
+      "minimatch": "^11.0.9"
+    }
   }
 }
