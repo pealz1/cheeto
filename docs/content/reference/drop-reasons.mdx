@@ -51,11 +51,14 @@ These discard one event. They are listed in the order the receive path checks th
 
 ## Send-side
 
+These are packets this side declined to send. They are counted in `Stats().DroppedPackets` and reach the [`Drop`](/reference/api/hooks#drop) hook with `Direction = "send"`, but they are not violations.
+
 | Reason | Trigger |
 | --- | --- |
 | `MiddlewareRejected` | A [`BeforeSend`](/reference/api/hooks#beforesend) hook returned `false` |
 | `KillSwitch` | The endpoint is killed |
 | `Backpressure` | A `Cosmetic` or `Background` event was shed because the peer's queue exceeded [`MaxQueuedBytes`](/reference/options/limits#maxqueuedbytes) |
+| `MaxPacketBytes` | An outgoing batch or unreliable event was larger than the packet limit |
 
 ## Handshake
 

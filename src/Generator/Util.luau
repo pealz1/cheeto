@@ -25,6 +25,37 @@ local function GetExportName(Name: string, CurrentScope: Scope): string
 	return `{GetScopePrefix(nil, false, CurrentScope)}{Name}`
 end
 
+--> A schema string as a double-quoted Luau or TypeScript literal. The lexer
+--> keeps escapes as written, so an escape pair is copied through untouched;
+--> a bare quote, a newline or a trailing backslash is escaped. Splicing the
+--> raw text broke the generated module for 'single "quoted"' strings.
+local function Quote(Value: string): string
+	local Parts = {}
+	local Index = 1
+	local Length = #Value
+	while Index <= Length do
+		local Character = string.sub(Value, Index, Index)
+		if Character == "\\" then
+			if Index == Length then
+				table.insert(Parts, "\\\\")
+			else
+				table.insert(Parts, string.sub(Value, Index, Index + 1))
+				Index += 1
+			end
+		elseif Character == '"' then
+			table.insert(Parts, '\\"')
+		elseif Character == "\n" then
+			table.insert(Parts, "\\n")
+		elseif Character == "\r" then
+			table.insert(Parts, "\\r")
+		else
+			table.insert(Parts, Character)
+		end
+		Index += 1
+	end
+	return `"{table.concat(Parts)}"`
+end
+
 local function GenerateEnumLiterals(Variants: { string }): string
 	local Literals = {}
 	for Index, EnumItem in Variants do
@@ -39,4 +70,5 @@ return {
 	GetScopePrefix = GetScopePrefix,
 	GetScopeIndent = GetScopeIndent,
 	GenerateEnumLiterals = GenerateEnumLiterals,
+	Quote = Quote,
 }

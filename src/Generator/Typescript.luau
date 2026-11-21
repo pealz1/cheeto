@@ -31,6 +31,9 @@ local TESTING_HEADER = table.concat({
 	"type CFrame = { readonly Position: Vector3 }",
 	"type Vector3 = { readonly X: number, readonly Y: number, readonly Z: number }",
 	"type Color3 = { readonly R: number, readonly G: number, readonly B: number }",
+	"type Vector2 = { readonly X: number, readonly Y: number }",
+	"type UDim = { readonly Scale: number, readonly Offset: number }",
+	"type UDim2 = { readonly X: UDim, readonly Y: UDim }",
 	"type buffer = { readonly __buffer: never }",
 	"type DateTime = { readonly UnixTimestamp: number }",
 	"type BrickColor = { readonly Number: number }",
@@ -229,7 +232,7 @@ local function FormatKey(Key: string): string
 	if IsValidIdentifier(Key) then
 		return Key
 	end
-	return `["{Key}"]`
+	return `[{Util.Quote(Key)}]`
 end
 
 --> `declare` at the top level; inside a namespace the declaration is already
@@ -280,7 +283,7 @@ local function GetTypescriptType(State: State, Declaration: Type): (string, stri
 		local Literals = {}
 
 		for _, Variant in Value.Values do
-			local TagField = `{FormatKey(Value.Tag)}: "{Variant.Name}"`
+			local TagField = `{FormatKey(Value.Tag)}: {Util.Quote(Variant.Name)}`
 			local ValueType = GetTypescriptType(State, Variant)
 			table.insert(Literals, `\{ {TagField},{string.sub(ValueType, 2)}`)
 		end

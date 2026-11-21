@@ -30,7 +30,7 @@ Every script requires its dependencies from `script.Parent`, so keep the modules
 1. **Handshake.** The client sends `hello` and the server answers with a per-session `secret` and `nonce`.
 2. **Scan.** Every few seconds the client runs `IYSignatures.scan` over every GUI container it can read and sends a signed `detect` report on a hit.
 3. **Verify.** The server checks the signature and a strictly increasing sequence number, which blocks replay, then removes the player.
-4. **Heartbeat.** The client also sends signed heartbeats. If a client that completed the handshake goes quiet for longer than `HeartbeatTimeout`, because the detector was deleted or its reports are being blocked, the server removes it too. A join grace period and lag-hitch forgiveness keep loading or lagging players safe.
+4. **Heartbeat.** The client also sends signed heartbeats. If a client that completed the handshake goes quiet for longer than `HeartbeatTimeout`, because the detector was deleted or its reports are being blocked, the server removes it too. A join grace period and lag-hitch forgiveness keep loading or lagging players safe. A client that never completes the handshake is removed `HandshakeTimeout` seconds after joining, so deleting the detector before its first `hello` does not escape the timeout. Repeating `hello` issues a new secret but does not restart the grace period.
 
 ## Detection signals
 

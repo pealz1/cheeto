@@ -23,6 +23,11 @@ return {
 	--> or still-loading client is never kicked.
 	JoinGraceSeconds = 20,
 
+	--> A client that never completes the handshake is kicked this long after it
+	--> joins: deleting the detector before its first hello used to escape the
+	--> heartbeat timeout entirely. Generous, so a slow-loading client is safe.
+	HandshakeTimeout = 60,
+
 	--> A single server frame slower than this is treated as a lag hitch: heartbeat
 	--> timers are forgiven for that tick so a laggy server never mass-kicks.
 	LagHitchSeconds = 2,

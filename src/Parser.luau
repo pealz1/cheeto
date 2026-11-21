@@ -714,6 +714,7 @@ export type Parser = typeof(setmetatable(
 		Scope: Scope,
 		Symbols: { [string]: true },
 		Generics: Generics?,
+		ImportDepth: number,
 	},
 	Parser
 ))
@@ -727,8 +728,14 @@ function Parser.new(Directory: string?, File: string?): Parser
 		Lexer = Lexer.new("Parsing"),
 		Symbols = {},
 		Scope = nil :: any,
+		ImportDepth = 0,
 	}, Parser)
 end
+
+--> Paths are not normalised, so a cycle through "../" never repeats the same
+--> string; a depth cap catches every cycle. It used to recurse until the stack
+--> overflowed and print the import path a few hundred times.
+local MAX_IMPORT_DEPTH = 64
 
 ---- Utility Functions ----
 
@@ -1298,8 +1305,20 @@ function Parser.Import(self: Parser): ScopeNode
 		},
 	}
 
+	if self.ImportDepth >= MAX_IMPORT_DEPTH then
+		error(
+			Error.new(Error.AnalyzeUnknownImport, self.Source, `Circular import`, self.File)
+				:Primary(
+					Path,
+					`Imports nest more than {MAX_IMPORT_DEPTH} deep; "{Path.Value}" is likely part of an import cycle`
+				)
+				:Emit()
+		)
+	end
+
 	local AST: Body
 	local ImportParser = Parser.new(ImportDirectory, ImportPath)
+	ImportParser.ImportDepth = self.ImportDepth + 1
 
 	local Success, ErrorText = pcall(function()
 		--> Parse declarations into import scope
@@ -1307,7 +1326,9 @@ function Parser.Import(self: Parser): ScopeNode
 	end)
 
 	if not Success then
-		error(ErrorText)
+		--> Level 0: re-raising at the default level prefixed this file's path and
+		--> line onto the import's own message once per level of nesting.
+		error(ErrorText, 0)
 	end
 
 	Scope.Parent = Parent

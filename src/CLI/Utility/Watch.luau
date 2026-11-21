@@ -128,7 +128,12 @@ function Utility.Watch(Path: string)
 		end
 
 		if FileChanged then
-			pcall(Recompile)
+			--> Compile runs silent here, so a failure is the only feedback the
+			--> user gets about a broken schema.
+			local Success, Why = pcall(Recompile)
+			if not Success then
+				warn(`Recompile failed:\n{Why}`)
+			end
 		end
 
 		task.wait(1)

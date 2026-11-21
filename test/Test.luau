@@ -1,5 +1,6 @@
 local Format = require("../src/Modules/Format")
-local Vector3 = require("@lune/roblox").Vector3
+local Roblox = require("@lune/roblox")
+local Vector3 = Roblox.Vector3
 local fs = require("@lune/fs")
 local luau = require("@lune/luau")
 local process = require("@lune/process")
@@ -149,6 +150,9 @@ local Client: typeof(require("../Network/Client")) = MockRequire("../Network/Cli
 	DateTime = ClientEnvironment.DateTime,
 	BrickColor = ClientEnvironment.BrickColor,
 	Vector3 = Vector3,
+	Vector2 = Roblox.Vector2,
+	UDim = Roblox.UDim,
+	UDim2 = Roblox.UDim2,
 })
 
 local Server: typeof(require("../Network/Server")) = MockRequire("../Network/Server.luau", {
@@ -157,6 +161,9 @@ local Server: typeof(require("../Network/Server")) = MockRequire("../Network/Ser
 	DateTime = ServerEnvironment.DateTime,
 	BrickColor = ServerEnvironment.BrickColor,
 	Vector3 = Vector3,
+	Vector2 = Roblox.Vector2,
+	UDim = Roblox.UDim,
+	UDim2 = Roblox.UDim2,
 })
 
 --> Helper functions
@@ -1764,6 +1771,36 @@ RunClosure("Transport hardening runtime APIs", function()
 	assert(FragmentedResult == 77, `Expected fragmented reliable packet to reassemble, got {FragmentedResult}.`)
 	FragmentDisconnect()
 
+	--> A fragment's declared total size sizes the reassembly buffer, so it must
+	--> be capped by MaxReliablePacketBytes before anything is stored.
+	local function Varint(Bytes: { number }, Value: number)
+		repeat
+			local Byte = Value % 128
+			Value = math.floor(Value / 128)
+			table.insert(Bytes, if Value > 0 then Byte + 128 else Byte)
+		until Value <= 0
+	end
+	local Payload = {}
+	Varint(Payload, 77) --> fragment id
+	Varint(Payload, 1) --> index
+	Varint(Payload, 2) --> count
+	Varint(Payload, 2 ^ 28) --> claimed total size
+	table.insert(Payload, 1)
+	local Bytes = { 253, 0 }
+	Varint(Bytes, #Payload)
+	Varint(Bytes, 0)
+	table.move(Payload, 1, #Payload, #Bytes + 1, Bytes)
+	local Oversized = buffer.create(#Bytes)
+	for Index, Byte in Bytes do
+		buffer.writeu8(Oversized, Index - 1, Byte)
+	end
+	local OversizedBefore = Server.Stats().DroppedPackets.MaxPacketBytes or 0
+	FireSignalSync(ServerEnvironment.Instances.CHEETO_RELIABLE_REMOTE.OnServerEvent, Shared.Player, Oversized, {})
+	assert(
+		(Server.Stats().DroppedPackets.MaxPacketBytes or 0) == OversizedBefore + 1,
+		"An oversized fragment assembly was accepted."
+	)
+
 	local Violations = 0
 	local ReleaseViolation = Server.Security.OnViolation(function(Context)
 		if Context.Reason == "KillSwitch" or Context.Reason == "PolicyRejected" then
@@ -2918,6 +2955,141 @@ RunClosure("Large schemas and UseColon compile and load", function()
 	end
 end)
 
+RunClosure("Bare output file names land next to the schema", function()
+	fs.writeDir("./Sources/BareOutput")
+	fs.writeFile(
+		"./Sources/BareOutput/Bare.cheeto",
+		'option ClientOutput = "BareClient.luau"\noption ServerOutput = "BareServer.luau"\nevent Ping { From: Client, Type: Reliable, Call: ManyAsync, Data: u8 }'
+	)
+	local Result = process.exec(
+		"lune",
+		{ "run", Compiler, "../../test/Sources/BareOutput/Bare", "--", "--yes" },
+		{ cwd = "../src/CLI" }
+	)
+	local Written = fs.isFile("./Sources/BareOutput/BareClient.luau")
+		and fs.isFile("./Sources/BareOutput/BareServer.luau")
+	fs.removeDir("./Sources/BareOutput")
+	assert(Result.ok, `Bare output schema failed to compile:\n{Result.stderr}`)
+	assert(Written, "Bare output names were not written next to the schema.")
+end)
+
+RunClosure("Capture keeps exactly the newest entries", function()
+	--> Trimming is batched, so reads must still see only the newest Limit
+	--> entries, oldest first.
+	local Drain = Server.IdempotentFire.On(function() end)
+	Client.Capture.Clear()
+	Client.Capture.Start({ Limit = 4 })
+	for Value = 1, 11 do
+		Client.IdempotentFire.Fire(Value)
+	end
+	local Entries = Client.Capture.Entries()
+	Client.Capture.Stop()
+	Client.Capture.Clear()
+	Client.StepReplication()
+	task.wait(1 / 30)
+	Drain()
+	assert(#Entries == 4, `Expected 4 captured entries, got {#Entries}.`)
+	for Index, Entry in Entries do
+		assert(Entry.PayloadSummary == `table(1={7 + Index})`, `Entry {Index} is out of order: {Entry.PayloadSummary}`)
+	end
+end)
+
+RunClosure("Schema strings with quotes generate loadable modules", function()
+	fs.writeDir("./Sources/Quotes")
+	fs.writeFile(
+		"./Sources/Quotes/Q.cheeto",
+		table.concat({
+			'option ClientOutput = "C.luau"',
+			'option ServerOutput = "S.luau"',
+			"option ClientShieldKickMessage = 'say \"bye\" now'",
+			"option CaptureRedactions = 'a\"b'",
+			"event Ping { From: Client, Type: Reliable, Call: ManyAsync, Policy: 'x\"y', Data: enum 'K\"d' { [\"Two Words\"] { A: u8 }, Plain { B: u8 } } }",
+		}, "\n")
+	)
+	local Result = process.exec(
+		"lune",
+		{ "run", Compiler, "../../test/Sources/Quotes/Q", "--", "--yes" },
+		{ cwd = "../src/CLI" }
+	)
+	local Sources = {}
+	if Result.ok then
+		Sources = { fs.readFile("./Sources/Quotes/C.luau"), fs.readFile("./Sources/Quotes/S.luau") }
+	end
+	fs.removeDir("./Sources/Quotes")
+	assert(Result.ok, `Quoted schema failed to compile:\n{Result.stderr}`)
+	for _, Source in Sources do
+		local Compiled, Error = pcall(luau.compile, Source)
+		assert(Compiled, `A module generated from quoted strings does not load: {Error}`)
+	end
+	assert(
+		string.find(Sources[1], 'ClientShieldKickMessage = "say \\"bye\\" now"', 1, true),
+		"The kick message was not escaped."
+	)
+end)
+
+RunClosure("A killed send is one drop and no violation", function()
+	local Violations = 0
+	local ReleaseViolation = Server.Security.OnViolation(function()
+		Violations += 1
+	end)
+	local Before = table.clone(Server.Stats().DroppedPackets)
+	Server.Security.Kill("ReliableServer", "test")
+	Server.ReliableServer.FireAll(1)
+	Server.Security.Unkill("ReliableServer")
+	ReleaseViolation()
+	local After = Server.Stats().DroppedPackets
+	assert((After.KillSwitch or 0) == (Before.KillSwitch or 0) + 1, "Expected one KillSwitch drop.")
+	assert(
+		(After.MiddlewareRejected or 0) == (Before.MiddlewareRejected or 0),
+		"A killed send was also counted as MiddlewareRejected."
+	)
+	assert(Violations == 0, "A send this server refused was scored against the recipient.")
+end)
+
+RunClosure("Handles are swept on expiry and when their owner leaves", function()
+	local Leaving = { Name = "Leaving", Parent = {} }
+	local Owned = Server.Handles.Register({}, Leaving :: any)
+	local Capability = Server.Handles.IssueCapability({}, Leaving :: any, { Use = true }, 60)
+	ServerEnvironment.Services.Players.PlayerRemoving:Fire(Leaving)
+	task.wait(1 / 30)
+	assert(Server.Handles.Resolve(Owned) == nil, "A leaving player's handle survived.")
+	assert(Server.Handles.ValidateCapability(Capability) == nil, "A leaving player's capability survived.")
+
+	local Object = {}
+	local Expiring = Server.Handles.Register(Object, nil, os.clock() + 0.01)
+	task.wait(1.1)
+	Server.StepReplication()
+	assert(Server.Handles.Register(Object) ~= Expiring, "An expired handle was never swept.")
+end)
+
+RunClosure("Transport snapshots are copies", function()
+	local Snapshot = Client.Transport.Snapshot().__server
+	assert(Snapshot ~= nil, "Expected the client's server peer in the snapshot.")
+	Snapshot.Priority.Gameplay.Bytes = 999999
+	assert(
+		Client.Transport.Snapshot().__server.Priority.Gameplay.Bytes ~= 999999,
+		"Editing a snapshot changed the runtime's accounting."
+	)
+end)
+
+RunClosure("Circular imports fail with a readable error", function()
+	fs.writeDir("./Sources/Cycle")
+	fs.writeFile(
+		"./Sources/Cycle/A.cheeto",
+		'option ClientOutput = "C.luau"\noption ServerOutput = "S.luau"\nimport "B"\nevent Ping { From: Client, Type: Reliable, Call: ManyAsync, Data: u8 }'
+	)
+	fs.writeFile("./Sources/Cycle/B.cheeto", 'import "A"\nstruct Foo { X: u8 }')
+	local Result = process.exec(
+		"lune",
+		{ "run", Compiler, "../../test/Sources/Cycle/A", "--", "--yes" },
+		{ cwd = "../src/CLI" }
+	)
+	fs.removeDir("./Sources/Cycle")
+	local Output = Result.stdout .. Result.stderr
+	assert(not Result.ok, "A circular import compiled.")
+	assert(string.find(Output, "Circular import", 1, true), `Expected a circular import error, got:\n{Output}`)
+end)
+
 RunClosure("Rate limits can be changed at runtime", function()
 	local Seen = 0
 	local Release = Server.UnconstrainedClient.On(function()
@@ -2976,6 +3148,83 @@ RunClosure("Map ranges, type aliases and idempotent Fire", function()
 	task.wait(1 / 30)
 	Release()
 	assert(Seen == 1, `A replayed idempotent packet was delivered again ({Seen} deliveries).`)
+end)
+
+RunClosure("Roblox datatypes pass the receive-side canonical check", function()
+	--> Only Vector3, CFrame and Color3 were whitelisted, so every event
+	--> carrying a Vector2, UDim2, DateTime and the rest was dropped on arrival.
+	local Received = nil
+	local Release = Server.DatatypeClient.On(function(_, Value)
+		Received = Value
+	end)
+	local Before = Server.Stats().DroppedPackets.Canonicalization or 0
+	Client.DatatypeClient.Fire({
+		Position = Roblox.Vector2.new(3, -4),
+		Size = Roblox.UDim2.new(0.5, 10, 1, -20),
+		When = BaseEnvironment.DateTime.fromUnixTimestamp(1700000000),
+	})
+	Client.StepReplication()
+	task.wait(1 / 30)
+	Release()
+	assert(
+		(Server.Stats().DroppedPackets.Canonicalization or 0) == Before,
+		"A datatype payload was dropped as Canonicalization."
+	)
+	assert(Received ~= nil, "The datatype event never arrived.")
+	assert(Received.Position.X == 3 and Received.Position.Y == -4, "Vector2 did not arrive intact.")
+	assert(Received.Size.X.Offset == 10 and Received.Size.Y.Scale == 1, "UDim2 did not arrive intact.")
+	assert(Received.When.UnixTimestamp == 1700000000, "DateTime did not arrive intact.")
+
+	--> Accepting these kinds must not let non-finite components through.
+	Received = nil
+	local ReleaseNaN = Server.DatatypeClient.On(function(_, Value)
+		Received = Value
+	end)
+	Client.DatatypeClient.Fire({
+		Position = Roblox.Vector2.new(0 / 0, 1),
+		Size = Roblox.UDim2.new(0, 0, 0, 0),
+		When = BaseEnvironment.DateTime.fromUnixTimestamp(1),
+	})
+	Client.DatatypeClient.Fire({
+		Position = Roblox.Vector2.new(1, 1),
+		Size = Roblox.UDim2.new(math.huge, 0, 0, 0),
+		When = BaseEnvironment.DateTime.fromUnixTimestamp(1),
+	})
+	Client.StepReplication()
+	task.wait(1 / 30)
+	ReleaseNaN()
+	assert(Received == nil, "A non-finite datatype component was delivered.")
+	assert(
+		(Server.Stats().DroppedPackets.Canonicalization or 0) == Before + 2,
+		"Non-finite datatype components were not dropped as Canonicalization."
+	)
+end)
+
+RunClosure("Queued tuples keep values after a nil", function()
+	Server.QueuedTupleServer.FireAll(1, nil, nil, 4, nil)
+	Server.StepReplication()
+	task.wait(1 / 30)
+	local Got = nil
+	local Release = Client.QueuedTupleServer.On(function(...)
+		Got = table.pack(...)
+	end)
+	Release()
+	assert(Got ~= nil, "The queued tuple was never delivered.")
+	assert(Got[1] == 1 and Got[4] == 4, `Queued tuple lost a value: {Got[1]}, {Got[4]}.`)
+end)
+
+RunClosure("A failing Sync listener does not drop the rest of the packet", function()
+	local Calls = 0
+	local Release = Server.ReliableClient.On(function()
+		Calls += 1
+		error("listener failure", 0)
+	end)
+	Client.ReliableClient.Fire(1)
+	Client.ReliableClient.Fire(2)
+	Client.StepReplication()
+	task.wait(1 / 30)
+	Release()
+	assert(Calls == 2, `Expected both messages to reach the listener, got {Calls}.`)
 end)
 
 RunClosure("Broadcasts to several players keep every batch intact", function()

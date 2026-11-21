@@ -132,7 +132,150 @@ do
 	assert(not SecureReport.verify(secret, "nonce-02", seq, kind, payload, signature), "replayed nonce must fail")
 	assert(not SecureReport.verify(secret, nonce, seq + 1, kind, payload, signature), "wrong seq must fail")
 	assert(not SecureReport.verify(secret, nonce, seq, kind, payload, "short"), "malformed signature must fail")
+	--> Reference values from exact integer arithmetic: the hash multiply used
+	--> to overflow double precision and drift from them.
+	assert(SecureReport.hash("cheeto_report_v1") == 0xB205AE3D, "hash must match the exact reference")
+	assert(
+		SecureReport.hash("the quick brown fox", 0x6D2B79F5) == 0x5BB48BBE,
+		"seeded hash must match the exact reference"
+	)
 	Ok("Signed report verifies, and tamper/replay/malformed all rejected")
+end
+
+--> IYGuard timeouts, run against the real script with mocked services and a
+--> clock the test controls.
+do
+	local fs = require("@lune/fs")
+	local luau = require("@lune/luau")
+	local Config = require("../extras/security/Config")
+
+	local function signal()
+		local handlers = {}
+		return {
+			Connect = function(_, handler)
+				table.insert(handlers, handler)
+			end,
+			Fire = function(_, ...)
+				for _, handler in handlers do
+					handler(...)
+				end
+			end,
+		}
+	end
+
+	local function guard()
+		local clock = 0
+		local onServerEvent, heartbeat, playerAdded = signal(), signal(), signal()
+		local guid = 0
+		local services = {
+			HttpService = {
+				GenerateGUID = function()
+					guid += 1
+					return `guid-{guid}`
+				end,
+			},
+			Players = {
+				PlayerAdded = playerAdded,
+				PlayerRemoving = signal(),
+				GetPlayers = function()
+					return {}
+				end,
+			},
+			ReplicatedStorage = {},
+			RunService = { Heartbeat = heartbeat },
+		}
+		local challenges = {}
+		local environment = {
+			game = {
+				GetService = function(_, name)
+					return services[name]
+				end,
+			},
+			Instance = {
+				new = function()
+					return {
+						OnServerEvent = onServerEvent,
+						FireClient = function(_, player, message)
+							challenges[player] = message
+						end,
+					}
+				end,
+			},
+			script = { Parent = { Config = Config, SecureReport = SecureReport } },
+			require = function(module)
+				return module
+			end,
+			os = {
+				clock = function()
+					return clock
+				end,
+			},
+		}
+		setmetatable(environment, { __index = _G })
+		local source = fs.readFile("../extras/security/IYGuard.server.luau")
+		luau.load(luau.compile(source), { debugName = "IYGuard", environment = environment, injectGlobals = true })()
+
+		local function newPlayer()
+			local player = { Kicked = false }
+			function player.Kick(self)
+				self.Kicked = true
+			end
+			playerAdded:Fire(player)
+			return player
+		end
+		--> One-second steps keep every frame under the lag-hitch threshold.
+		local function advance(seconds: number, each: (() -> ())?)
+			for _ = 1, seconds do
+				clock += 1
+				if each then
+					each()
+				end
+				heartbeat:Fire()
+			end
+		end
+		local function send(player, message)
+			onServerEvent:Fire(player, message)
+		end
+		return newPlayer, advance, send, challenges
+	end
+
+	local timeout = Config.HandshakeTimeout + 1
+
+	local newPlayer, advance = guard()
+	local silent = newPlayer()
+	advance(timeout)
+	if not silent.Kicked then
+		Fail("A client that never said hello was not kicked")
+	end
+
+	local newPlayer2, advance2, send2 = guard()
+	local spammer = newPlayer2()
+	send2(spammer, { k = "hello" })
+	advance2(Config.JoinGraceSeconds + Config.HeartbeatTimeout + 2, function()
+		send2(spammer, { k = "hello" })
+	end)
+	if not spammer.Kicked then
+		Fail("Repeating hello reset the grace window and dodged the heartbeat timeout")
+	end
+
+	local newPlayer3, advance3, send3, challenges3 = guard()
+	local honest = newPlayer3()
+	send3(honest, { k = "hello" })
+	local seq = 0
+	advance3(timeout + Config.JoinGraceSeconds, function()
+		local challenge = challenges3[honest]
+		seq += 1
+		send3(honest, {
+			seq = seq,
+			kind = "heartbeat",
+			payload = "",
+			sig = SecureReport.sign(challenge.secret, challenge.nonce, seq, "heartbeat", ""),
+		})
+	end)
+	if honest.Kicked then
+		Fail("An honest client that handshakes and heartbeats was kicked")
+	end
+	Ok("IYGuard kicks silent and hello-spamming clients, keeps honest ones")
 end
 
 stdio.write(`{stdio.color("green")}All security tests passed!{stdio.color("reset")}\n`)

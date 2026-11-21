@@ -208,7 +208,7 @@ end
 function RuntimeSupport.SendUnreliable(Targets: any, Except: Player?, Priority: string?)
     local Size = SendCursor
     if RuntimeConfig.MaxUnreliablePacketBytes > 0 and Size > RuntimeConfig.MaxUnreliablePacketBytes then
-        DropPacket(if type(Targets) == "table" then nil else Targets, "Unreliable", "MaxPacketBytes", Size)
+        DropPacket(if type(Targets) == "table" then nil else Targets, "Unreliable", "MaxPacketBytes", Size, nil, "send")
         return
     end
 
@@ -259,6 +259,7 @@ local function StepReplication()
     --> the life of the server -- a lost reply, or a peer that simply never
     --> answers, silently leaks a coroutine and hangs that caller forever.
     ExpireInvocations()
+    RuntimeSupport.SweepHandles(os.clock())
     RuntimeSupport.FlushLatest()
     RuntimeSupport.FlushUnreliableBatches()
     local ActivePlayers = Players:GetPlayers()
@@ -289,12 +290,14 @@ local function StepReplication()
             continue
         end
 
-        local Buffer = buffer.create(Send.Cursor)
-        buffer.copy(Buffer, 0, Send.Buffer, 0, Send.Cursor)
         if RuntimeConfig.MaxReliablePacketBytes > 0 and Send.Cursor > RuntimeConfig.MaxReliablePacketBytes then
-            DropPacket(Player, "Reliable", "MaxPacketBytes", Send.Cursor)
+            DropPacket(Player, "Reliable", "MaxPacketBytes", Send.Cursor, nil, "send")
             RuntimeSupport.RecordFlush(Player, "Reliable", 0)
         elseif IsPlayerActive(Player) then
+            --> Copied only when it is sent; the drop branch above used to copy
+            --> an oversized batch just to discard it.
+            local Buffer = buffer.create(Send.Cursor)
+            buffer.copy(Buffer, 0, Send.Buffer, 0, Send.Cursor)
             for _, Fragment in RuntimeSupport.FragmentReliablePacket(Player, Buffer, InstancePayload(Send.Instances)) do
                 Reliable:FireClient(Player, Fragment.Buffer, Fragment.Instances)
                 TrackSend("Reliable", buffer.len(Fragment.Buffer), Player)
