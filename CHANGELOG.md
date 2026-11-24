@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-11-24
+
+If you enable `WideRequestIds`, regenerate the client and server together. Pass the owning player when validating an owner-bound capability.
+
 ### Added
 
 - Added optional 32-bit request identifiers.
@@ -14,7 +18,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Added per-player request diagnostics.
 - Added single-use and revocable capabilities.
 - Added distance budgets for authorized movement.
-
 - Added shared per-peer ingress byte budgets.
 - Added packet reference limits.
 - Added sustained horizontal movement detection.
@@ -170,7 +173,8 @@ The first public release.
 - Standalone Infinite Yield detection and movement anti-cheat in `extras/security`.
 - Prebuilt binaries for Windows, macOS and Linux, and a pesde package.
 
-[Unreleased]: https://github.com/pealz1/cheeto/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/pealz1/cheeto/compare/v1.4.0...HEAD
+[1.4.0]: https://github.com/pealz1/cheeto/compare/v1.2.0...v1.4.0
 [1.2.0]: https://github.com/pealz1/cheeto/compare/v1.1.2...v1.2.0
 [1.1.2]: https://github.com/pealz1/cheeto/compare/v1.1.1...v1.1.2
 [1.1.1]: https://github.com/pealz1/cheeto/compare/v1.1.0...v1.1.1
