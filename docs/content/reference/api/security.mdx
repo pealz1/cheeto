@@ -35,6 +35,7 @@ import { Sig } from '../../../components/Reference'
 | [`CharacterIntegrity`](#characterintegrity) | Server | Movement scoring state |
 | [`ObserveCharacter`](#observecharacter) | Server | Add your own movement evidence |
 | [`SetMovementLimits`](#setmovementlimits) | Server | Set movement speeds for one player |
+| [`GrantMovementAllowance`](#grantmovementallowance) | Server | Authorize a limited amount of extra travel |
 | [`GrantMovementGrace`](#grantmovementgrace) | Server | Pause movement scoring for a player |
 | [`ReconcileCharacter`](#reconcilecharacter) | Server | Accept the current position as safe |
 | [`TeleportCharacter`](#teleportcharacter) | Server | Move a character without tripping checks |
@@ -148,7 +149,7 @@ Returns the zone set with [`SetZone`](#setzone), or `nil`.
 
 <Sig side="server">{"RegisterKnownId(id: number | string, player: Player?): ()"}</Sig>
 
-Marks `id` as issued by the server. Endpoints with [`RequireServerKnownId`](/reference/fields#requireserverknownid) accept a packet only if the first number or string in its payload is a registered id. With `player`, only that player may use it; without, anyone may.
+Marks `id` as issued by the server. Endpoints with [`RequireServerKnownId`](/reference/fields#requireserverknownid) accept a packet only if the first number or string in its payload is a registered id. With `player`, only that player may use it; without, anyone may. Player departure removes ids still bound to that player.
 
 ```lua copy
 local offerId = HttpService:GenerateGUID(false)
@@ -286,6 +287,19 @@ Adds your own evidence to a player's movement score, for detections the built-in
 <Sig side="server">{"SetMovementLimits(player: Player, limits: { Horizontal: number?, Vertical: number? }?): ()"}</Sig>
 
 Sets the horizontal or vertical base speed used to evaluate this player's movement, in studs per second. Each speed must be finite and at least one. Omitted axes use the schema defaults. Pass `nil` to restore both defaults. The server copies the table and keeps it until you replace it, clear it or the player leaves. `CharacterIntegrity(player).Limits` returns a copy.
+
+## GrantMovementAllowance
+
+<Sig side="server">{"GrantMovementAllowance(player: Player, horizontal: number, vertical: number, seconds: number): boolean"}</Sig>
+
+Authorizes additional travel, in studs, for the player's current character. Each observed sample spends only the amount above its normal movement budget. Both the per-sample and sustained checks use the credited distance. Wall traversal and WalkSpeed checks continue to run.
+
+A new grant replaces the previous one. A zero duration clears it. Expiry, character replacement, reconciliation and correction clear the grant. Returns `false` if the player has no character. Read the remaining distances and expiry from `CharacterIntegrity(player).Allowance`.
+
+```lua copy
+-- The server has already approved this dash.
+Network.Security.GrantMovementAllowance(player, 24, 0, 0.4)
+```
 
 ## GrantMovementGrace
 

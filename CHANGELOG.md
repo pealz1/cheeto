@@ -8,6 +8,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- Added optional 32-bit request identifiers.
+- Added request limits to CLI doctor.
+- Added server request concurrency limits.
+- Added per-player request diagnostics.
+- Added single-use and revocable capabilities.
+- Added distance budgets for authorized movement.
+
 - Added shared per-peer ingress byte budgets.
 - Added packet reference limits.
 - Added sustained horizontal movement detection.
@@ -15,6 +22,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- Fixed expired grants retaining objects.
+- Fixed departed players retaining queued calls.
+- Fixed early replies stalling requests.
+- Fixed queued calls losing optional arguments.
+- Fixed shared codecs starting networking diagnostics.
+- Fixed runtime queue limits being ignored.
 - Fixed cross-player data in drop captures.
 - Fixed replaying batched references and strings.
 - Fixed outgoing drops increasing peer abuse scores.

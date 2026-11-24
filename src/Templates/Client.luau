@@ -135,6 +135,7 @@ local function StepReplication()
     --> answers, silently leaks a coroutine and hangs that caller forever.
     ExpireInvocations()
     RuntimeSupport.ExpireFragments()
+    RuntimeSupport.ExpireGrants()
     RuntimeSupport.FlushLatest()
     RuntimeSupport.FlushUnreliableBatches()
     FlushBits()

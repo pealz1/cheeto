@@ -49,6 +49,7 @@ These discard one event. They are listed in the order the receive path checks th
 | `Canonicalization` | The decoded payload had a non-finite number, an impossible vector or CFrame, a table too deep or too large, a sparse array, an unsupported key type, or a string over [`MaxPayloadStringBytes`](/reference/options/limits#maxpayloadstringbytes) |
 | `DecodeBudget` | Checking the payload took more than [`MaxDecodeOperations`](/reference/options/limits#maxdecodeoperations) steps |
 | `ConstraintRejected` | A [`Validate`](/reference/api/hooks#validate) hook returned `false` |
+| `RequestBusy` | The server or player has reached its [active request limit](/reference/options/limits#maxactiverequests). The caller receives a busy response. |
 | `QueueFull` | No listener was connected and the endpoint's queue reached [`MaxQueuedEvents`](/reference/fields#maxqueuedevents) |
 
 ## Send-side

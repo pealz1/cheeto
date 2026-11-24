@@ -1,6 +1,6 @@
 ---
 title: "Diagnostics"
-description: "Listener counts per endpoint."
+description: "Listener counts and server request concurrency."
 ---
 
 import { Sig } from '../../../components/Reference'
@@ -22,3 +22,14 @@ end
 ```
 
 For live connect and disconnect notifications, use the [`Listener`](/reference/api/hooks#listener) hook.
+
+## Requests
+
+<Sig side="server">{"Requests(player: Player?): RequestStats?"}</Sig>
+
+Returns server totals, or counters for one player. `Active` counts running handlers, `Peak` is their high-water mark, `Accepted` counts started handlers, `Limited` counts busy replies, `Failed` counts errors raised by handlers, and `Cancelled` counts handlers whose threads the game cancelled. Reading an unknown player returns `nil`. Player departure clears their counters. A handler still running at departure continues to occupy a server slot until it finishes. The replication step reclaims cancelled threads at most once per second.
+
+```lua copy
+local stats = Network.Diagnostics.Requests()
+print(stats.Active, stats.Peak, stats.Limited)
+```

@@ -1416,6 +1416,12 @@ RunClosure("CI utility modes", function()
 			{ cwd = "../src/CLI" }
 		)
 		assert(Result.ok, `{Flag} failed:\n{Result.stderr}`)
+		if Flag == "--doctor" then
+			assert(
+				string.find(Result.stdout, "requests: idBits=8 pending=", 1, true),
+				"Doctor must report the effective request configuration"
+			)
+		end
 		if Flag == "--schema-docs" then
 			assert(
 				string.find(Result.stdout, "Secret,Token,Password", 1, true),

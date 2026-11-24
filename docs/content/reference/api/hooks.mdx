@@ -168,7 +168,7 @@ A single stream for internal events you may want to forward to logging.
 | `security.clientIntegrity` | Integrity evidence entry |
 | `security.characterIntegrity` | Movement evidence entry |
 | `security.characterIntegrityError` | `{ Player, UserId, Error, Time }` when sampling a character failed |
-| `transport.drop` | A local send was dropped. Includes `Name`, `Source` (the target), `Channel`, `Reason`, `Direction` and `Size`. |
+| `transport.drop` | A local send was dropped or a server function returned `RequestBusy`. Includes `Name`, `Source` (the peer), `Channel`, `Reason`, `Direction` and `Size`. |
 | `transport.flush` | `{ Target, Channel, Size, QueuedBytes, QueuedEvents }` |
 | `transport.fragment` | `{ Target, FragmentId, Count, Size }` |
 | `transport.reassembled` | `{ Source, FragmentId, Count, Size }` |

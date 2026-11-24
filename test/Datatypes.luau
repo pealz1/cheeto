@@ -192,6 +192,11 @@ ServerEnv.os.clock = function()
 	return Now
 end
 local Server = luau.load(fs.readFile("../Network/DatatypesServer.luau"), { environment = ServerEnv })()
+local SharedCodecs = luau.load(fs.readFile("../Network/DatatypesTypes.luau"), { environment = {} })()
+assert(
+	SharedCodecs.EByte.Read(SharedCodecs.EByte.Write(23)) == 23,
+	"Shared codecs must load without a game or profiler heartbeat"
+)
 local Config =
 	{ EnableProtocolHandshake = false, ReliableFragmentBytes = 8, MaxReliablePacketBytes = 512, RateLimitPerSecond = 0 }
 Cheeto.Configure(Config)
@@ -606,6 +611,20 @@ Server.Security.GrantMovementGrace(TestPlayer, 0.5)
 MoveAndSample(400)
 Now += 0.5
 assert(MoveAndSample(404).Score == 0, "Grace must discard the partial movement window")
+assert(Server.Security.ReconcileCharacter(TestPlayer, true), "Reset to the current position before the dash")
+Server.Configure({ CharacterIntegrityDistanceSlack = 0, CharacterIntegrityWindowSeconds = 0.25 })
+assert(Server.Security.GrantMovementAllowance(TestPlayer, 12, 0, 1), "Grant a short dash to the live character")
+assert(MoveAndSample(414).Score == 0, "A server-authorized dash must pass the first sample")
+assert(
+	Server.Security.CharacterIntegrity(TestPlayer).Allowance.Horizontal == 6,
+	"Only excess travel should spend the allowance"
+)
+assert(MoveAndSample(424).Score == 0, "Authorized distance must count toward the sustained check")
+assert(Server.Security.CharacterIntegrity(TestPlayer).Allowance == nil, "Spent distance must not be reused")
+assert(MoveAndSample(434).Reasons.HorizontalDisplacement ~= nil, "Movement beyond the dash budget must be scored")
+assert(Server.Security.GrantMovementAllowance(TestPlayer, 20, 0, 0.05), "Grant expiring movement credit")
+assert(MoveAndSample(444).Allowance == nil, "An expired dash must not excuse later movement")
+assert(not pcall(Server.Security.GrantMovementAllowance, TestPlayer, math.huge, 0, 1), "Movement credit must be finite")
 TestPlayer.Character = nil
 local Grace = Server.Security.CharacterIntegrity(TestPlayer).GraceUntil
 assert(
@@ -615,6 +634,16 @@ assert(
 assert(
 	Server.Security.CharacterIntegrity(TestPlayer).GraceUntil == Grace,
 	"A failed teleport must preserve the grace deadline"
+)
+
+require("./RequestLifecycle")(
+	Cheeto,
+	Server,
+	TestPlayer,
+	Environment.game:GetService("Players").PlayerRemoving,
+	function(Seconds)
+		Now += Seconds
+	end
 )
 
 --> CFrame<Position, Rotation>: whole-number position, half-float rotation.

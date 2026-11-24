@@ -265,6 +265,9 @@ function Wire.Fingerprint(Body: Parser.Body, Assignments: { [Parser.Declaration]
 		`bitpacking={tostring(Options.UseBitPacking ~= false)}`,
 		`strings={tostring(Options.UseStringDictionaries == true)}`,
 	}
+	if Options.WideRequestIds then
+		table.insert(Lines, "requestIds=u32")
+	end
 	for _, Assignment in Assignments do
 		table.insert(Lines, Wire.EndpointDescription(Assignment))
 	end

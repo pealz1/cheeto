@@ -119,6 +119,7 @@ export type Options = {
 	UseVarints: boolean?,
 	UseBitPacking: boolean?,
 	UseStringDictionaries: boolean?,
+	WideRequestIds: boolean?,
 	UseBufferPooling: boolean?,
 	BufferPoolLimit: number?,
 	SecurityProfile: string?,
@@ -137,6 +138,8 @@ export type Options = {
 	IngressBytesPerSecond: number?,
 	IngressBurstBytes: number?,
 	MaxPacketReferences: number?,
+	MaxActiveRequests: number?,
+	MaxActiveRequestsPerPlayer: number?,
 	CharacterIntegrityWindowSeconds: number?,
 	CaptureLimit: number?,
 	EnableInspector: boolean?,
@@ -398,6 +401,7 @@ local OPTIONS: { [string]: Lexer.Types } = {
 	UseVarints = "Boolean",
 	UseBitPacking = "Boolean",
 	UseStringDictionaries = "Boolean",
+	WideRequestIds = "Boolean",
 	UseBufferPooling = "Boolean",
 	BufferPoolLimit = "Number",
 	SecurityProfile = "Identifier",
@@ -416,6 +420,8 @@ local OPTIONS: { [string]: Lexer.Types } = {
 	IngressBytesPerSecond = "Number",
 	IngressBurstBytes = "Number",
 	MaxPacketReferences = "Number",
+	MaxActiveRequests = "Number",
+	MaxActiveRequestsPerPlayer = "Number",
 	CharacterIntegrityWindowSeconds = "Number",
 	CaptureLimit = "Number",
 	EnableInspector = "Boolean",
@@ -1367,7 +1373,11 @@ function Parser.Options(self: Parser): Options
 		end
 
 		local Value = self:Consume(Type)
-		local IntegerLimit = Name == "MaxPacketReferences" or Name == "CaptureLimit"
+		local IntegerLimit = Name == "MaxQueuedEvents"
+			or Name == "MaxPacketReferences"
+			or Name == "CaptureLimit"
+			or Name == "MaxActiveRequests"
+			or Name == "MaxActiveRequestsPerPlayer"
 		if
 			IntegerLimit
 			or Name == "IngressBytesPerSecond"

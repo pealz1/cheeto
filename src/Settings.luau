@@ -318,6 +318,42 @@ local Primitives: { [string]: Primitive } = {
 	},
 }
 
+local ProfileDefaults = {
+	Development = {
+		MaxPacketBytes = 1048576,
+		MaxUnreliablePacketBytes = 1000,
+		RateLimitPerSecond = 0,
+		RateLimitBurst = 0,
+		MaxQueuedEvents = 256,
+		MaxQueuedBytes = 262144,
+		MaxBurstBytes = 65536,
+		MaxPendingInvokes = 256,
+		InvokeTimeoutSeconds = 0,
+	},
+	Production = {
+		MaxPacketBytes = 262144,
+		MaxUnreliablePacketBytes = 1000,
+		RateLimitPerSecond = 120,
+		RateLimitBurst = 240,
+		MaxQueuedEvents = 128,
+		MaxQueuedBytes = 131072,
+		MaxBurstBytes = 32768,
+		MaxPendingInvokes = 64,
+		InvokeTimeoutSeconds = 10,
+	},
+	Competitive = {
+		MaxPacketBytes = 65536,
+		MaxUnreliablePacketBytes = 900,
+		RateLimitPerSecond = 60,
+		RateLimitBurst = 120,
+		MaxQueuedEvents = 64,
+		MaxQueuedBytes = 65536,
+		MaxBurstBytes = 16384,
+		MaxPendingInvokes = 32,
+		InvokeTimeoutSeconds = 5,
+	},
+}
+
 return {
 	Keywords = {
 		map = true,
@@ -336,6 +372,10 @@ return {
 		export = true,
 	},
 
+	GetProfile = function(Profile: string?, Preset: string?)
+		local Name = Profile or (if Preset == "Maximum" then "Competitive" else "Development")
+		return Name, ProfileDefaults[Name] or ProfileDefaults.Development
+	end,
 	Primtives = Primitives,
 	GetCasing = function(Case: Case): Cases
 		local Index = Indexes[Case]

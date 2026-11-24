@@ -203,6 +203,81 @@ function RuntimeSupport.RejectReceive(Player: Player, Name: string, Index: numbe
     PlayersMap[Player] = Save()
 end
 
+do
+    local function Counters()
+        return {Active = 0, Peak = 0, Accepted = 0, Limited = 0, Failed = 0, Cancelled = 0}
+    end
+    local Total = Counters()
+    local Peers = {}
+    local ActiveThreads = {}
+    local NextSweep = 0
+
+    --> A game may cancel a yielding handler. Its function never returns to
+    --> the generated wrapper, so reclaim the slot once its thread is dead.
+    function RuntimeSupport.SweepRequests()
+        if Total.Active == 0 then
+            return
+        end
+        local Now = os.clock()
+        if Now < NextSweep then
+            return
+        end
+        NextSweep = Now + 1
+        for Thread, Peer in ActiveThreads do
+            if coroutine.status(Thread) == "dead" then
+                ActiveThreads[Thread] = nil
+                Peer.Active -= 1
+                Total.Active -= 1
+                Peer.Cancelled += 1
+                Total.Cancelled += 1
+            end
+        end
+    end
+
+    function RuntimeSupport.BeginRequest(Player, Name, Index, Identifier)
+        local Peer = Peers[Player]
+        if not Peer then
+            Peer = Counters()
+            Peers[Player] = Peer
+        end
+        if (RuntimeConfig.MaxActiveRequests > 0 and Total.Active >= RuntimeConfig.MaxActiveRequests)
+            or (RuntimeConfig.MaxActiveRequestsPerPlayer > 0 and Peer.Active >= RuntimeConfig.MaxActiveRequestsPerPlayer) then
+            Total.Limited += 1
+            Peer.Limited += 1
+            DropPacket(Player, "Reliable", TransportError.RequestBusy, nil, Name)
+            RuntimeSupport.RejectReceive(Player, Name, Index, Identifier, TransportError.RequestBusy)
+            return nil
+        end
+        ActiveThreads[coroutine.running()] = Peer
+        Total.Accepted += 1
+        Total.Active += 1
+        Total.Peak = math.max(Total.Peak, Total.Active)
+        Peer.Accepted += 1
+        Peer.Active += 1
+        Peer.Peak = math.max(Peer.Peak, Peer.Active)
+        return Peer
+    end
+
+    function RuntimeSupport.FinishRequest(Peer, Success)
+        ActiveThreads[coroutine.running()] = nil
+        Peer.Active -= 1
+        Total.Active -= 1
+        if not Success then
+            Peer.Failed += 1
+            Total.Failed += 1
+        end
+    end
+
+    function RuntimeSupport.RequestSnapshot(Player: Player?)
+        local Stats = if Player == nil then Total else Peers[Player]
+        return if Stats then table.clone(Stats) else nil
+    end
+
+    function RuntimeSupport.ForgetRequestPeer(Player)
+        Peers[Player] = nil
+    end
+end
+
 --> Sends the event in the loaded scratch buffer on the unreliable remote.
 --> Targets is one player, a list of players, or nil for everyone.
 function RuntimeSupport.SendUnreliable(Targets: any, Except: Player?, Priority: string?)
@@ -378,6 +453,19 @@ function RuntimeSupport.SetMovementLimits(Player: any, Limits: {[string]: number
     PlayerState.Window = nil
 end
 
+function RuntimeSupport.GrantMovementAllowance(Player: Player, Horizontal: number, Vertical: number, Seconds: number): boolean
+    assert(RuntimeSupport.FiniteComponents(Horizontal, Vertical, Seconds) and math.min(Horizontal, Vertical, Seconds) >= 0,
+        "[Cheeto]: Movement allowances require finite nonnegative distances and duration.")
+    if not Player.Character then
+        return false
+    end
+    local PlayerState = RuntimeSupport.GetCharacterIntegrityPlayer(Player)
+    PlayerState.Allowance = if Seconds > 0 and (Horizontal > 0 or Vertical > 0) then {
+        Character = Player.Character, Horizontal = Horizontal, Vertical = Vertical, ExpiresAt = os.clock() + Seconds
+    } else nil
+    return true
+end
+
 function RuntimeSupport.GrantCharacterIntegrityGrace(Player: any, Seconds: number?, Reason: string?)
     local PlayerState = RuntimeSupport.GetCharacterIntegrityPlayer(Player)
     local Now = os.clock()
@@ -385,6 +473,7 @@ function RuntimeSupport.GrantCharacterIntegrityGrace(Player: any, Seconds: numbe
     local Duration = math.max(0, Seconds or RuntimeConfig.CharacterIntegrityTeleportGraceSeconds)
     PlayerState.GraceUntil = math.max(PlayerState.GraceUntil, Now + Duration)
     PlayerState.Window = nil
+    PlayerState.Allowance = nil
     PlayerState.LastReason = Reason or "grace"
     PlayerState.ConsecutiveBreaches = 0
 end
@@ -414,6 +503,7 @@ function RuntimeSupport.ReconcileCharacterIntegrity(Player: any, ResetScore: boo
         return false
     end
     PlayerState.Window = nil
+    PlayerState.Allowance = nil
     PlayerState.Character = Character
     PlayerState.LastPosition = Root.Position
     PlayerState.LastSafeCFrame = RootCFrame
@@ -485,6 +575,7 @@ function RuntimeSupport.CorrectCharacter(PlayerState: any, Character: any, Root:
     end)
     if Corrected then
         PlayerState.Window = nil
+        PlayerState.Allowance = nil
         PlayerState.LastCorrectionAt = Now + math.max(0, RuntimeConfig.CharacterIntegrityCorrectionCooldownSeconds)
         PlayerState.GraceUntil = Now + math.max(0, RuntimeConfig.CharacterIntegrityTeleportGraceSeconds)
         PlayerState.LastPosition = PlayerState.LastSafeCFrame.Position
@@ -537,12 +628,18 @@ function RuntimeSupport.StepCharacterIntegrityPlayer(Player: any, Now: number)
     local Character, Root, Humanoid, RootCFrame = RuntimeSupport.ReadCharacterSnapshot(Player)
     if Character == nil or Root == nil or Humanoid == nil then
         PlayerState.Window = nil
+        PlayerState.Allowance = nil
         PlayerState.Character = nil
         PlayerState.LastPosition = nil
         PlayerState.LastSampleAt = 0
         return
     end
 
+    local Allowance = PlayerState.Allowance
+    if Allowance and (Allowance.Character ~= Character or Now >= Allowance.ExpiresAt) then
+        PlayerState.Allowance = nil
+        Allowance = nil
+    end
     if not RuntimeSupport.FiniteComponents(RootCFrame:GetComponents()) then
         PlayerState.Window = nil
         PlayerState.ConsecutiveBreaches += 1
@@ -556,6 +653,7 @@ function RuntimeSupport.StepCharacterIntegrityPlayer(Player: any, Now: number)
     if PlayerState.Character ~= Character or PlayerState.LastPosition == nil or PlayerState.LastSampleAt <= 0 then
         PlayerState.Window = nil
         PlayerState.Character = Character
+        PlayerState.ConsecutiveBreaches = 0
         PlayerState.LastPosition = Root.Position
         PlayerState.LastSafeCFrame = RootCFrame
         PlayerState.LastSampleAt = Now
@@ -601,8 +699,17 @@ function RuntimeSupport.StepCharacterIntegrityPlayer(Player: any, Now: number)
         PathBlocked = not Seated and DeltaTime <= RuntimeConfig.CharacterIntegrityMaxStepSeconds
             and HorizontalDelta.Magnitude > math.max(4, RuntimeConfig.CharacterIntegrityDistanceSlack * 0.5)
             and RuntimeSupport.CharacterPathBlocked(PlayerState, Root, PlayerState.LastPosition, Delta),
-    }, PlayerState.Limits)
+    }, PlayerState.Limits, Allowance)
 
+    if Allowance then
+        if Evaluation.UsedHorizontal ~= nil then
+            Allowance.Horizontal -= Evaluation.UsedHorizontal
+            Allowance.Vertical -= Evaluation.UsedVertical
+        end
+        if Evaluation.Resync or Seated or (Allowance.Horizontal == 0 and Allowance.Vertical == 0) then
+            PlayerState.Allowance = nil
+        end
+    end
     local WindowDetail = RuntimeSupport.CheckMovementWindow(PlayerState, Evaluation, HorizontalDelta.Magnitude, DeltaTime)
     if Evaluation.Resync then
         PlayerState.LastPosition = Position
@@ -658,6 +765,7 @@ end
 
 Players.PlayerRemoving:Connect(function(Player)
     PlayersMap[Player] = nil
+    RuntimeSupport.ForgetRequestPeer(Player)
     ClearPlayerRuntimeState(Player)
 end)
 
@@ -674,6 +782,8 @@ local function StepReplication()
     --> answers, silently leaks a coroutine and hangs that caller forever.
     ExpireInvocations()
     RuntimeSupport.ExpireFragments()
+    RuntimeSupport.ExpireGrants()
+    RuntimeSupport.SweepRequests()
     RuntimeSupport.FlushLatest()
     RuntimeSupport.FlushUnreliableBatches()
     local ActivePlayers = Players:GetPlayers()

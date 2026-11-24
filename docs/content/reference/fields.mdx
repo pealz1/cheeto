@@ -261,7 +261,7 @@ Drops this endpoint's event with `MaxPacketBytes` when its own frame is larger t
 
 ### `MaxQueuedEvents`
 
-<Spec type="number" default={<>the schema option, else <code>256</code></>} on="event, function, channel" />
+<Spec type="number" default={<>the runtime queue limit</>} on="event, function, channel" />
 
 Maximum events waiting for a listener (or for `Iter`) on this endpoint before new ones are dropped with `QueueFull`.
 

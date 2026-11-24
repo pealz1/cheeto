@@ -14,8 +14,11 @@ local Prefabs = require("@self/Prefabs")
 local Util = require("@self/Util")
 local Wire = require("@self/Wire")
 
+--> Shared datatype modules stop after the export codecs. Only network modules
+--> initialize the profiler heartbeat, grant registry, queues and RPC machinery.
+local BaseSections = string.split(require("./Templates/Base"), "-- NETWORK RUNTIME --")
 local Sources = {
-	Base = require("./Templates/Base"),
+	Base = table.concat(BaseSections),
 	Shared = { "", "" },
 	Client = string.split(require("./Templates/Client"), "-- SPLIT --"),
 	Server = string.split(require("./Templates/Server"), "-- SPLIT --"),
@@ -37,7 +40,6 @@ local RUNTIME_EXPORTS = {
 	"CancelInvocations",
 	"ChallengeClientIntegrity",
 	"CheckAuth",
-	"CheckInvocationCapacity",
 	"CheckPolicy",
 	"CheckRateLimit",
 	"ClearInvocation",
@@ -55,7 +57,6 @@ local RUNTIME_EXPORTS = {
 	"GetMetrics",
 	"InstancePayload",
 	"InvocationErrorMessage",
-	"Invoke",
 	"IsPlayerActive",
 	"Load",
 	"Null",
@@ -235,43 +236,7 @@ end
 local function RuntimeConfigLines(): { string }
 	local SecurityPreset = Options.SecurityPreset or "Custom"
 	local MaximumSecurity = SecurityPreset == "Maximum"
-	local Profile = Options.SecurityProfile or (if MaximumSecurity then "Competitive" else "Development")
-	local ProfileDefaults = {
-		Development = {
-			MaxPacketBytes = 1048576,
-			MaxUnreliablePacketBytes = 1000,
-			RateLimitPerSecond = 0,
-			RateLimitBurst = 0,
-			MaxQueuedEvents = 256,
-			MaxQueuedBytes = 262144,
-			MaxBurstBytes = 65536,
-			MaxPendingInvokes = 256,
-			InvokeTimeoutSeconds = 0,
-		},
-		Production = {
-			MaxPacketBytes = 262144,
-			MaxUnreliablePacketBytes = 1000,
-			RateLimitPerSecond = 120,
-			RateLimitBurst = 240,
-			MaxQueuedEvents = 128,
-			MaxQueuedBytes = 131072,
-			MaxBurstBytes = 32768,
-			MaxPendingInvokes = 64,
-			InvokeTimeoutSeconds = 10,
-		},
-		Competitive = {
-			MaxPacketBytes = 65536,
-			MaxUnreliablePacketBytes = 900,
-			RateLimitPerSecond = 60,
-			RateLimitBurst = 120,
-			MaxQueuedEvents = 64,
-			MaxQueuedBytes = 65536,
-			MaxBurstBytes = 16384,
-			MaxPendingInvokes = 32,
-			InvokeTimeoutSeconds = 5,
-		},
-	}
-	local Defaults = ProfileDefaults[Profile] or ProfileDefaults.Development
+	local Profile, Defaults = Settings.GetProfile(Options.SecurityProfile, SecurityPreset)
 	local MaxPacketBytes = Options.MaxPacketBytes or Defaults.MaxPacketBytes
 	local SchemaVersion = Options.SchemaVersion or Options.Version or 1
 	local ClientShieldDefault = MaximumSecurity
@@ -332,6 +297,7 @@ local function RuntimeConfigLines(): { string }
 		`\tUseVarints = {BooleanLiteral(Options.UseVarints, true)},\n`,
 		`\tUseBitPacking = {BooleanLiteral(Options.UseBitPacking, true)},\n`,
 		`\tUseStringDictionaries = {BooleanLiteral(Options.UseStringDictionaries, false)},\n`,
+		`\tWideRequestIds = {BooleanLiteral(Options.WideRequestIds, false)},\n`,
 		`\tUseBufferPooling = {BooleanLiteral(Options.UseBufferPooling, true)},\n`,
 		`\tBufferPoolLimit = {NumberLiteral(Options.BufferPoolLimit, 64)},\n`,
 		`\tEnablePacketCapture = {BooleanLiteral(Options.EnablePacketCapture, false)},\n`,
@@ -343,6 +309,8 @@ local function RuntimeConfigLines(): { string }
 		`\tIngressBytesPerSecond = {NumberLiteral(Options.IngressBytesPerSecond, 0)},\n`,
 		`\tIngressBurstBytes = {NumberLiteral(Options.IngressBurstBytes, 0)},\n`,
 		`\tMaxPacketReferences = {NumberLiteral(Options.MaxPacketReferences, 0)},\n`,
+		`\tMaxActiveRequests = {NumberLiteral(Options.MaxActiveRequests, 0)},\n`,
+		`\tMaxActiveRequestsPerPlayer = {NumberLiteral(Options.MaxActiveRequestsPerPlayer, Defaults.MaxPendingInvokes)},\n`,
 		`\tCharacterIntegrityWindowSeconds = {NumberLiteral(Options.CharacterIntegrityWindowSeconds, 0)},\n`,
 		`\tCaptureLimit = {NumberLiteral(Options.CaptureLimit, 1024)},\n`,
 		`\tEnableInspector = {BooleanLiteral(Options.EnableInspector, false)},\n`,
@@ -456,7 +424,7 @@ local function GetEventBody(Channel: string): { string }
 end
 
 local function QueueLimit(Value: { [string]: any }): string
-	return NumberLiteral(Value.MaxQueuedEvents, Options.MaxQueuedEvents or 256)
+	return if Value.MaxQueuedEvents ~= nil then tostring(Value.MaxQueuedEvents) else "RuntimeConfig.MaxQueuedEvents"
 end
 
 --> What a server-side drop answers with. Set while a server receive branch
@@ -468,11 +436,11 @@ local Rejecting: { Name: string, Index: number, Invocation: string }? = nil
 --> Set while a client's function-reply branch is generated. A reply the
 --> client drops fails its Invoke straight away with the reason, instead of
 --> leaving the caller waiting for the timeout.
-local FailingReply: string? = nil
+local FailingReply: number? = nil
 
 local function AbortReadLine(Reason: string?): string
 	if Context == "Client" and FailingReply ~= nil and Reason ~= nil then
-		return `RuntimeSupport.FailInvocation(InvocationIdentifier, "{FailingReply}", {Reason}) RecoverMessage() continue`
+		return `RuntimeSupport.FailInvocation(InvocationIdentifier, {FailingReply}, {Reason}) RecoverMessage() continue`
 	end
 	if Context == "Server" and Rejecting ~= nil and Reason ~= nil then
 		return `RuntimeSupport.RejectReceive(Player, "{Rejecting.Name}", {Rejecting.Index}, {Rejecting.Invocation}, {Reason}) RecoverMessage() continue`
@@ -674,16 +642,12 @@ local function AddAfterReceive(
 	end
 end
 
---> A bare Read(1) throws straight out of the packet loop when the frame is
---> short, which strands every later message in the same packet -- including a
---> function reply, whose invocation then sits until it times out, and the
---> trailing ProfileEnd() never runs, so the profiler depth leaks. Every other
---> decode in this loop drops and recovers instead; these two single-byte reads
---> were the only ones left unguarded.
-local function AddGuardedByteRead(Block: Blocks.Block, Variable: string, Reliability: string)
+--> Recover at the message boundary if a request identifier or channel mode
+--> is truncated, so the remaining messages in this batch can still dispatch.
+local function AddGuardedRead(Block: Blocks.Block, Variable: string, Reliability: string, Reader: string)
 	local Source = SourceExpression()
 	local OkName = `{Variable}Ok`
-	Block:Line(`local {OkName}, {Variable} = pcall(function() return buffer.readu8(State.RecieveBuffer, Read(1)) end)`)
+	Block:Line(`local {OkName}, {Variable} = pcall({Reader})`)
 	local Failure = Block:Compare(OkName, "true", "Not")
 	Failure:Line(`DropPacket({Source}, "{Reliability}", "MalformedPacket", Size)`)
 	Failure:Line(AbortReadLine())
@@ -747,9 +711,11 @@ local function WriteEventCall(
 	Priority: string,
 	PredictionId: string,
 	Writer: string,
-	Arguments: string
+	Arguments: string,
+	Protected: boolean?
 ): string
-	return `RuntimeSupport.WriteEvent("{Name}", "{Reliability}", {Target}, {Accounting}, "{Priority}", {PredictionId}, {Writer}, {Arguments})`
+	local Call = if Protected then "pcall(RuntimeSupport.WriteEvent, " else "RuntimeSupport.WriteEvent("
+	return `{Call}"{Name}", "{Reliability}", {Target}, {Accounting}, "{Priority}", {PredictionId}, {Writer}, {Arguments})`
 end
 
 local function PushRuntimeApi(Target: Builder.Builder, Indent: number, ReplayRawName: string?)
@@ -807,6 +773,7 @@ local function PushRuntimeApi(Target: Builder.Builder, Indent: number, ReplayRaw
 		Target.Push(`CharacterIntegrity = RuntimeSupport.CharacterIntegritySnapshot,`, 0, Indent + 1)
 		Target.Push(`ObserveCharacter = RuntimeSupport.ReportCharacterIntegrity,`, 0, Indent + 1)
 		Target.Push(`SetMovementLimits = RuntimeSupport.SetMovementLimits,`, 0, Indent + 1)
+		Target.Push(`GrantMovementAllowance = RuntimeSupport.GrantMovementAllowance,`, 0, Indent + 1)
 		Target.Push(`GrantMovementGrace = RuntimeSupport.GrantCharacterIntegrityGrace,`, 0, Indent + 1)
 		Target.Push(`ReconcileCharacter = RuntimeSupport.ReconcileCharacterIntegrity,`, 0, Indent + 1)
 		Target.Push(`TeleportCharacter = RuntimeSupport.TeleportCharacterIntegrity,`, 0, Indent + 1)
@@ -816,6 +783,9 @@ local function PushRuntimeApi(Target: Builder.Builder, Indent: number, ReplayRaw
 	Target.Push(`}),`, 0, Indent)
 	Target.Push(`Diagnostics = table.freeze(\{`, 0, Indent)
 	Target.Push(`Listeners = RuntimeSupport.ListenerSnapshot,`, 0, Indent + 1)
+	if Context == "Server" then
+		Target.Push(`Requests = RuntimeSupport.RequestSnapshot,`, 0, Indent + 1)
+	end
 	Target.Push(`}),`, 0, Indent)
 	Target.Push(`Handles = table.freeze(\{`, 0, Indent)
 	Target.Push(`Register = RuntimeSupport.RegisterHandle,`, 0, Indent + 1)
@@ -823,6 +793,8 @@ local function PushRuntimeApi(Target: Builder.Builder, Indent: number, ReplayRaw
 	Target.Push(`Revoke = RuntimeSupport.RevokeHandle,`, 0, Indent + 1)
 	Target.Push(`IssueCapability = RuntimeSupport.IssueCapability,`, 0, Indent + 1)
 	Target.Push(`ValidateCapability = RuntimeSupport.ValidateCapability,`, 0, Indent + 1)
+	Target.Push(`ConsumeCapability = RuntimeSupport.ConsumeCapability,`, 0, Indent + 1)
+	Target.Push(`RevokeCapability = RuntimeSupport.RevokeCapability,`, 0, Indent + 1)
 	Target.Push(`}),`, 0, Indent)
 	Target.Push(`Capture = table.freeze(\{`, 0, Indent)
 	Target.Push(`Start = RuntimeSupport.StartCapture,`, 0, Indent + 1)
@@ -1240,7 +1212,7 @@ function Declarations.Event(Declaration: Parser.Event)
 			Events.Push(`{Connection} = \{}`)
 		end
 
-		Events.Push(`{Queue} = table.create(256)`)
+		Events.Push(`{Queue} = \{}`)
 		Block = (Channel.Listening == false) and Block:Compare("Index", Match, "Equals")
 			or Block:Branch("Conditional", "Index", Match, "Equals")
 
@@ -1313,17 +1285,23 @@ function Declarations.Event(Declaration: Parser.Event)
 			QueueFull:Line(`DropPacket({SourceExpression()}, "{Reliability}", "QueueFull", Size)`)
 				:Line(AbortReadLine('"QueueFull"'))
 				:Branch("Default")
-				:Line(`table.insert({Queue}, \{{ListenerArguments}\} :: \{any\})`)
+				:Line(`RuntimeSupport.QueueListenerArguments({Queue}, {ListenerArguments})`)
 				:End()
 				:End()
 
 			Listener = Blocks.Function(Casing.On, ApiParameters(ContextArguments), `() -> ()`, true)
 				:Line(`local ReleaseListener = RuntimeSupport.RegisterListener("{Declaration.Name}", Listener)`)
 				:Line(IsSingle and `{Connection} = Listener` or `table.insert({Connection}, Listener)`)
-				:Iterator("Index", "Arguments", Queue)
-				:Line(IsSync and `Listener(table.unpack(Arguments))` or `task.spawn(Listener, table.unpack(Arguments))`)
-				:End()
+				:Line(`local Backlog = {Queue}`)
 				:Line(`{Queue} = \{}`)
+				:Line("RuntimeState.ListenerQueues[Backlog] = nil")
+				:Iterator("_", "Arguments", "Backlog")
+				:Line(if Context == "Server" then "if not IsPlayerActive(Arguments[1]) then continue end" else "")
+				:Line(
+					IsSync and `Listener(table.unpack(Arguments, 1, Arguments.n))`
+						or `task.spawn(Listener, table.unpack(Arguments, 1, Arguments.n))`
+				)
+				:End()
 				:Lines(Disconnect.Content, 1)
 				:End()
 		else
@@ -1612,7 +1590,7 @@ function Declarations.Function(Declaration: Parser.Function)
 	end
 
 	--> Create queue and event branch
-	Events.Push(`{Queue} = table.create(256)`)
+	Events.Push(`{Queue} = \{}`)
 	Block = (Channel.Listening == false) and Block:Compare("Index", Match, "Equals")
 		or Block:Branch("Conditional", "Index", Match, "Equals")
 
@@ -1621,7 +1599,7 @@ function Declarations.Function(Declaration: Parser.Function)
 
 	if Context == "Server" then
 		--> The invocation id comes first so every drop below can answer it.
-		AddGuardedByteRead(Block, "InvocationIdentifier", "Reliable")
+		AddGuardedRead(Block, "InvocationIdentifier", "Reliable", "RuntimeSupport.ReadRequestId")
 		Rejecting = { Name = Name, Index = Index, Invocation = "InvocationIdentifier" }
 		AddReceiveGuards(Block, Name, "Reliable", Index, Value)
 		local DecodeError = string.split(DataArguments, ",")[1] or "Value"
@@ -1636,20 +1614,20 @@ function Declarations.Function(Declaration: Parser.Function)
 			:Line(`DropPacket(Player, "Reliable", "QueueFull", Size)`)
 			:Line(AbortReadLine('"QueueFull"'))
 			:Branch("Default")
-			:Line(`table.insert({Queue}, \{Player, {DataArguments}, InvocationIdentifier\} :: \{any\})`)
+			:Line(`RuntimeSupport.QueueListenerArguments({Queue}, Player, {DataArguments}, InvocationIdentifier)`)
 			:End()
 			:End()
 		Rejecting = nil
 
 		--> Data listener body
-		local FlushQueue = Blocks.Function("", "", "()")
-			:Line(`local EventQueue = {Queue} or \{\}`)
-			:Line(`{Queue} = table.create(16)`)
-			:Iterator("Index", "Arguments", "EventQueue")
-			:Line(`{Connection}(table.unpack(Arguments))`)
+		local FlushQueue = Blocks.Block()
+			:Line(`local Backlog = {Queue}`)
+			:Line(`{Queue} = \{}`)
+			:Line("RuntimeState.ListenerQueues[Backlog] = nil")
+			:Line(`local Bound = {Connection}`)
+			:Iterator("_", "Arguments", "Backlog")
+			:Line("task.spawn(Bound, table.unpack(Arguments, 1, Arguments.n))")
 			:End()
-			:End()
-			:Wrap("task.spawn(", ")")
 
 		local Serialize = Blocks.Function("", "")
 			:Line(`{ReturnArguments} = Listener(Player, {DataArguments})`)
@@ -1662,8 +1640,12 @@ function Declarations.Function(Declaration: Parser.Function)
 		--> waiting for its timeout.
 		local TrueListener =
 			Blocks.Function(Connection, `Player: Player, {DataValues}, InvocationIdentifier: number`, "()", true)
+				:Line("if not IsPlayerActive(Player) then return end")
+				:Line(`local Peer = RuntimeSupport.BeginRequest(Player, "{Name}", {Index}, InvocationIdentifier)`)
+				:Line("if not Peer then return end")
 				:Line(`local {ReturnValues};`)
 				:Lines(Serialize.Content, 1)
+				:Line("RuntimeSupport.FinishRequest(Peer, Success)")
 				:Line("if not IsPlayerActive(Player) then return end")
 				:Line("Load(PlayersMap[Player], true)")
 				:Compare("Success", "true", "Not")
@@ -1690,9 +1672,8 @@ function Declarations.Function(Declaration: Parser.Function)
 			--> The returned function unbinds this handler, if it is still the
 			--> bound one; calls that arrive afterwards queue until the next On.
 			:Line(
-				`local Bound = {Connection}`
+				"return function()"
 			)
-			:Line("return function()")
 			:Line(`if {Connection} == Bound then {Connection} = nil end`, 2)
 			:Line("end")
 			:End()
@@ -1708,17 +1689,14 @@ function Declarations.Function(Declaration: Parser.Function)
 
 		--> The reply leg: source is the server, so no auth/policy/rate limit.
 		--> The invocation id is read first so a dropped reply can fail its call.
-		AddGuardedByteRead(Block, "InvocationIdentifier", "Reliable")
-		FailingReply = Name
+		AddGuardedRead(Block, "InvocationIdentifier", "Reliable", "RuntimeSupport.ReadRequestId")
+		FailingReply = Index
 		AddReceiveGuards(Block, Name, "Reliable", Index, Value, true)
 		Block:Lines(Deserialize.Content, Block.Indent + 1)
 		AddAfterReceive(Block, Name, "Reliable", Index, `table.pack({ReturnArguments})`)
 		FailingReply = nil
-		--> Through ResumeInvocation, not task.spawn: InvocationIdentifier is a u8
-		--> read straight off the wire, so this is the one resume path an attacker
-		--> can aim. The guard refuses to resume a thread that is not parked on this
-		--> invocation.
-		Block:Line("local Invocation = ClearInvocation(InvocationIdentifier)")
+		--> A delayed reply must belong to the same function as its waiting caller.
+		Block:Line(`local Invocation = ClearInvocation(InvocationIdentifier, {Index})`)
 		Block:Compare("Invocation", "nil", "Not"):Line(`ResumeInvocation(Invocation, Success, {ReturnArguments})`):End()
 
 		local Error = `"There was an exception while processing \\"{Name}\\"."`
@@ -1728,7 +1706,7 @@ function Declarations.Function(Declaration: Parser.Function)
 		local InvokeMaxPending = if Value.MaxPendingInvokes then tostring(Value.MaxPendingInvokes) else "nil"
 		local InvokeTimeout = if Value.InvokeTimeoutSeconds then tostring(Value.InvokeTimeoutSeconds) else "nil"
 		local DataWriter = Util.GetPath(DataIdentifier, true, Scope)
-		local SendInvocation = `local Written, WriteError = {WriteEventCall(
+		local SendInvocation = `local Sent, Written, WriteError = {WriteEventCall(
 			Name,
 			"Reliable",
 			"nil",
@@ -1736,24 +1714,21 @@ function Declarations.Function(Declaration: Parser.Function)
 			Value.Priority or "Gameplay",
 			"nil",
 			DataWriter,
-			`{DataArguments}, InvocationIdentifier`
+			`{DataArguments}, InvocationIdentifier`,
+			true
 		)}`
-		local NotSent = `error(WriteError or "[Cheeto]: \\"{Name}\\" was not sent.", 2)`
-		--> Register AFTER the payload is written, never before. Serialization can
-		--> throw (a value out of range, a dead Instance, a malformed argument), and
-		--> registering first left an entry in Calls whose thread had already
-		--> unwound past the yield. The identifier is a u8 straight off the wire, so
-		--> a later packet naming that stale id resumed a thread that was by then
-		--> parked somewhere else entirely -- stealing that resume and hanging it.
-		local Contents = Blocks.Block()
-			:Line(`CheckInvocationCapacity("{Name}", {InvokeMaxPending})`)
-			:Line("local InvocationIdentifier = Invoke()")
-			:Line(SendInvocation)
-			:Line(`if not Written then {NotSent} end`)
+		local StartCall = Blocks.Block()
 			:Line(
-				`RegisterInvocation(InvocationIdentifier, coroutine.running(), "{Name}", {InvokeMaxPending}, {InvokeTimeout})`
+				`local InvocationIdentifier, Invocation = RegisterInvocation({Index}, "{Name}", {InvokeMaxPending}, {InvokeTimeout})`
 			)
-			:Line(`local Success, {ReturnValues} = AwaitInvocation(InvocationIdentifier)`)
+			:Line(SendInvocation)
+			:Line("if not Sent or not Written then")
+			:Line("ClearInvocation(InvocationIdentifier, nil, Invocation)", 2)
+			:Line(`error(if not Sent then Written else WriteError or '[Cheeto]: "{Name}" was not sent.', 2)`, 2)
+			:Line("end")
+		local Contents = Blocks.Block()
+			:Lines(StartCall.Content, 0)
+			:Line(`local Success, {ReturnValues} = AwaitInvocation(Invocation)`)
 			:Compare("Success", "true", "Not")
 			:Line(`error(InvocationErrorMessage({Error}, {ReturnArguments}))`)
 			:End()
@@ -1767,21 +1742,14 @@ function Declarations.Function(Declaration: Parser.Function)
 				Blocks.Function(Casing.Invoke, ApiParameters(DataValues), `Future.Future<boolean, {ReturnTypes}>`, true)
 			Invoke:Lines(Wrapper.Content, 1)
 		elseif IsPromise then
-			local OnCancel =
-				Blocks.Function("", ""):Line("ClearInvocation(InvocationIdentifier)"):End():Wrap("OnCancel(", ")")
-
-			local Promise = Blocks
-				.Function("", "Resolve, Reject, OnCancel")
-				:Line(`CheckInvocationCapacity("{Name}", {InvokeMaxPending})`)
-				:Line("local InvocationIdentifier = Invoke()")
-				:Line(SendInvocation)
-				:Line(`if not Written then {NotSent} end`)
-				--> After the payload, same reason as the coroutine path above.
-				:Line(
-					`RegisterInvocation(InvocationIdentifier, coroutine.running(), "{Name}", {InvokeMaxPending}, {InvokeTimeout})`
-				)
+			local OnCancel = Blocks.Function("", "")
+				:Line("ClearInvocation(InvocationIdentifier, nil, Invocation)")
+				:End()
+				:Wrap("OnCancel(", ")")
+			local Promise = Blocks.Function("", "Resolve, Reject, OnCancel")
+				:Lines(StartCall.Content, 1)
 				:Lines(OnCancel.Content, 1)
-				:Line(`local Success, {ReturnValues} = AwaitInvocation(InvocationIdentifier)`)
+				:Line(`local Success, {ReturnValues} = AwaitInvocation(Invocation)`)
 				:Compare("Success", "true", "Not")
 				:Line(`Reject(InvocationErrorMessage({Error}, {ReturnArguments}))`)
 				:Return("")
@@ -1867,7 +1835,12 @@ function Declarations.Channel(Declaration: Parser.Channel)
 		end
 
 		AddReceiveGuards(Block, Declaration.Name, Reliability, Index, Value)
-		AddGuardedByteRead(Block, "CHANNEL_MODE", Reliability)
+		AddGuardedRead(
+			Block,
+			"CHANNEL_MODE",
+			Reliability,
+			"function() return buffer.readu8(State.RecieveBuffer, Read(1)) end"
+		)
 		local ModeBranch = Block:Compare("CHANNEL_MODE", "0", "Equals")
 		ModeBranch:Line(`local Success, Value = pcall({ReadFullPath})`)
 		AddDecodeFailureGuard(ModeBranch, Declaration.Name, Reliability, "Value")
@@ -2654,7 +2627,7 @@ function Generators.Event(
 	--> The invocation id goes first: the receive branch reads it before this
 	--> reader runs, so a sequence written ahead of it was read as the id.
 	if Function then
-		Types.u8.Write("InvocationIdentifier", Write)
+		Write:Line("RuntimeSupport.WriteRequestId(InvocationIdentifier)")
 	end
 	if SequenceSlot ~= nil then
 		Write:Line(`local SEQUENCE = RuntimeSupport.NextSequence({SequenceSlot})`)
@@ -3097,7 +3070,7 @@ function Generator.GenerateShared(AbstractSyntaxTree: Parser.Body): string
 		VERSION_HEADER,
 		string.split(Source[1], "\r"),
 		RuntimeConfigLines(),
-		string.split(Sources.Base, "\r"),
+		string.split(BaseSections[1], "\r"),
 		LuauTypes.DumpLines(),
 		{ "\n" },
 		UserTypes.DumpLines(),

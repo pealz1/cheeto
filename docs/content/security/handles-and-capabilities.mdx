@@ -44,7 +44,7 @@ event MovePiece {
 - `Register(object, owner, expiresAt)` accepts an absolute `os.clock()` expiry.
 - Registering the same object again returns the same handle.
 
-`RequireObjectHandle` does nothing by itself; it documents the contract and is passed to your [`Validate` hook](/security/constraints) as a constraint.
+The built-in constraint resolves the numeric handle against the sending player before delivering the action. Your game can apply additional rules in a [validation hook](/security/constraints).
 
 ## Capabilities
 
@@ -62,7 +62,7 @@ Network.EditPlot.On(function(player, token, change)
 end)
 ```
 
-Use capabilities for flows the server opens and closes: an edit session, a trade window, a one-time teleport.
+For a repeatable edit session, validate each action and call `RevokeCapability` when editing ends. For a single trade confirmation or teleport, call `ConsumeCapability(token, player, permission)` before applying the action. Bind player-specific grants to the player when issuing them.
 
 ## Where they live
 
