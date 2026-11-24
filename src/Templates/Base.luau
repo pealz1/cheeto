@@ -146,6 +146,8 @@ local TransportError = table.freeze({
     QueueFull = "QueueFull",
     Backpressure = "Backpressure",
     RateLimit = "RateLimit",
+    IngressByteLimit = "IngressByteLimit",
+    ReferenceLimit = "ReferenceLimit",
     PolicyRejected = "PolicyRejected",
     Cooldown = "Cooldown",
     --> A payload-dependent constraint (MaxDistance, RequireOwnership, ...) was
@@ -223,6 +225,7 @@ local RuntimeState = {
         Zone = {} :: {[Player]: string},
         Cell = {} :: {[Player]: string},
     },
+    Ingress = {} :: {[any]: any},
     RateLimit = {} :: {[any]: {[string]: {Tokens: number, Updated: number}}},
     StateFlushers = {} :: {() -> ()},
     Prediction = {
@@ -267,7 +270,9 @@ local RuntimeState = {
         Enabled = false,
         Entries = {},
         Redactions = {} :: {[string]: true},
-        Limit = 1024
+        Limit = RuntimeConfig.CaptureLimit,
+        Count = 0,
+        First = 1
     },
     Inspector = {
         Enabled = false
@@ -354,7 +359,12 @@ local function CloneArray(Source: {any}?): {any}?
     return Result
 end
 
+function RuntimeSupport.CheckRedactions(Redactions: any)
+    assert(Redactions == nil or type(Redactions) == "string" or type(Redactions) == "table", "[Cheeto]: Expected redaction field names.")
+end
+
 function RuntimeSupport.SetCaptureRedactions(Redactions: any)
+    RuntimeSupport.CheckRedactions(Redactions)
     table.clear(RuntimeState.Capture.Redactions)
 
     if Redactions == nil or Redactions == "" then
@@ -432,11 +442,12 @@ function RuntimeSupport.SummarizeValue(Value: any, Depth: number?): string
     return `{Kind}({table.concat(Parts, ",")})`
 end
 
-function RuntimeSupport.RecordCapture(Entry: {[string]: any})
-    if not RuntimeState.Capture.Enabled and not RuntimeConfig.EnablePacketCapture and not RuntimeState.Inspector.Enabled and not RuntimeConfig.EnableInspector then
-        return
-    end
+function RuntimeSupport.Capturing(): boolean
+    return RuntimeState.Capture.Limit > 0 and (RuntimeState.Capture.Enabled or RuntimeConfig.EnablePacketCapture
+        or RuntimeState.Inspector.Enabled or RuntimeConfig.EnableInspector)
+end
 
+function RuntimeSupport.RecordCapture(Entry: {[string]: any})
     local KeepRaw = not (RuntimeConfig.NoRawCaptureInProduction and RuntimeConfig.SecurityProfile ~= "Development")
     if KeepRaw and Entry.RawBuffer ~= nil then
         Entry.Buffer = CloneBuffer(Entry.RawBuffer, Entry.RawBufferStart, Entry.RawBufferSize)
@@ -450,10 +461,14 @@ function RuntimeSupport.RecordCapture(Entry: {[string]: any})
         Entry.RawRedacted = true
     end
     if KeepRaw and Entry.RawInstances ~= nil then
-        Entry.Instances = CloneArray(Entry.RawInstances)
-        Entry.RawInstances = nil
-    elseif Entry.RawInstances ~= nil then
-        Entry.RawInstances = nil
+        local First = Entry.InstanceStart + 1
+        Entry.Instances = table.move(Entry.RawInstances, First, Entry.InstanceEnd, 1, {})
+    end
+    Entry.RawInstances = nil
+    Entry.InstanceStart = nil
+    Entry.InstanceEnd = nil
+    if not KeepRaw then
+        Entry.StringContext = nil
     end
 
     Entry.Time = os.clock()
@@ -469,23 +484,49 @@ function RuntimeSupport.RecordCapture(Entry: {[string]: any})
         Entry.Payload = nil
     end
 
-    table.insert(RuntimeState.Capture.Entries, Entry)
-    local Limit = RuntimeState.Capture.Limit or RuntimeConfig.CaptureLimit
-    while #RuntimeState.Capture.Entries > Limit do
-        table.remove(RuntimeState.Capture.Entries, 1)
+    local Capture = RuntimeState.Capture
+    if Capture.Count == Capture.Limit then
+        Capture.Entries[Capture.First] = Entry
+        Capture.First = Capture.First % Capture.Limit + 1
+    else
+        Capture.Entries[(Capture.First - 1 + Capture.Count) % Capture.Limit + 1] = Entry
+        Capture.Count += 1
     end
 end
 
+function RuntimeSupport.CheckCountLimit(Limit: number)
+    assert(type(Limit) == "number" and Limit >= 0 and Limit < math.huge and Limit % 1 == 0,
+        "[Cheeto]: Limit must be a finite nonnegative integer.")
+end
+
+function RuntimeSupport.ResizeCapture(Limit: number)
+    local Capture = RuntimeState.Capture
+    if Limit == Capture.Limit then
+        return
+    end
+    local Count = math.min(Capture.Count, Limit)
+    local Entries = table.create(Count)
+    for Index = 1, Count do
+        Entries[Index] = Capture.Entries[(Capture.First + Capture.Count - Count + Index - 2) % Capture.Limit + 1]
+    end
+    Capture.Entries = Entries
+    Capture.First = 1
+    Capture.Count = Count
+    Capture.Limit = Limit
+end
+
 function RuntimeSupport.StartCapture(Options: {[string]: any}?)
-    RuntimeState.Capture.Enabled = true
     if Options then
-        if Options.Limit then
-            RuntimeState.Capture.Limit = Options.Limit
+        RuntimeSupport.CheckRedactions(Options.Redactions)
+        if Options.Limit ~= nil then
+            RuntimeSupport.CheckCountLimit(Options.Limit)
+            RuntimeSupport.ResizeCapture(Options.Limit)
         end
         if Options.Redactions then
             RuntimeSupport.SetCaptureRedactions(Options.Redactions)
         end
     end
+    RuntimeState.Capture.Enabled = true
 end
 
 function RuntimeSupport.StopCapture()
@@ -493,11 +534,44 @@ function RuntimeSupport.StopCapture()
 end
 
 function RuntimeSupport.ClearCapture()
-    table.clear(RuntimeState.Capture.Entries)
+    local Capture = RuntimeState.Capture
+    table.clear(Capture.Entries)
+    Capture.Count = 0
+    Capture.First = 1
 end
 
-function RuntimeSupport.CaptureEntries()
-    return table.clone(RuntimeState.Capture.Entries)
+function RuntimeSupport.CaptureEntries(Filter: {[string]: any}?)
+    local Capture = RuntimeState.Capture
+    local Limit = if Filter and Filter.Limit ~= nil then Filter.Limit else Capture.Count
+    RuntimeSupport.CheckCountLimit(Limit)
+    local Result = {}
+    for Offset = Capture.Count - 1, 0, -1 do
+        if #Result >= Limit then
+            break
+        end
+        local Entry = Capture.Entries[(Capture.First - 1 + Offset) % Capture.Limit + 1]
+        if Filter and ((Filter.Name ~= nil and Entry.Name ~= Filter.Name)
+            or (Filter.Status ~= nil and Entry.Status ~= Filter.Status)
+            or (Filter.Direction ~= nil and Entry.Direction ~= Filter.Direction)
+            or (Filter.Reason ~= nil and Entry.Reason ~= Filter.Reason)
+            or (Filter.UserId ~= nil and Entry.UserId ~= Filter.UserId)
+            or (Filter.Channel ~= nil and Entry.Channel ~= Filter.Channel)) then
+            continue
+        end
+        local Copy = table.clone(Entry)
+        if Entry.StringContext then
+            Copy.StringContext = {NextId = Entry.StringContext.NextId, Strings = table.clone(Entry.StringContext.Strings)}
+        end
+        Copy.Buffer = CloneBuffer(Entry.Buffer)
+        Copy.Instances = CloneArray(Entry.Instances)
+        Copy.Redaction = {Raw = Entry.Redaction.Raw, Fields = table.clone(Entry.Redaction.Fields)}
+        table.insert(Result, Copy)
+    end
+    for Index = 1, math.floor(#Result / 2) do
+        local Other = #Result - Index + 1
+        Result[Index], Result[Other] = Result[Other], Result[Index]
+    end
+    return Result
 end
 
 function RuntimeSupport.ReplayCapture(Entries: {{[string]: any}}, Handlers: {[string]: (any) -> any}?)
@@ -535,9 +609,9 @@ function RuntimeSupport.ReplayRawCapture(Entries: {{[string]: any}}, Injector: (
     for _, Entry in Entries do
         if Entry.Status == "dropped" then
             Result.Dropped += 1
-        else
-            Result.Accepted += 1
+            continue
         end
+        Result.Accepted += 1
 
         local RawBuffer = Entry.Buffer or Entry.RawBuffer
         if typeof(RawBuffer) ~= "buffer" then
@@ -676,9 +750,9 @@ local function ReportViolation(Source: any, Name: string, Channel: string, Reaso
     return Score
 end
 
-local function DropPacket(Source: any, Channel: string, Reason: string, Size: number?, Name: string?)
+local function DropPacket(Source: any, Channel: string, Reason: string, Size: number?, Name: string?, Outgoing: boolean?)
     MetricAdd("DroppedPackets", Reason)
-    if Reason == "RateLimit" then
+    if Reason == "RateLimit" or Reason == "IngressByteLimit" then
         MetricAdd("RateLimitHits", Channel)
     elseif Reason == "QueueFull" then
         MetricAdd("QueueDrops", Channel)
@@ -690,26 +764,34 @@ local function DropPacket(Source: any, Channel: string, Reason: string, Size: nu
         MetricAdd("ValidationFailures", Channel)
     end
 
-    RuntimeSupport.RecordCapture({
-        Name = Name,
-        Direction = "receive",
-        Source = tostring(Source),
-        Channel = Channel,
-        Status = "dropped",
-        Reason = Reason,
-        Size = Size or 0,
-        RawBuffer = if typeof(RecieveBuffer) == "buffer" then RecieveBuffer else nil,
-        RawInstances = State.RecieveInstances
-    })
+    if RuntimeSupport.Capturing() then
+        RuntimeSupport.RecordCapture({
+            Name = Name,
+            Direction = if Outgoing then "send" else "receive",
+            Source = if Outgoing then nil else tostring(Source),
+            Target = if Outgoing then tostring(Source) else nil,
+            UserId = TryGetUserId(Source),
+            Channel = Channel,
+            Status = "dropped",
+            Reason = Reason,
+            Size = Size or 0
+        })
+    end
 
-    RunHooks("Drop", {
+    local Drop = {
         Name = Name,
         Source = Source,
         Channel = Channel,
         Reason = Reason,
+        Direction = if Outgoing then "send" else "receive",
         Size = Size or 0
-    })
-    ReportViolation(Source, Name or Channel, Channel, Reason, Size, "drop")
+    }
+    RunHooks("Drop", Drop)
+    if Outgoing then
+        EmitTelemetry("transport.drop", Drop)
+    else
+        ReportViolation(Source, Name or Channel, Channel, Reason, Size, "drop")
+    end
 end
 
 function RuntimeSupport.CreateRemoteName(Prefix: string?): string
@@ -1211,10 +1293,9 @@ function RuntimeSupport.EvaluateCharacterMovement(Sample: {[string]: any}, Limit
     local NominalHorizontal = math.max(ConfiguredHorizontal, math.max(0, WalkSpeed) * SpeedMultiplier)
     local VelocityHorizontal = math.min(math.max(0, HorizontalVelocity), NominalHorizontal * 2)
     local VelocityVertical = math.min(math.abs(VerticalVelocity), ConfiguredVertical * 2)
-    local AllowedHorizontal = NominalHorizontal * DeltaTime
-        + VelocityHorizontal * DeltaTime * 0.5
-        + Slack
-        + PingSeconds * NominalHorizontal * PingAllowance
+    local HorizontalTravel = (NominalHorizontal + VelocityHorizontal * 0.5) * DeltaTime
+    local HorizontalSlack = Slack + PingSeconds * NominalHorizontal * PingAllowance
+    local AllowedHorizontal = HorizontalTravel + HorizontalSlack
     local AllowedVertical = ConfiguredVertical * DeltaTime
         + VelocityVertical * DeltaTime * 0.5
         + Slack
@@ -1244,6 +1325,8 @@ function RuntimeSupport.EvaluateCharacterMovement(Sample: {[string]: any}, Limit
         Resync = false,
         Reasons = Reasons,
         Weight = math.max(0, math.min(16, Weight)),
+        HorizontalTravel = HorizontalTravel,
+        HorizontalSlack = HorizontalSlack,
         AllowedHorizontal = AllowedHorizontal,
         AllowedVertical = AllowedVertical,
     }
@@ -1321,15 +1404,19 @@ end
 
 local function BeforeSend(Name: string, Channel: string, Target: any?): boolean
     if RuntimeState.KilledRemotes[Name] then
-        DropPacket(Target, Channel, TransportError.KillSwitch)
+        DropPacket(Target, Channel, TransportError.KillSwitch, 0, Name, true)
         return false
     end
 
-    return RunHooks("BeforeSend", {
+    local Allowed = RunHooks("BeforeSend", {
         Name = Name,
         Channel = Channel,
         Target = Target
     })
+    if not Allowed then
+        DropPacket(Target, Channel, TransportError.MiddlewareRejected, 0, Name, true)
+    end
+    return Allowed
 end
 
 local function Use(HookName: string, Callback: (...any) -> any): () -> ()
@@ -2210,7 +2297,7 @@ do
         local State = GetTransportState(Target)
         if ShouldShed(State, Priority) then
             State.DroppedLowPriority += 1
-            DropPacket(Target, Channel, TransportError.Backpressure, Size)
+            DropPacket(Target, Channel, TransportError.Backpressure, Size, nil, true)
             return false
         end
 
@@ -2231,7 +2318,7 @@ do
         local State = GetTransportState(Target)
         if ShouldShed(State, Priority) then
             State.DroppedLowPriority += 1
-            DropPacket(Target, Channel, TransportError.Backpressure, Size)
+            DropPacket(Target, Channel, TransportError.Backpressure, Size, nil, true)
             return false
         end
 
@@ -2944,11 +3031,33 @@ local function Configure(Options: {[string]: any})
             end
         end
 
+        if Key == "CaptureRedactions" then
+            RuntimeSupport.CheckRedactions(Value)
+        elseif Key == "CaptureLimit" or Key == "MaxPacketReferences" then
+            RuntimeSupport.CheckCountLimit(Value)
+        elseif Key == "IngressBytesPerSecond" or Key == "IngressBurstBytes" or Key == "CharacterIntegrityWindowSeconds" then
+            assert(RuntimeSupport.FiniteNumber(Value) and Value >= 0, "[Cheeto]: Expected a finite nonnegative limit.")
+        end
+    end
+    if (Options.IngressBytesPerSecond ~= nil and Options.IngressBytesPerSecond ~= RuntimeConfig.IngressBytesPerSecond)
+        or (Options.IngressBurstBytes ~= nil and Options.IngressBurstBytes ~= RuntimeConfig.IngressBurstBytes) then
+        table.clear(RuntimeState.Ingress)
+    end
+    if (Options.CharacterIntegrityWindowSeconds ~= nil and Options.CharacterIntegrityWindowSeconds ~= RuntimeConfig.CharacterIntegrityWindowSeconds)
+        or Options.EnableCharacterIntegrity == false then
+        for _, PlayerState in RuntimeState.CharacterIntegrity.Players do
+            PlayerState.Window = nil
+        end
+    end
+    for Key, Value in Options do
         RuntimeConfig[Key] = Value
     end
-
-    RuntimeState.Capture.Limit = RuntimeConfig.CaptureLimit
-    RuntimeSupport.SetCaptureRedactions(RuntimeConfig.CaptureRedactions)
+    if Options.CaptureLimit ~= nil then
+        RuntimeSupport.ResizeCapture(Options.CaptureLimit)
+    end
+    if Options.CaptureRedactions ~= nil then
+        RuntimeSupport.SetCaptureRedactions(Options.CaptureRedactions)
+    end
 end
 
 local function GetMetrics()
@@ -2969,7 +3078,7 @@ local function GetMetrics()
 
     Copy.PendingInvokes = PendingInvokes
     Copy.PendingInvokesByName = table.clone(PendingInvokesByName)
-    Copy.CapturedPackets = #RuntimeState.Capture.Entries
+    Copy.CapturedPackets = RuntimeState.Capture.Count
     return Copy
 end
 
@@ -3101,21 +3210,23 @@ function RuntimeSupport.ReadCapabilityHandshake(Source: any, Channel: string, Pa
         LastSeen = os.clock()
     }
 
-    RuntimeSupport.RecordCapture({
-        Name = "$handshake",
-        Direction = "receive",
-        Source = tostring(Source),
-        Channel = Channel,
-        Status = if Compatible then "accepted" else "dropped",
-        Reason = if Compatible then nil else "IncompatibleProtocol",
-        Size = PacketSize,
-        Payload = {
-            WireFormat = WireFormat,
-            SchemaVersion = SchemaVersion,
-            MinimumSchemaVersion = MinimumSchemaVersion,
-            SchemaHash = SchemaHash
-        }
-    })
+    if RuntimeSupport.Capturing() then
+        RuntimeSupport.RecordCapture({
+            Name = "$handshake",
+            Direction = "receive",
+            Source = tostring(Source),
+            Channel = Channel,
+            Status = if Compatible then "accepted" else "dropped",
+            Reason = if Compatible then nil else "IncompatibleProtocol",
+            Size = PacketSize,
+            Payload = {
+                WireFormat = WireFormat,
+                SchemaVersion = SchemaVersion,
+                MinimumSchemaVersion = MinimumSchemaVersion,
+                SchemaHash = SchemaHash
+            }
+        })
+    end
 
     if not Compatible then
         DropPacket(Source, Channel, "IncompatibleProtocol", PacketSize)
@@ -3266,6 +3377,16 @@ end
 --> generated module sits just under it.
 local Frame = { CollectionEntries = 0, InExport = false }
 
+--> For standalone replay, keep only dictionary values this message actually
+--> reads from prior messages. New literals retain their original starting id.
+function Frame.CaptureStringContext(NextId: number): any?
+    if NextId > 1 and RuntimeConfig.UseStringDictionaries and RuntimeSupport.Capturing()
+        and not (RuntimeConfig.NoRawCaptureInProduction and RuntimeConfig.SecurityProfile ~= "Development") then
+        return {NextId = NextId, Strings = {}}
+    end
+    return nil
+end
+
 function Frame.CheckCollection(Count: number)
     Frame.CollectionEntries += Count
     if Count > RuntimeConfig.MaxTableKeys or Frame.CollectionEntries > RuntimeConfig.MaxDecodeOperations then
@@ -3333,15 +3454,15 @@ end
 --> Exactly the per-packet reset the generator used to emit inline. Size and
 --> instances are deliberately NOT touched here: the caller sets those only on
 --> the reassembly path, and folding them in would clobber the normal path.
-function Frame.BeginMessages(Buffer: buffer)
+function Frame.BeginMessages(Buffer: buffer, StringContext: any?)
     RecieveCursor = 0
     RecieveBuffer = Buffer
     State.RecieveBuffer = Buffer
     State.RecieveInstanceCursor = 0
     RecieveBitByte = 0
     RecieveBitCount = 0
-    RecieveStrings = {}
-    NextRecieveStringId = 1
+    RecieveStrings = if StringContext then table.clone(StringContext.Strings) else {}
+    NextRecieveStringId = if StringContext then StringContext.NextId else 1
 end
 
 --> Nested frames (an invocation read inside another read) save the whole
@@ -3355,6 +3476,12 @@ function Frame.SaveFrame(): any
         CollectionEntries = Frame.CollectionEntries,
         InExport = Frame.InExport,
         FrameInstanceEnd = RecieveFrameInstanceEnd,
+        InstanceStart = Frame.InstanceStart,
+        MessageStart = RecieveMessageStart,
+        Sequence = State.RecieveSequence,
+        ReadStrings = Frame.ReadStrings,
+        Source = RecieveSource,
+        Channel = RecieveChannel,
         BitByte = RecieveBitByte,
         BitCount = RecieveBitCount,
         Strings = RecieveStrings,
@@ -3369,6 +3496,7 @@ function Frame.EnterFrame(Buffer: buffer)
     local Size = buffer.len(Buffer)
     Frame.BeginMessages(Buffer)
     Frame.InExport = true
+    Frame.ReadStrings = nil
     Frame.CollectionEntries = 0
     State.RecieveSize = Size
     RecieveFrameEnd = 0
@@ -3386,6 +3514,12 @@ function Frame.RestoreFrame(Saved: any)
     State.RecieveSize = Saved.Size
     RecieveFrameEnd = Saved.FrameEnd
     RecieveFrameInstanceEnd = Saved.FrameInstanceEnd
+    Frame.InstanceStart = Saved.InstanceStart
+    Frame.ReadStrings = Saved.ReadStrings
+    RecieveMessageStart = Saved.MessageStart
+    State.RecieveSequence = Saved.Sequence
+    RecieveSource = Saved.Source
+    RecieveChannel = Saved.Channel
     RecieveBitByte = Saved.BitByte
     RecieveBitCount = Saved.BitCount
     RecieveStrings = Saved.Strings
@@ -3393,6 +3527,16 @@ function Frame.RestoreFrame(Saved: any)
     State.RecieveInstances = Saved.Instances
     State.RecieveInstanceCursor = Saved.InstanceCursor
     RecievePredictionId = Saved.PredictionId
+end
+
+function Frame.Replay(Processor: (...any) -> (), ...: any)
+    local Saved = Frame.SaveFrame()
+    Frame.InExport = false
+    local Success, Failure = pcall(Processor, ...)
+    Frame.RestoreFrame(Saved)
+    if not Success then
+        error(Failure, 0)
+    end
 end
 
 local function WriteBit(Value: boolean)
@@ -3445,21 +3589,27 @@ local function TrackSend(Channel: string, Size: number, Target: any?)
     })
 end
 
-local function TrackEventSend(Name: string, Channel: string, Size: number, Target: any?, Payload: any?)
+local function TrackEventSend(Name: string, Channel: string, Size: number, Target: any?, Payload: any?, InstanceStart: number, StringContext: any?)
     MetricAdd("EventBytesSent", Name, Size)
-    RuntimeSupport.RecordCapture({
-        Name = Name,
-        Direction = "send",
-        Target = tostring(Target),
-        Channel = Channel,
-        Status = "accepted",
-        Size = Size,
-        Payload = Payload,
-        RawBuffer = SendBuffer,
-        RawBufferStart = SendCursor - Size,
-        RawBufferSize = Size,
-        RawInstances = SendInstances
-    })
+    if RuntimeSupport.Capturing() then
+        RuntimeSupport.RecordCapture({
+            Name = Name,
+            Direction = "send",
+            Target = tostring(Target),
+            UserId = if Target ~= nil then TryGetUserId(Target) else nil,
+            Channel = Channel,
+            Status = "accepted",
+            Size = Size,
+            Payload = Payload,
+            RawBuffer = SendBuffer,
+            RawBufferStart = SendCursor - Size,
+            RawBufferSize = Size,
+            InstanceStart = InstanceStart,
+            InstanceEnd = #SendInstances,
+            StringContext = StringContext,
+            RawInstances = SendInstances
+        })
+    end
     RunHooks("AfterSend", {
         Name = Name,
         Channel = Channel,
@@ -3470,20 +3620,25 @@ end
 
 local function TrackEventReceive(Name: string, Channel: string, Size: number, Source: any?, Payload: any?)
     MetricAdd("EventBytesReceived", Name, Size)
-    RuntimeSupport.RecordCapture({
-        Name = Name,
-        Direction = "receive",
-        Source = tostring(Source),
-        UserId = TryGetUserId(Source),
-        Channel = Channel,
-        Status = "accepted",
-        Size = Size,
-        Payload = Payload,
-        RawBuffer = RecieveBuffer,
-        RawBufferStart = RecieveMessageStart,
-        RawBufferSize = RecieveCursor - RecieveMessageStart,
-        RawInstances = State.RecieveInstances
-    })
+    if RuntimeSupport.Capturing() then
+        RuntimeSupport.RecordCapture({
+            Name = Name,
+            Direction = "receive",
+            Source = tostring(Source),
+            UserId = TryGetUserId(Source),
+            Channel = Channel,
+            Status = "accepted",
+            Size = Size,
+            Payload = Payload,
+            RawBuffer = RecieveBuffer,
+            RawBufferStart = RecieveMessageStart,
+            RawBufferSize = RecieveCursor - RecieveMessageStart,
+            InstanceStart = Frame.InstanceStart,
+            InstanceEnd = State.RecieveInstanceCursor,
+            StringContext = Frame.ReadStrings,
+            RawInstances = State.RecieveInstances
+        })
+    end
     RunHooks("AfterReceive", {
         Name = Name,
         Source = Source,
@@ -3514,7 +3669,6 @@ function RuntimeSupport.WriteEvent(
     ...: any
 ): (boolean, string?)
     if not BeforeSend(Name, Channel, Target) then
-        DropPacket(Target, Channel, TransportError.MiddlewareRejected, 0, Name)
         return false, nil
     end
 
@@ -3525,7 +3679,11 @@ function RuntimeSupport.WriteEvent(
     local Cursor, InstanceCount, StringId = Frame.Mark()
     local PreviousPredictionId = State.SendPredictionId
     State.SendPredictionId = PredictionId
+    local PreviousStrings = Frame.WriteStrings
+    local StringContext = Frame.CaptureStringContext(StringId)
+    Frame.WriteStrings = StringContext
     local Success, Error = pcall(Writer, ...)
+    Frame.WriteStrings = PreviousStrings
     State.SendPredictionId = PreviousPredictionId
     if not Success then
         Frame.Rewind(Cursor, InstanceCount, StringId)
@@ -3545,7 +3703,7 @@ function RuntimeSupport.WriteEvent(
         end
     end
 
-    TrackEventSend(Name, Channel, Size, Target, if RuntimeState.Capture.Enabled then table.pack(...) else nil)
+    TrackEventSend(Name, Channel, Size, Target, if RuntimeSupport.Capturing() then table.pack(...) else nil, InstanceCount, StringContext)
     return true, nil
 end
 
@@ -3726,6 +3884,50 @@ local function CheckRateLimit(Source: any, Key: string, Rate: number?, Burst: nu
     return true
 end
 
+function RuntimeSupport.IngressCapacity(): number
+    return if RuntimeConfig.IngressBurstBytes > 0 then RuntimeConfig.IngressBurstBytes else RuntimeConfig.IngressBytesPerSecond
+end
+
+function RuntimeSupport.IngressTokens(Peer: any, Now: number): number
+    return math.min(RuntimeSupport.IngressCapacity(), Peer.Tokens + math.max(0, Now - Peer.Updated) * RuntimeConfig.IngressBytesPerSecond)
+end
+
+function RuntimeSupport.IngressSnapshot(Source: any?): any
+    local Peer = RuntimeState.Ingress[RuntimeSupport.PeerKey(Source)]
+    if not Peer then
+        return nil
+    end
+    return {
+        AvailableBytes = math.floor(RuntimeSupport.IngressTokens(Peer, os.clock())),
+        AdmittedBytes = Peer.AdmittedBytes,
+        AdmittedPackets = Peer.AdmittedPackets,
+        DroppedBytes = Peer.DroppedBytes,
+        DroppedPackets = Peer.DroppedPackets,
+    }
+end
+
+function RuntimeSupport.AdmitIngress(Source: any, Channel: string, Size: number): boolean
+    local Key = RuntimeSupport.PeerKey(Source)
+    local Now = os.clock()
+    local Peer = RuntimeState.Ingress[Key]
+    if not Peer then
+        Peer = {Tokens = RuntimeSupport.IngressCapacity(), Updated = Now, AdmittedBytes = 0, AdmittedPackets = 0, DroppedBytes = 0, DroppedPackets = 0}
+        RuntimeState.Ingress[Key] = Peer
+    end
+    Peer.Tokens = RuntimeSupport.IngressTokens(Peer, Now)
+    Peer.Updated = Now
+    if Size > Peer.Tokens then
+        Peer.DroppedBytes += Size
+        Peer.DroppedPackets += 1
+        DropPacket(Source, Channel, TransportError.IngressByteLimit, Size)
+        return false
+    end
+    Peer.Tokens -= Size
+    Peer.AdmittedBytes += Size
+    Peer.AdmittedPackets += 1
+    return true
+end
+
 local function ValidateIncoming(Source: any, Channel: string, IncomingBuffer: any, Instances: {Instance}?)
     if typeof(IncomingBuffer) ~= "buffer" then
         DropPacket(Source, Channel, "InvalidBuffer")
@@ -3750,10 +3952,23 @@ local function ValidateIncoming(Source: any, Channel: string, IncomingBuffer: an
         return nil
     end
 
+    if RuntimeConfig.IngressBytesPerSecond > 0 and not RuntimeSupport.AdmitIngress(Source, Channel, Size) then
+        return nil
+    end
+
     if Instances ~= nil then
         if typeof(Instances) ~= "table" then
             DropPacket(Source, Channel, "InvalidInstances", Size)
             return nil
+        end
+        local MaxReferences = RuntimeConfig.MaxPacketReferences
+        if MaxReferences > 0 then
+            for Slot in Instances do
+                if type(Slot) ~= "number" or Slot < 1 or Slot > MaxReferences or Slot % 1 ~= 0 then
+                    DropPacket(Source, Channel, TransportError.ReferenceLimit, Size)
+                    return nil
+                end
+            end
         end
     end
 
@@ -4208,6 +4423,8 @@ local function BeginReadMessage(PacketSize: number): number?
     AlignReadBits()
     Frame.CollectionEntries = 0
     RecieveMessageStart = RecieveCursor
+    Frame.InstanceStart = State.RecieveInstanceCursor
+    Frame.ReadStrings = Frame.CaptureStringContext(NextRecieveStringId)
     RecieveFrameEnd = 0
     RecieveFrameInstanceEnd = State.RecieveInstanceCursor
     RecievePredictionId = nil
@@ -4229,6 +4446,11 @@ local function BeginReadMessage(PacketSize: number): number?
 
     RecieveFrameEnd = FrameEnd
     RecieveFrameInstanceEnd = State.RecieveInstanceCursor + InstanceCount
+    if RuntimeConfig.MaxPacketReferences > 0 and RecieveFrameInstanceEnd > RuntimeConfig.MaxPacketReferences then
+        DropPacket(RecieveSource, RecieveChannel, TransportError.ReferenceLimit, PacketSize)
+        RecieveCursor = PacketSize
+        return nil
+    end
     return Index
 end
 
@@ -4290,6 +4512,9 @@ local function WriteStringValue(Value: string, LengthBytes: number)
         else
             local Existing = SendStringIds[Value]
             if Existing then
+                if Frame.WriteStrings and Existing < Frame.WriteStrings.NextId then
+                    Frame.WriteStrings.Strings[Existing] = Value
+                end
                 WriteVarint(Existing + 1)
                 return
             end
@@ -4316,6 +4541,9 @@ local function ReadStringValue(LengthBytes: number): string
                 error(`[Cheeto]: Unknown interned string id {Marker - 1}.`)
             end
 
+            if Frame.ReadStrings and Marker - 1 < Frame.ReadStrings.NextId then
+                Frame.ReadStrings.Strings[Marker - 1] = Value
+            end
             return Value
         end
     end
@@ -5206,6 +5434,7 @@ end
 local function ClearPlayerRuntimeState(Player: Player)
     RuntimeState.Fragments[Player] = nil
     RuntimeState.RateLimit[Player] = nil
+    RuntimeState.Ingress[Player] = nil
     RuntimeState.Transport[Player] = nil
     RuntimeState.Replay[Player] = nil
     RuntimeState.InvokeNonces[Player] = nil

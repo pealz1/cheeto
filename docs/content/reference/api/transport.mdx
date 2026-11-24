@@ -26,6 +26,12 @@ Network.Security.OnViolation(function(report)
 end)
 ```
 
+## Ingress
+
+<Sig side="both">{"Ingress(peer: any?): IngressStats?"}</Sig>
+
+Returns `AvailableBytes`, `AdmittedBytes`, `AdmittedPackets`, `DroppedBytes` and `DroppedPackets` for the peer's shared byte budget. Admitted counts measure physical packets that passed this check, including fragments. Subsequent validation can still drop them. The available balance includes refill through the time of the read. The result is `nil` until the enabled budget sees traffic from that peer. Player removal clears its counters.
+
 ## Snapshot
 
 <Sig side="both">{"Snapshot(peer: any?): TransportState | {[string]: TransportState}"}</Sig>

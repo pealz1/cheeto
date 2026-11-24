@@ -340,6 +340,10 @@ local function RuntimeConfigLines(): { string }
 		`\tEnableMicroProfiler = {BooleanLiteral(Options.EnableMicroProfiler, true)},\n`,
 		`\tEnableHoneypots = {BooleanLiteral(Options.EnableHoneypots, true)},\n`,
 		`\tCaptureRedactions = "{Options.CaptureRedactions or ""}",\n`,
+		`\tIngressBytesPerSecond = {NumberLiteral(Options.IngressBytesPerSecond, 0)},\n`,
+		`\tIngressBurstBytes = {NumberLiteral(Options.IngressBurstBytes, 0)},\n`,
+		`\tMaxPacketReferences = {NumberLiteral(Options.MaxPacketReferences, 0)},\n`,
+		`\tCharacterIntegrityWindowSeconds = {NumberLiteral(Options.CharacterIntegrityWindowSeconds, 0)},\n`,
 		`\tCaptureLimit = {NumberLiteral(Options.CaptureLimit, 1024)},\n`,
 		`\tEnableInspector = {BooleanLiteral(Options.EnableInspector, false)},\n`,
 		`\tEnableReplicationAdapters = {BooleanLiteral(Options.EnableReplicationAdapters, true)},\n`,
@@ -446,7 +450,7 @@ local function GetEventBody(Channel: string): { string }
 		table.insert(Body, "State.RecieveInstances = Instances or {}\n")
 	end
 
-	table.insert(Body, "Frame.BeginMessages(Buffer)\n")
+	table.insert(Body, "Frame.BeginMessages(Buffer, StringContext)\n")
 
 	return Body
 end
@@ -767,6 +771,7 @@ local function PushRuntimeApi(Target: Builder.Builder, Indent: number, ReplayRaw
 	Target.Push(`}),`, 0, Indent)
 	Target.Push(`Transport = table.freeze(\{`, 0, Indent)
 	Target.Push(`Errors = TransportError,`, 0, Indent + 1)
+	Target.Push(`Ingress = RuntimeSupport.IngressSnapshot,`, 0, Indent + 1)
 	Target.Push(`RecordQueuedEvent = RuntimeSupport.RecordQueuedEvent,`, 0, Indent + 1)
 	Target.Push(`RecordFlush = RuntimeSupport.RecordFlush,`, 0, Indent + 1)
 	Target.Push(`ShouldFlush = RuntimeSupport.ShouldFlush,`, 0, Indent + 1)
@@ -2825,7 +2830,8 @@ function Generator.Generate(FileContext: Context, AbstractSyntaxTree: Parser.Bod
 
 	--> Setup remote events
 	local Signal = Context == "Client" and "OnClientEvent" or "OnServerEvent"
-	local Arguments = (Context == "Server" and "Player: Player, " or "") .. "Buffer: buffer, Instances: {Instance}?"
+	local Arguments = (Context == "Server" and "Player: Player, " or "")
+		.. "Buffer: buffer, Instances: {Instance}?, StringContext: any?"
 	local ReliableProcessor = "ProcessReliablePacket"
 	local UnreliableProcessor = "ProcessUnreliablePacket"
 
@@ -2970,31 +2976,26 @@ function Generator.Generate(FileContext: Context, AbstractSyntaxTree: Parser.Bod
 	local ReplayRaw =
 		Blocks.Function("ReplayRawCapture", "Entries: {{[string]: any}}, SourceOverride: any?", nil, nil, true)
 	ReplayRaw:Line("return RuntimeSupport.ReplayRawCapture(Entries, function(Entry, RawBuffer, RawInstances)")
-	ReplayRaw:Line(`if Entry.Channel == "Unreliable" then`, 1)
-	if Context == "Server" then
-		ReplayRaw:Line(
-			`{UnreliableProcessor}(SourceOverride or Entry.Source or SERVER_PEER_KEY, RawBuffer, RawInstances)`,
-			2
-		)
-		ReplayRaw:Line("else", 1)
-		ReplayRaw:Line(
-			`{ReliableProcessor}(SourceOverride or Entry.Source or SERVER_PEER_KEY, RawBuffer, RawInstances)`,
-			2
-		)
-	else
-		ReplayRaw:Line(`{UnreliableProcessor}(RawBuffer, RawInstances)`, 2)
-		ReplayRaw:Line("else", 1)
-		ReplayRaw:Line(`{ReliableProcessor}(RawBuffer, RawInstances)`, 2)
-	end
-	ReplayRaw:Line("end", 1)
+	ReplayRaw:Line(
+		`local Processor = if Entry.Channel == "Unreliable" then {UnreliableProcessor} else {ReliableProcessor}`,
+		1
+	)
+	local ReplaySource = if Context == "Server" then "SourceOverride or Entry.Source or SERVER_PEER_KEY, " else ""
+	ReplayRaw:Line(`Frame.Replay(Processor, {ReplaySource}RawBuffer, RawInstances, Entry.StringContext)`, 1)
 	ReplayRaw:Line("end)")
 	ReplayRaw:End()
 
+	local Params = if Context == "Client" then "Packet, Instances" else "Player, Packet, Instances"
+	local function RemoteCallback(Processor: string): string
+		return `function({Params}) {Processor}({Params}, nil) end`
+	end
 	if Context == "Client" then
-		Connections.Push(`BindClientRemotes({ReliableProcessor}, {UnreliableProcessor})`)
+		Connections.Push(
+			`BindClientRemotes({RemoteCallback(ReliableProcessor)}, {RemoteCallback(UnreliableProcessor)})`
+		)
 	else
-		Connections.Push(`Reliable.{Signal}:Connect({ReliableProcessor})`)
-		Connections.Push(`Unreliable.{Signal}:Connect({UnreliableProcessor})`)
+		Connections.Push(`Reliable.{Signal}:Connect({RemoteCallback(ReliableProcessor)})`)
+		Connections.Push(`Unreliable.{Signal}:Connect({RemoteCallback(UnreliableProcessor)})`)
 	end
 	PushRuntimeApi(Return, 1, "ReplayRawCapture")
 

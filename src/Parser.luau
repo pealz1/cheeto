@@ -134,6 +134,10 @@ export type Options = {
 	EnableHoneypots: boolean?,
 	EnablePacketCapture: boolean?,
 	CaptureRedactions: string?,
+	IngressBytesPerSecond: number?,
+	IngressBurstBytes: number?,
+	MaxPacketReferences: number?,
+	CharacterIntegrityWindowSeconds: number?,
 	CaptureLimit: number?,
 	EnableInspector: boolean?,
 	EnableReplicationAdapters: boolean?,
@@ -409,6 +413,10 @@ local OPTIONS: { [string]: Lexer.Types } = {
 	EnableHoneypots = "Boolean",
 	EnablePacketCapture = "Boolean",
 	CaptureRedactions = "String",
+	IngressBytesPerSecond = "Number",
+	IngressBurstBytes = "Number",
+	MaxPacketReferences = "Number",
+	CharacterIntegrityWindowSeconds = "Number",
 	CaptureLimit = "Number",
 	EnableInspector = "Boolean",
 	EnableReplicationAdapters = "Boolean",
@@ -1359,6 +1367,25 @@ function Parser.Options(self: Parser): Options
 		end
 
 		local Value = self:Consume(Type)
+		local IntegerLimit = Name == "MaxPacketReferences" or Name == "CaptureLimit"
+		if
+			IntegerLimit
+			or Name == "IngressBytesPerSecond"
+			or Name == "IngressBurstBytes"
+			or Name == "CharacterIntegrityWindowSeconds"
+		then
+			local Limit = Value.Value :: number
+			if Limit < 0 or Limit >= math.huge or (IntegerLimit and Limit % 1 ~= 0) then
+				Error.new(Error.AnalyzeInvalidRange, self.Source, `Invalid {Name}`, self.File)
+					:Primary(
+						Value,
+						if IntegerLimit
+							then "Expected a finite nonnegative integer"
+							else "Expected a finite nonnegative number"
+					)
+					:Emit()
+			end
+		end
 		Options[Name] = Value.Value
 	end
 

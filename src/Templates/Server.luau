@@ -208,7 +208,7 @@ end
 function RuntimeSupport.SendUnreliable(Targets: any, Except: Player?, Priority: string?)
     local Size = SendCursor
     if RuntimeConfig.MaxUnreliablePacketBytes > 0 and Size > RuntimeConfig.MaxUnreliablePacketBytes then
-        DropPacket(if type(Targets) == "table" then nil else Targets, "Unreliable", "MaxPacketBytes", Size)
+        DropPacket(if type(Targets) == "table" then nil else Targets, "Unreliable", "MaxPacketBytes", Size, nil, true)
         return
     end
 
@@ -373,7 +373,9 @@ function RuntimeSupport.SetMovementLimits(Player: any, Limits: {[string]: number
                 "[Cheeto]: Movement limits must be finite speeds of at least one stud per second.")
         end
     end
-    RuntimeSupport.GetCharacterIntegrityPlayer(Player).Limits = if Limits then table.clone(Limits) else nil
+    local PlayerState = RuntimeSupport.GetCharacterIntegrityPlayer(Player)
+    PlayerState.Limits = if Limits then table.clone(Limits) else nil
+    PlayerState.Window = nil
 end
 
 function RuntimeSupport.GrantCharacterIntegrityGrace(Player: any, Seconds: number?, Reason: string?)
@@ -382,6 +384,7 @@ function RuntimeSupport.GrantCharacterIntegrityGrace(Player: any, Seconds: numbe
     assert(Seconds == nil or RuntimeSupport.FiniteNumber(Seconds), "[Cheeto]: Expected finite grace seconds.")
     local Duration = math.max(0, Seconds or RuntimeConfig.CharacterIntegrityTeleportGraceSeconds)
     PlayerState.GraceUntil = math.max(PlayerState.GraceUntil, Now + Duration)
+    PlayerState.Window = nil
     PlayerState.LastReason = Reason or "grace"
     PlayerState.ConsecutiveBreaches = 0
 end
@@ -410,6 +413,7 @@ function RuntimeSupport.ReconcileCharacterIntegrity(Player: any, ResetScore: boo
     if not RuntimeSupport.FiniteComponents(RootCFrame:GetComponents()) then
         return false
     end
+    PlayerState.Window = nil
     PlayerState.Character = Character
     PlayerState.LastPosition = Root.Position
     PlayerState.LastSafeCFrame = RootCFrame
@@ -480,6 +484,7 @@ function RuntimeSupport.CorrectCharacter(PlayerState: any, Character: any, Root:
         Root.AssemblyAngularVelocity = Vector3.zero
     end)
     if Corrected then
+        PlayerState.Window = nil
         PlayerState.LastCorrectionAt = Now + math.max(0, RuntimeConfig.CharacterIntegrityCorrectionCooldownSeconds)
         PlayerState.GraceUntil = Now + math.max(0, RuntimeConfig.CharacterIntegrityTeleportGraceSeconds)
         PlayerState.LastPosition = PlayerState.LastSafeCFrame.Position
@@ -487,6 +492,38 @@ function RuntimeSupport.CorrectCharacter(PlayerState: any, Character: any, Root:
         MetricAdd("CharacterIntegrityActions", "corrected")
     end
     return Corrected
+end
+
+--> Keep one distance total per player. Latency and positional slack cover one
+--> burst in a window, while the movement allowance accrues on every sample.
+function RuntimeSupport.CheckMovementWindow(PlayerState: any, Evaluation: any, Distance: number, DeltaTime: number): string?
+    local Duration = RuntimeConfig.CharacterIntegrityWindowSeconds
+    if Duration <= 0 or Evaluation.Suspicious or Evaluation.HorizontalTravel == nil then
+        PlayerState.Window = nil
+        return nil
+    end
+    local Window = PlayerState.Window
+    if not Window then
+        Window = {Elapsed = 0, Distance = 0, Travel = 0, Slack = 0}
+        PlayerState.Window = Window
+    end
+    Window.Elapsed += DeltaTime
+    Window.Distance += Distance
+    Window.Travel += Evaluation.HorizontalTravel
+    Window.Slack = math.max(Window.Slack, Evaluation.HorizontalSlack)
+    if Window.Elapsed < Duration then
+        return nil
+    end
+
+    PlayerState.Window = nil
+    local Allowed = Window.Travel + Window.Slack
+    if Window.Distance > Allowed then
+        Evaluation.Suspicious = true
+        Evaluation.Reasons = {"SustainedHorizontalDisplacement"}
+        Evaluation.Weight = math.clamp(math.floor(Window.Distance / math.max(1, Allowed)), 2, 8)
+        return string.format("distance:%.2f;allowed:%.2f;seconds:%.3f", Window.Distance, Allowed, Window.Elapsed)
+    end
+    return nil
 end
 
 function RuntimeSupport.StepCharacterIntegrityPlayer(Player: any, Now: number)
@@ -499,6 +536,7 @@ function RuntimeSupport.StepCharacterIntegrityPlayer(Player: any, Now: number)
 
     local Character, Root, Humanoid, RootCFrame = RuntimeSupport.ReadCharacterSnapshot(Player)
     if Character == nil or Root == nil or Humanoid == nil then
+        PlayerState.Window = nil
         PlayerState.Character = nil
         PlayerState.LastPosition = nil
         PlayerState.LastSampleAt = 0
@@ -506,6 +544,7 @@ function RuntimeSupport.StepCharacterIntegrityPlayer(Player: any, Now: number)
     end
 
     if not RuntimeSupport.FiniteComponents(RootCFrame:GetComponents()) then
+        PlayerState.Window = nil
         PlayerState.ConsecutiveBreaches += 1
         local _, Action = RuntimeSupport.ReportCharacterIntegrity(Player, "NonFiniteMovement", 12, "root transform")
         if Action == "correct" then
@@ -515,6 +554,7 @@ function RuntimeSupport.StepCharacterIntegrityPlayer(Player: any, Now: number)
     end
 
     if PlayerState.Character ~= Character or PlayerState.LastPosition == nil or PlayerState.LastSampleAt <= 0 then
+        PlayerState.Window = nil
         PlayerState.Character = Character
         PlayerState.LastPosition = Root.Position
         PlayerState.LastSafeCFrame = RootCFrame
@@ -532,6 +572,7 @@ function RuntimeSupport.StepCharacterIntegrityPlayer(Player: any, Now: number)
     PlayerState.LastSampleAt = Now
 
     if Now < PlayerState.GraceUntil then
+        PlayerState.Window = nil
         PlayerState.LastPosition = Position
         PlayerState.LastSafeCFrame = RootCFrame
         PlayerState.ConsecutiveBreaches = 0
@@ -562,6 +603,7 @@ function RuntimeSupport.StepCharacterIntegrityPlayer(Player: any, Now: number)
             and RuntimeSupport.CharacterPathBlocked(PlayerState, Root, PlayerState.LastPosition, Delta),
     }, PlayerState.Limits)
 
+    local WindowDetail = RuntimeSupport.CheckMovementWindow(PlayerState, Evaluation, HorizontalDelta.Magnitude, DeltaTime)
     if Evaluation.Resync then
         PlayerState.LastPosition = Position
         PlayerState.LastSafeCFrame = RootCFrame
@@ -571,8 +613,10 @@ function RuntimeSupport.StepCharacterIntegrityPlayer(Player: any, Now: number)
 
     if not Evaluation.Suspicious then
         PlayerState.LastPosition = Position
-        PlayerState.LastSafeCFrame = RootCFrame
-        PlayerState.ConsecutiveBreaches = 0
+        if PlayerState.Window == nil then
+            PlayerState.LastSafeCFrame = RootCFrame
+            PlayerState.ConsecutiveBreaches = 0
+        end
         return
     end
 
@@ -582,7 +626,7 @@ function RuntimeSupport.StepCharacterIntegrityPlayer(Player: any, Now: number)
         Player,
         Reason,
         Evaluation.Weight,
-        `horizontal:{math.floor(HorizontalDelta.Magnitude * 100) / 100};vertical:{math.floor(Delta.Y * 100) / 100};dt:{math.floor(DeltaTime * 1000) / 1000}`
+        WindowDetail or `horizontal:{math.floor(HorizontalDelta.Magnitude * 100) / 100};vertical:{math.floor(Delta.Y * 100) / 100};dt:{math.floor(DeltaTime * 1000) / 1000}`
     )
 
     if Action ~= "correct" or not RuntimeSupport.CorrectCharacter(PlayerState, Character, Root, Now) then
@@ -663,7 +707,7 @@ local function StepReplication()
         end
 
         if RuntimeConfig.MaxReliablePacketBytes > 0 and Send.Cursor > RuntimeConfig.MaxReliablePacketBytes then
-            DropPacket(Player, "Reliable", "MaxPacketBytes", Send.Cursor)
+            DropPacket(Player, "Reliable", "MaxPacketBytes", Send.Cursor, nil, true)
             RuntimeSupport.RecordFlush(Player, "Reliable", 0)
         elseif IsPlayerActive(Player) then
             RuntimeSupport.SendReliablePacket(Player, Send.Buffer, Send.Cursor, InstancePayload(Send.Instances))

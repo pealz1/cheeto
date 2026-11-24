@@ -18,6 +18,9 @@ Defaults come from [`SecurityProfile`](/reference/options/security#securityprofi
 | [`MaxUnreliablePacketBytes`](#maxunreliablepacketbytes) | 1,000 | 1,000 | 900 |
 | [`RateLimitPerSecond`](#ratelimitpersecond) | 0 (off) | 120 | 60 |
 | [`RateLimitBurst`](#ratelimitburst) | 0 | 240 | 120 |
+| [`IngressBytesPerSecond`](#ingressbytespersecond) | 0 | 0 | 0 |
+| [`IngressBurstBytes`](#ingressburstbytes) | 0 | 0 | 0 |
+| [`MaxPacketReferences`](#maxpacketreferences) | 0 | 0 | 0 |
 | [`MaxQueuedBytes`](#maxqueuedbytes) | 262,144 | 131,072 | 65,536 |
 | [`MaxBurstBytes`](#maxburstbytes) | 65,536 | 32,768 | 16,384 |
 | [`MaxPendingInvokes`](#maxpendinginvokes) | 256 | 64 | 32 |
@@ -67,7 +70,7 @@ A token bucket that refills at this many tokens per second, per sender. `0` disa
 1. **Per remote call.** The runtime value (profile default or your option) limits how many reliable or unreliable remote calls one peer can make per second. The reliable and unreliable remotes have separate buckets. Excess calls are dropped whole with `RateLimit`.
 2. **Per endpoint.** Only when you set the option explicitly in the schema, or set `RateLimitPerSecond` on the endpoint, is a bucket compiled into that endpoint's receive path. Excess events on that endpoint are dropped with `RateLimit`; other events in the same packet still run.
 
-Both sides enforce it. A client also rate-limits what it receives from the server, so a server that sends many separate unreliable events per second to one player can hit the client's per-call limit. Unreliable events are not batched.
+Both sides enforce it. A client also rate-limits what it receives from the server, so a server that sends many separate unreliable events per second to one player can hit the client's per-call limit. With `BatchUnreliable` enabled, each flushed batch counts as one call.
 
 ```cheeto copy
 option RateLimitPerSecond = 60
@@ -79,6 +82,24 @@ option RateLimitBurst = 120
 <Spec type="number" default={<>0 / 240 / 120 by profile; equal to <code>RateLimitPerSecond</code> when only that is set</>} on="option, event, function, channel" />
 
 Bucket capacity: how many calls can arrive back to back before the per-second rate applies. `0` means "same as `RateLimitPerSecond`".
+
+### `IngressBytesPerSecond`
+
+<Spec type="number (bytes/s)" default={<code>0</code>} />
+
+Sets the number of buffer bytes a peer regains each second. Reliable and unreliable traffic share one bucket. Both sides apply it after packet size and call-rate checks and before decoding. Each fragment uses its physical size including its header. Zero disables the budget. Read [Transport.Ingress](/reference/api/transport#ingress) for per-peer counters.
+
+### `IngressBurstBytes`
+
+<Spec type="number (bytes)" default={<code>0</code>} />
+
+Sets the bucket capacity and starting balance. Zero uses one second of the configured byte rate. Allow enough capacity for the largest physical packet your game sends. Changing either ingress option resets the balances and counters.
+
+### `MaxPacketReferences`
+
+<Spec type="integer (slots)" default={<code>0</code>} />
+
+Caps the numbered slots in a packet's reference table and the total slots its message headers declare. Replicated instances can be absent, so gaps within the limit are valid. This counts top-level slots, including values sent through `unknown`. Zero disables the cap.
 
 ## Queues
 

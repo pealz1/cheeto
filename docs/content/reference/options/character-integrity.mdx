@@ -28,6 +28,7 @@ allowedV   = the same with MaxVerticalSpeed and vertical speed
 | [`CharacterIntegrityJoinGraceSeconds`](#characterintegrityjoingraceseconds) | number | `5` |
 | [`CharacterIntegrityTeleportGraceSeconds`](#characterintegrityteleportgraceseconds) | number | `2` |
 | [`CharacterIntegrityMaxStepSeconds`](#characterintegritymaxstepseconds) | number | `1.5` |
+| [`CharacterIntegrityWindowSeconds`](#characterintegritywindowseconds) | number | `0` |
 | [`CharacterIntegrityMaxHorizontalSpeed`](#characterintegritymaxhorizontalspeed) | number | `64` |
 | [`CharacterIntegrityMaxVerticalSpeed`](#characterintegritymaxverticalspeed) | number | `120` |
 | [`CharacterIntegritySpeedMultiplier`](#characterintegrityspeedmultiplier) | number | `1.75` |
@@ -91,6 +92,14 @@ No scoring for this long after [`Security.TeleportCharacter`](/reference/api/sec
 <Spec type="number (seconds)" default={<code>1.5</code>} />
 
 If more time than this passed between two samples, for example during a server hitch, the sample is not scored and tracking resynchronizes from the current position. Minimum `0.1`.
+
+## `CharacterIntegrityWindowSeconds`
+
+<Spec type="number (seconds)" default={<code>0</code>} />
+
+Checks horizontal distance over consecutive samples. For example, `2` adds up two seconds of observed travel, grants speed and velocity allowance for the elapsed time, and grants positional slack and the largest ping allowance once. Exceeding the total records `SustainedHorizontalDisplacement` with the measured distance, allowance and elapsed time. The usual scoring, correction and kick settings apply. During a partial window the correction target stays at the last accepted window boundary.
+
+Zero disables the check. A seated sample, server hitch, grace period, character change, reconciliation, or change to a player's movement limits clears partial evidence.
 
 ## `CharacterIntegrityMaxHorizontalSpeed`
 

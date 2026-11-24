@@ -32,26 +32,39 @@ Deletes every recorded entry.
 
 ## Entries
 
-<Sig side="both">{"Entries(): {CaptureEntry}"}</Sig>
+<Sig side="both">{"Entries(filter: CaptureFilter?): {CaptureEntry}"}</Sig>
 
-A copy of the recorded entries, oldest first. Each entry has:
+Returns matching entries oldest first. Supply any combination of `Name`, `Direction`, `Channel`, `Status`, `Reason` and `UserId`. `Limit` selects the newest matches. A zero limit returns an empty list.
+
+```lua copy
+local recent = Network.Capture.Entries({
+    UserId = player.UserId,
+    Status = "dropped",
+    Reason = "IngressByteLimit",
+    Limit = 10,
+})
+```
+
+Each entry includes the following fields.
 
 | Field | Meaning |
 | --- | --- |
 | `Name` | Endpoint name, `$handshake`, or `nil` for packet-level drops |
 | `Direction` | `"send"` or `"receive"` |
 | `Source` / `Target` | The peer, as a string |
-| `UserId` | Sender's user id, for received events |
+| `UserId` | Player's user id, when available |
 | `Channel` | `"Reliable"` or `"Unreliable"` |
 | `Status` | `"accepted"` or `"dropped"` |
 | `Reason` | Drop reason, for dropped entries |
 | `Size` | Bytes |
 | `PayloadSummary` | Readable summary of the values, with redacted fields shown as `[redacted]` |
-| `Buffer`, `Instances` | Copy of the raw bytes and instances, when kept |
+| `Buffer`, `Instances` | Accepted message bytes and its own references, when kept |
 | `Redaction` | `{ Raw: boolean, Fields: {[string]: true} }` |
 | `Time`, `WireFormat`, `SchemaVersion`, `SchemaHash` | Metadata |
 
 Raw buffers are not kept when the profile is not `Development` and [`NoRawCaptureInProduction`](/reference/options/diagnostics#norawcaptureinproduction) is on.
+
+Dropped entries hold metadata only. Raw replay of an accepted message uses its own references and any interned strings it needs from earlier in its batch.
 
 ## Replay
 
@@ -63,7 +76,7 @@ Walks the entries and, for every accepted entry whose `Name` has a handler, call
 
 <Sig side="both">{"ReplayRaw(entries: {CaptureEntry}, sourceOverride: any?): { Accepted, Dropped, Replayed, MissingRaw }"}</Sig>
 
-Feeds each entry's raw bytes back through this module's real receive path, exactly as if they had arrived over the remote: guards, decoding, validation and listeners all run. Entries without raw bytes are counted in `MissingRaw`.
+Feeds each accepted entry's raw bytes back through this module's real receive path, exactly as if they had arrived over the remote: guards, decoding, validation and listeners all run. Accepted entries without raw bytes are counted in `MissingRaw`.
 
 <Callout type="warning">
 On the server, pass a real `Player` as `sourceOverride`: recorded sources are strings, and policies and listeners expect a player. Filter the entries to `Direction == "receive"` first, or your own sends are replayed as if they came from that player. Only use this in Studio or a private test server.

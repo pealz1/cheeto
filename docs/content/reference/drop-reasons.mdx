@@ -20,6 +20,8 @@ These discard an entire remote call before any event in it is read.
 | `InvalidBuffer` | The remote was fired with something other than a buffer. Only a hand-crafted remote call does this. |
 | `InvalidInstances` | The second remote argument was not a table |
 | `MaxPacketBytes` | The call was larger than [`MaxReliablePacketBytes`](/reference/options/limits#maxreliablepacketbytes) or [`MaxUnreliablePacketBytes`](/reference/options/limits#maxunreliablepacketbytes). Also used on the sender for an outgoing batch or unreliable event over the cap |
+| `IngressByteLimit` | The packet exceeded the peer's available [ingress byte budget](/reference/options/limits#ingressbytespersecond) |
+| `ReferenceLimit` | The packet exceeded [MaxPacketReferences](/reference/options/limits#maxpacketreferences) or supplied an invalid reference slot |
 | `RateLimit` | The sender exceeded the per-remote-call [`RateLimitPerSecond`](/reference/options/limits#ratelimitpersecond) |
 | `MiddlewareRejected` | A packet-level [`BeforeReceive`](/reference/api/hooks#beforereceive) hook returned `false` |
 | `FragmentOverflow` | A new fragmented packet would exceed [`MaxInFlightFragments`](/reference/options/limits#maxinflightfragments) |
