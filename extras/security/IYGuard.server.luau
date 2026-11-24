@@ -32,6 +32,9 @@ type Session = {
 	seq: number,
 	lastSeen: number,
 	handshakeAt: number,
+	lastChallengeAt: number,
+	windowStart: number,
+	reportsInWindow: number,
 }
 
 local sessions: { [Player]: Session } = {}
@@ -52,25 +55,32 @@ remote.OnServerEvent:Connect(function(player: Player, message)
 		return
 	end
 
-	--> Handshake: (re)issue a fresh session.
+	local now = os.clock()
+	local session = sessions[player]
+	--> Retry with fresh tokens, preserving the original heartbeat deadline.
 	if message.k == "hello" then
-		local now = os.clock()
-		sessions[player] = {
+		if session and now - session.lastChallengeAt < 1 then
+			return
+		end
+		session = {
 			secret = newToken(),
 			nonce = newToken(),
 			seq = 0,
-			lastSeen = now,
-			handshakeAt = now,
+			lastSeen = if session then session.lastSeen else now,
+			handshakeAt = if session then session.handshakeAt else now,
+			lastChallengeAt = now,
+			windowStart = if session then session.windowStart else now,
+			reportsInWindow = if session then session.reportsInWindow else 0,
 		}
+		sessions[player] = session
 		remote:FireClient(player, {
 			k = "challenge",
-			secret = sessions[player].secret,
-			nonce = sessions[player].nonce,
+			secret = session.secret,
+			nonce = session.nonce,
 		})
 		return
 	end
 
-	local session = sessions[player]
 	if not session then
 		return
 	end
@@ -78,22 +88,33 @@ remote.OnServerEvent:Connect(function(player: Player, message)
 	--> Signed message: { seq, kind, payload, sig }.
 	local seq = message.seq
 	local kind = message.kind
-	local payload = message.payload or ""
+	local payload = if message.payload == nil then "" else message.payload
 	local sig = message.sig
-	if type(seq) ~= "number" or type(kind) ~= "string" then
+	if kind ~= "heartbeat" and kind ~= "detect" then
 		return
 	end
 
 	--> Strictly increasing sequence rejects replays and reordered captures.
-	if seq <= session.seq then
+	if type(seq) ~= "number" or seq % 1 ~= 0 or seq <= session.seq or seq > 9007199254740991 then
 		return
 	end
+	if type(payload) ~= "string" or #payload > 512 then
+		return
+	end
+	if now - session.windowStart >= 1 then
+		session.windowStart = now
+		session.reportsInWindow = 0
+	end
+	if session.reportsInWindow >= 12 then
+		return
+	end
+	session.reportsInWindow += 1
 	if not SecureReport.verify(session.secret, session.nonce, seq, kind, payload, sig) then
 		return
 	end
 
 	session.seq = seq
-	session.lastSeen = os.clock()
+	session.lastSeen = now
 
 	if kind == "detect" then
 		kick(player)
@@ -107,6 +128,7 @@ end)
 
 --> Timeout enforcement with lag forgiveness.
 local lastTick = os.clock()
+local nextSweep = lastTick
 RunService.Heartbeat:Connect(function()
 	local now = os.clock()
 	local delta = now - lastTick
@@ -121,6 +143,10 @@ RunService.Heartbeat:Connect(function()
 		return
 	end
 
+	if now < nextSweep then
+		return
+	end
+	nextSweep = now + 1
 	for player, session in sessions do
 		if (now - session.handshakeAt) < Config.JoinGraceSeconds then
 			continue

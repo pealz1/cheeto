@@ -10,11 +10,13 @@ const root = process.cwd()
 const run = (command, args, options = {}) =>
   execFileSync(command, args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], shell: process.platform === 'win32', ...options })
 
-run('lune', ['run', 'src/CLI/init.luau', 'test/Sources/Test', '--', '--yes'])
+for (const schema of ['Test', 'Datatypes']) {
+  run('lune', ['run', 'src/CLI/init.luau', 'test/Sources/' + schema, '--', '--yes'])
+}
 
 const local = join(root, 'docs', 'node_modules', '.bin', process.platform === 'win32' ? 'tsc.cmd' : 'tsc')
 const [command, prefix] = existsSync(local) ? [local, []] : ['npx', ['--yes', '-p', 'typescript@5', 'tsc']]
-const files = ['Network/Client.d.ts', 'Network/Server.d.ts']
+const files = ['Client', 'Server', 'DatatypesClient', 'DatatypesServer'].map(name => 'Network/' + name + '.d.ts')
 
 try {
   run(command, [...prefix, '--noEmit', '--strict', '--lib', 'es2020', ...files])

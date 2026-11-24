@@ -39,6 +39,21 @@ Adds or replaces a route. Returns the connection, so calls chain.
 
 Adds or replaces a state channel. Returns the connection.
 
+### Track
+
+<Sig side="both">{"connection:Track(resource: RBXScriptConnection | (() -> ())): () -> ()"}</Sig>
+
+Gives the connection ownership of a Roblox signal subscription, a cleanup function, or an adapter with a `Disconnect` method. Call the returned function to release it early. `Destroy` releases every remaining resource, even if one cleanup raises an error. After cleanup it raises the first error.
+
+```lua copy
+connection:Track(tool.Activated:Connect(function()
+    connection:Send("Activate")
+end))
+connection:Track(function()
+    preview:Destroy()
+end)
+```
+
 ### SetTarget
 
 <Sig side="both">{"connection:SetTarget(target: Player?): Connection"}</Sig>

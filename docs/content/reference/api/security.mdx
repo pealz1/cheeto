@@ -34,6 +34,7 @@ import { Sig } from '../../../components/Reference'
 | [`OnIntegritySample`](#onintegritysample) | Client | Add a check to every receipt |
 | [`CharacterIntegrity`](#characterintegrity) | Server | Movement scoring state |
 | [`ObserveCharacter`](#observecharacter) | Server | Add your own movement evidence |
+| [`SetMovementLimits`](#setmovementlimits) | Server | Set movement speeds for one player |
 | [`GrantMovementGrace`](#grantmovementgrace) | Server | Pause movement scoring for a player |
 | [`ReconcileCharacter`](#reconcilecharacter) | Server | Accept the current position as safe |
 | [`TeleportCharacter`](#teleportcharacter) | Server | Move a character without tripping checks |
@@ -279,6 +280,12 @@ With a player, returns `{ UserId, Score, ConsecutiveBreaches, GraceUntil, LastSa
 <Sig side="server">{"ObserveCharacter(player: Player, reason: string, weight: number?, detail: string?): (number, string)"}</Sig>
 
 Adds your own evidence to a player's movement score, for detections the built-in sampler does not make, and applies the configured [mode](/reference/options/character-integrity#characterintegritymode). Returns the new score and the action taken: `"observe"`, `"report"`, `"correct"` or `"kick"`.
+
+## SetMovementLimits
+
+<Sig side="server">{"SetMovementLimits(player: Player, limits: { Horizontal: number?, Vertical: number? }?): ()"}</Sig>
+
+Sets the horizontal or vertical base speed used to evaluate this player's movement, in studs per second. Each speed must be finite and at least one. Omitted axes use the schema defaults. Pass `nil` to restore both defaults. The server copies the table and keeps it until you replace it, clear it or the player leaves. `CharacterIntegrity(player).Limits` returns a copy.
 
 ## GrantMovementGrace
 

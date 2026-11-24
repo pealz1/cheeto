@@ -13,6 +13,85 @@ local stdio = require("@lune/stdio")
 local IYSignatures = require("../extras/security/IYSignatures")
 local SecureReport = require("../extras/security/SecureReport")
 
+--> Drive the standalone server guard with a clock and its ordinary callbacks.
+do
+	local fs = require("@lune/fs")
+	local luau = require("@lune/luau")
+	local config = require("../extras/security/Config")
+	local now, challenges, kicks = 0, 0, 0
+	local challenge
+	local function signal()
+		return {
+			Connect = function(self, callback)
+				self.fire = callback
+			end,
+		}
+	end
+	local remote = {
+		OnServerEvent = signal(),
+		FireClient = function(_, _, value)
+			challenge = value
+			challenges += 1
+		end,
+	}
+	local services = {
+		Players = { PlayerRemoving = signal() },
+		ReplicatedStorage = {},
+		RunService = { Heartbeat = signal() },
+		HttpService = {
+			GenerateGUID = function()
+				return "test-token"
+			end,
+		},
+	}
+	luau.load(fs.readFile("../extras/security/IYGuard.server.luau"), {
+		environment = {
+			game = {
+				GetService = function(_, key)
+					return services[key]
+				end,
+			},
+			Instance = {
+				new = function()
+					return remote
+				end,
+			},
+			script = { Parent = { Config = config, SecureReport = SecureReport } },
+			require = function(module)
+				return module
+			end,
+			os = {
+				clock = function()
+					return now
+				end,
+			},
+		},
+	})()
+	local player = {
+		Kick = function()
+			kicks += 1
+		end,
+	}
+	local receive = remote.OnServerEvent.fire
+	receive(player, { k = "hello" })
+	receive(player, { k = "hello" })
+	assert(challenges == 1, "Immediate retries must share a challenge deadline")
+	receive(player, {
+		kind = "heartbeat",
+		seq = 1,
+		payload = "",
+		sig = SecureReport.sign(challenge.secret, challenge.nonce, 1, "heartbeat", ""),
+	})
+	for second = 1, config.JoinGraceSeconds + config.HeartbeatTimeout + 1 do
+		now = second
+		if second % 2 == 0 and kicks == 0 then
+			receive(player, { k = "hello" })
+		end
+		services.RunService.Heartbeat.fire()
+	end
+	assert(kicks == 1, "Handshake retries must preserve the heartbeat deadline")
+end
+
 local Instance = roblox.Instance
 
 local function Ok(message: string)

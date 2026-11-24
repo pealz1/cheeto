@@ -215,7 +215,7 @@ local function GenerateNumberGenerator(Type: string, Size: number): (TypePrefab,
 		end
 
 		Block:Line(
-			`if {Value} < {Bounds[1]} or {Value} > {Bounds[2]} then error(\`{Type} must be between {Bounds[1]} and {Bounds[2]}, got \{{Value}\}\`) end`
+			`if {Value} < {Bounds[1]} or {Value} > {Bounds[2]} or {Value} ~= {Value} then error(\`{Type} must be between {Bounds[1]} and {Bounds[2]}, got \{{Value}\}\`) end`
 		)
 	end
 
@@ -225,6 +225,12 @@ local function GenerateNumberGenerator(Type: string, Size: number): (TypePrefab,
 				Block:Declare(Variable, true)
 				Block:Line("if UseVarints() then")
 				Block:Line(`{Variable} = {IsSigned and "ReadSignedVarint" or "ReadVarint"}()`, Block.Indent + 1)
+				if Size == SHORT then
+					Block:Line(
+						`if {Variable} < {Bounds[1]} or {Variable} > {Bounds[2]} then error("Integer exceeds its declared width") end`,
+						Block.Indent + 1
+					)
+				end
 				Block:Line("else")
 				Block:Line(`{Variable} = buffer.read{Type}({RECIEVE_BUFFER}, Read({Size}))`, Block.Indent + 1)
 				Block:Line("end")
@@ -442,16 +448,18 @@ do
 		Read = function(Variable: string, Block: Block, Range: NumberRange?)
 			if Range and Range.Min == Range.Max then
 				local Length = Range.Max
+				local Offset = Block:Read(Length)
 				Block:Line(`{Block:Declare(Variable)} = buffer.create({Length})`)
-				Block:Line(`buffer.copy({Variable}, 0, {RECIEVE_BUFFER}, {Block:Read(Length)}, {Length})`)
+				Block:Line(`buffer.copy({Variable}, 0, {RECIEVE_BUFFER}, {Offset}, {Length})`)
 				return
 			end
 
 			local Upper = Range and Range.Max or (2 ^ 16 - 1)
 			local LengthBytes = GetLengthBytes(Upper)
 			Block:Line(`local Length = ReadLength({LengthBytes})`)
+			Block:Line(`local BufferOffset = Read(Length)`)
 			Block:Line(`{Block:Declare(Variable)} = buffer.create(Length)`)
-			Block:Line(`buffer.copy({Variable}, 0, {RECIEVE_BUFFER}, Read(Length), Length)`)
+			Block:Line(`buffer.copy({Variable}, 0, {RECIEVE_BUFFER}, BufferOffset, Length)`)
 		end,
 		Write = function(Value: string, Block: Block, Range: NumberRange?)
 			if Range and Range.Min == Range.Max then
@@ -609,7 +617,6 @@ end
 do
 	Types.Instance = {
 		Read = function(Variable: string, Block: Block)
-			--Block:Line("State.RecieveInstanceCursor += 1")
 			Block:Line(`{Block:Declare(Variable)} = State.RecieveInstances[State.RecieveInstanceCursor]`)
 		end,
 		Write = function(Value: string, Block: Block)
@@ -629,7 +636,7 @@ end
 do
 	Types.unknown = {
 		Read = function(Variable: string, Block: Block)
-			Block:Line("State.RecieveInstanceCursor += 1")
+			Block:Line("Frame.NextInstance()")
 			Block:Line(`{Block:Declare(Variable)} = State.RecieveInstances[State.RecieveInstanceCursor]`)
 		end,
 		Write = function(Value: string, Block: Block)
@@ -997,19 +1004,76 @@ do
 	}
 end
 
+--> Region3int16
+do
+	Types.Region3int16 = {
+		Read = function(Variable: string, Block: Block)
+			Types.Vector3int16.Read("MinimumCorner", Block)
+			Types.Vector3int16.Read("MaximumCorner", Block)
+			Block:Line(`{Block:Declare(Variable)} = Region3int16.new(MinimumCorner, MaximumCorner)`)
+		end,
+		Write = function(Value: string, Block: Block)
+			Types.Vector3int16.Write(`{Value}.Min`, Block)
+			Types.Vector3int16.Write(`{Value}.Max`, Block)
+		end,
+	}
+	Primitives.Region3int16 = {
+		Type = "Region3int16",
+		Generate = GeneratePrimitivePrefab("Region3int16", Types.Region3int16),
+	}
+end
+
+--> NumberSequenceKeypoint
+do
+	Types.NumberSequenceKeypoint = {
+		Read = function(Variable: string, Block: Block)
+			Types.f32.Read("KeypointTime", Block)
+			Types.f32.Read("KeypointValue", Block)
+			Types.f32.Read("KeypointEnvelope", Block)
+			Block:Line(
+				`{Block:Declare(Variable)} = NumberSequenceKeypoint.new(KeypointTime, KeypointValue, KeypointEnvelope)`
+			)
+		end,
+		Write = function(Value: string, Block: Block)
+			Types.f32.Write(`{Value}.Time`, Block)
+			Types.f32.Write(`{Value}.Value`, Block)
+			Types.f32.Write(`{Value}.Envelope`, Block)
+		end,
+	}
+	Primitives.NumberSequenceKeypoint = {
+		Type = "NumberSequenceKeypoint",
+		Generate = GeneratePrimitivePrefab("NumberSequenceKeypoint", Types.NumberSequenceKeypoint),
+	}
+end
+
+--> ColorSequenceKeypoint
+do
+	Types.ColorSequenceKeypoint = {
+		Read = function(Variable: string, Block: Block)
+			Types.f32.Read("KeypointTime", Block)
+			Types.Color3.Read("KeypointColor", Block)
+			Block:Line(`{Block:Declare(Variable)} = ColorSequenceKeypoint.new(KeypointTime, KeypointColor)`)
+		end,
+		Write = function(Value: string, Block: Block)
+			Types.f32.Write(`{Value}.Time`, Block)
+			Types.Color3.Write(`{Value}.Value`, Block)
+		end,
+	}
+	Primitives.ColorSequenceKeypoint = {
+		Type = "ColorSequenceKeypoint",
+		Generate = GeneratePrimitivePrefab("ColorSequenceKeypoint", Types.ColorSequenceKeypoint),
+	}
+end
+
 --> NumberSequence (variable-length keypoints)
 do
 	Types.NumberSequence = {
 		Read = function(Variable: string, Block: Block)
 			Block:Line(`local NumberSequenceCount = ReadLength(2)`)
+			Block:Line(`Frame.CheckCollection(NumberSequenceCount)`)
 			Block:Line(`local NumberSequenceKeypoints = table.create(NumberSequenceCount)`)
 			local Loop = Block:Loop("Index = 1", "NumberSequenceCount")
-			Types.f32.Read("KeypointTime", Loop)
-			Types.f32.Read("KeypointValue", Loop)
-			Types.f32.Read("KeypointEnvelope", Loop)
-			Loop:Line(
-				`table.insert(NumberSequenceKeypoints, NumberSequenceKeypoint.new(KeypointTime, KeypointValue, KeypointEnvelope))`
-			)
+			Types.NumberSequenceKeypoint.Read("NumberSequenceKeypoints[Index]", Loop)
 			Loop:End()
 			Block:Line(`{Block:Declare(Variable)} = NumberSequence.new(NumberSequenceKeypoints)`)
 		end,
@@ -1018,9 +1082,7 @@ do
 			Block:Line(`WriteLength(#NumberSequenceKeypoints, 2)`)
 			local Loop = Block:Loop("Index = 1", "#NumberSequenceKeypoints")
 			Loop:Line(`local Keypoint = NumberSequenceKeypoints[Index]`)
-			Types.f32.Write("Keypoint.Time", Loop)
-			Types.f32.Write("Keypoint.Value", Loop)
-			Types.f32.Write("Keypoint.Envelope", Loop)
+			Types.NumberSequenceKeypoint.Write("Keypoint", Loop)
 			Loop:End()
 		end,
 	}
@@ -1036,11 +1098,10 @@ do
 	Types.ColorSequence = {
 		Read = function(Variable: string, Block: Block)
 			Block:Line(`local ColorSequenceCount = ReadLength(2)`)
+			Block:Line(`Frame.CheckCollection(ColorSequenceCount)`)
 			Block:Line(`local ColorSequenceKeypoints = table.create(ColorSequenceCount)`)
 			local Loop = Block:Loop("Index = 1", "ColorSequenceCount")
-			Types.f32.Read("KeypointTime", Loop)
-			Types.Color3.Read("KeypointColor", Loop)
-			Loop:Line(`table.insert(ColorSequenceKeypoints, ColorSequenceKeypoint.new(KeypointTime, KeypointColor))`)
+			Types.ColorSequenceKeypoint.Read("ColorSequenceKeypoints[Index]", Loop)
 			Loop:End()
 			Block:Line(`{Block:Declare(Variable)} = ColorSequence.new(ColorSequenceKeypoints)`)
 		end,
@@ -1049,8 +1110,7 @@ do
 			Block:Line(`WriteLength(#ColorSequenceKeypoints, 2)`)
 			local Loop = Block:Loop("Index = 1", "#ColorSequenceKeypoints")
 			Loop:Line(`local Keypoint = ColorSequenceKeypoints[Index]`)
-			Types.f32.Write("Keypoint.Time", Loop)
-			Types.Color3.Write("Keypoint.Value", Loop)
+			Types.ColorSequenceKeypoint.Write("Keypoint", Loop)
 			Loop:End()
 		end,
 	}

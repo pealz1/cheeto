@@ -238,6 +238,7 @@ local RuntimeState = {
     PeerHandshakesSent = {} :: {[any]: boolean},
     Fragments = {} :: {[any]: {[number]: any}},
     NextFragmentId = 0,
+    NextFragmentExpiry = math.huge,
     Transport = {} :: {[any]: any},
     Coalesce = {} :: {[any]: {[string]: any}},
     Replay = {} :: {[any]: {[string]: any}},
@@ -1160,7 +1161,7 @@ end
 
 --> Pure movement classification used by the live server sampler and exposed for
 --> deterministic tests. Client-reported position is never an input here.
-function RuntimeSupport.EvaluateCharacterMovement(Sample: {[string]: any}): any
+function RuntimeSupport.EvaluateCharacterMovement(Sample: {[string]: any}, Limits: {[string]: number}?): any
     local DeltaTime = Sample.DeltaTime
     local HorizontalDistance = Sample.HorizontalDistance
     local VerticalDistance = Sample.VerticalDistance
@@ -1169,17 +1170,15 @@ function RuntimeSupport.EvaluateCharacterMovement(Sample: {[string]: any}): any
     local VerticalVelocity = Sample.VerticalVelocity or 0
     local Ping = Sample.Ping or 0
 
-    for _, Value in { DeltaTime, HorizontalDistance, VerticalDistance, WalkSpeed, HorizontalVelocity, VerticalVelocity, Ping } do
-        if not RuntimeSupport.FiniteNumber(Value) then
-            return {
-                Suspicious = true,
-                Resync = false,
-                Reasons = { "NonFiniteMovement" },
-                Weight = 12,
-                AllowedHorizontal = 0,
-                AllowedVertical = 0,
-            }
-        end
+    if not RuntimeSupport.FiniteComponents(DeltaTime, HorizontalDistance, VerticalDistance, WalkSpeed, HorizontalVelocity, VerticalVelocity, Ping) then
+        return {
+            Suspicious = true,
+            Resync = false,
+            Reasons = { "NonFiniteMovement" },
+            Weight = 12,
+            AllowedHorizontal = 0,
+            AllowedVertical = 0,
+        }
     end
 
     if DeltaTime <= 0 or DeltaTime > math.max(0.1, RuntimeConfig.CharacterIntegrityMaxStepSeconds) then
@@ -1203,8 +1202,8 @@ function RuntimeSupport.EvaluateCharacterMovement(Sample: {[string]: any}): any
         }
     end
 
-    local ConfiguredHorizontal = math.max(1, RuntimeConfig.CharacterIntegrityMaxHorizontalSpeed)
-    local ConfiguredVertical = math.max(1, RuntimeConfig.CharacterIntegrityMaxVerticalSpeed)
+    local ConfiguredHorizontal = math.max(1, (Limits and Limits.Horizontal) or RuntimeConfig.CharacterIntegrityMaxHorizontalSpeed)
+    local ConfiguredVertical = math.max(1, (Limits and Limits.Vertical) or RuntimeConfig.CharacterIntegrityMaxVerticalSpeed)
     local SpeedMultiplier = math.max(1, RuntimeConfig.CharacterIntegritySpeedMultiplier)
     local Slack = math.max(0, RuntimeConfig.CharacterIntegrityDistanceSlack)
     local PingSeconds = math.clamp(Ping, 0, 2)
@@ -1250,334 +1249,6 @@ function RuntimeSupport.EvaluateCharacterMovement(Sample: {[string]: any}): any
     }
 end
 
-function RuntimeSupport.GetCharacterIntegrityPlayer(Player: any): any
-    local Key = RuntimeSupport.PeerKey(Player)
-    local PlayerState = RuntimeState.CharacterIntegrity.Players[Key]
-    if PlayerState ~= nil then
-        PlayerState.Player = Player
-        return PlayerState
-    end
-
-    local Now = os.clock()
-    PlayerState = {
-        Player = Player,
-        Character = nil,
-        LastPosition = nil,
-        LastSafeCFrame = nil,
-        LastSampleAt = 0,
-        NextSampleAt = Now,
-        LastDecayAt = Now,
-        GraceUntil = Now + math.max(0, RuntimeConfig.CharacterIntegrityJoinGraceSeconds),
-        Score = 0,
-        ConsecutiveBreaches = 0,
-        LastCorrectionAt = 0,
-        LastReason = "",
-        LastAction = "none",
-        Reasons = {} :: {[string]: number},
-        History = {},
-    }
-    RuntimeState.CharacterIntegrity.Players[Key] = PlayerState
-    return PlayerState
-end
-
-function RuntimeSupport.DecayCharacterIntegrityPlayer(PlayerState: any, Now: number)
-    local Delta = math.max(0, Now - (PlayerState.LastDecayAt or Now))
-    PlayerState.LastDecayAt = Now
-    local Decay = Delta * math.max(0, RuntimeConfig.CharacterIntegrityScoreDecayPerSecond)
-    PlayerState.Score = math.max(0, PlayerState.Score - Decay)
-    if Decay > 0 then
-        for Reason, Score in PlayerState.Reasons do
-            local Next = math.max(0, Score - Decay)
-            PlayerState.Reasons[Reason] = if Next > 0 then Next else nil
-        end
-    end
-end
-
-function RuntimeSupport.CharacterIntegrityAction(PlayerState: any): string
-    local Mode = string.lower(tostring(RuntimeConfig.CharacterIntegrityMode))
-    if
-        Mode == "kick"
-        and RuntimeConfig.CharacterIntegrityKick
-        and PlayerState.Score >= RuntimeConfig.CharacterIntegrityKickScore
-        and PlayerState.ConsecutiveBreaches >= math.max(1, RuntimeConfig.CharacterIntegrityMaxConsecutiveBreaches)
-    then
-        return "kick"
-    end
-
-    if
-        (Mode == "correct" or Mode == "kick")
-        and PlayerState.Score >= RuntimeConfig.CharacterIntegrityCorrectionScore
-        and os.clock() >= PlayerState.LastCorrectionAt
-    then
-        return "correct"
-    end
-    return if Mode == "observe" then "observe" else "report"
-end
-
-function RuntimeSupport.ReportCharacterIntegrity(Player: any, Reason: string, Weight: number?, Detail: string?): (number, string)
-    local PlayerState = RuntimeSupport.GetCharacterIntegrityPlayer(Player)
-    local Now = os.clock()
-    RuntimeSupport.DecayCharacterIntegrityPlayer(PlayerState, Now)
-    local Amount = math.max(1, math.floor(Weight or 1))
-    PlayerState.Score = math.min(1000, PlayerState.Score + Amount)
-    PlayerState.Reasons[Reason] = math.min(1000, (PlayerState.Reasons[Reason] or 0) + Amount)
-    PlayerState.LastReason = Reason
-    local Action = RuntimeSupport.CharacterIntegrityAction(PlayerState)
-    PlayerState.LastAction = Action
-
-    local Key = RuntimeSupport.PeerKey(Player)
-    local ByReason = RuntimeState.CharacterIntegrity.LastEvidence[Key]
-    if ByReason == nil then
-        ByReason = {}
-        RuntimeState.CharacterIntegrity.LastEvidence[Key] = ByReason
-    end
-    local Last = ByReason[Reason]
-    local Throttled = Last ~= nil and Now - Last < math.max(0, RuntimeConfig.CharacterIntegrityReportCooldownSeconds)
-    if not Throttled or Action == "kick" then
-        ByReason[Reason] = Now
-        local Entry = {
-            Player = Player,
-            UserId = TryGetUserId(Player),
-            Reason = Reason,
-            Detail = Detail or "",
-            Weight = Amount,
-            Score = PlayerState.Score,
-            ConsecutiveBreaches = PlayerState.ConsecutiveBreaches,
-            Action = Action,
-            Time = Now,
-        }
-        table.insert(RuntimeState.CharacterIntegrity.Evidence, Entry)
-        while #RuntimeState.CharacterIntegrity.Evidence > math.max(1, RuntimeConfig.CharacterIntegrityHistoryLimit * 8) do
-            table.remove(RuntimeState.CharacterIntegrity.Evidence, 1)
-        end
-        table.insert(PlayerState.History, Entry)
-        while #PlayerState.History > math.max(1, RuntimeConfig.CharacterIntegrityHistoryLimit) do
-            table.remove(PlayerState.History, 1)
-        end
-
-        MetricAdd("CharacterIntegrityActions", Action)
-        if Action ~= "observe" then
-            ReportViolation(Player, "$characterIntegrity", "CharacterIntegrity", Reason, Amount, Action)
-        end
-        EmitTelemetry("security.characterIntegrity", Entry)
-    end
-
-    if Action == "kick" then
-        KickClientShieldSource(Player)
-    end
-    return PlayerState.Score, Action
-end
-
-function RuntimeSupport.GrantCharacterIntegrityGrace(Player: any, Seconds: number?, Reason: string?)
-    local PlayerState = RuntimeSupport.GetCharacterIntegrityPlayer(Player)
-    local Now = os.clock()
-    local Duration = math.max(0, Seconds or RuntimeConfig.CharacterIntegrityTeleportGraceSeconds)
-    PlayerState.GraceUntil = math.max(PlayerState.GraceUntil, Now + Duration)
-    PlayerState.LastPosition = nil
-    PlayerState.LastSampleAt = 0
-    PlayerState.LastReason = Reason or "grace"
-    PlayerState.ConsecutiveBreaches = 0
-end
-
-function RuntimeSupport.ReadCharacterSnapshot(Player: any): (any, any, any, any)
-    local Success, Character, Root, Humanoid = pcall(function()
-        local Character = Player.Character
-        if Character == nil then
-            return nil, nil, nil
-        end
-        return Character, Character:FindFirstChild("HumanoidRootPart"), Character:FindFirstChildOfClass("Humanoid")
-    end)
-    if not Success or Character == nil or Root == nil or Humanoid == nil then
-        return nil, nil, nil, nil
-    end
-    return Character, Root, Humanoid, Root.CFrame
-end
-
-function RuntimeSupport.ReconcileCharacterIntegrity(Player: any, ResetScore: boolean?): boolean
-    local PlayerState = RuntimeSupport.GetCharacterIntegrityPlayer(Player)
-    local Character, Root, Humanoid, RootCFrame = RuntimeSupport.ReadCharacterSnapshot(Player)
-    if Character == nil or Root == nil or Humanoid == nil then
-        return false
-    end
-
-    PlayerState.Character = Character
-    PlayerState.LastPosition = Root.Position
-    PlayerState.LastSafeCFrame = RootCFrame
-    PlayerState.LastSampleAt = os.clock()
-    PlayerState.NextSampleAt = PlayerState.LastSampleAt + math.max(0.05, RuntimeConfig.CharacterIntegritySampleIntervalSeconds)
-    PlayerState.ConsecutiveBreaches = 0
-    if ResetScore == true then
-        PlayerState.Score = 0
-        table.clear(PlayerState.Reasons)
-    end
-    return true
-end
-
-function RuntimeSupport.TeleportCharacterIntegrity(Player: any, Target: CFrame, GraceSeconds: number?): boolean
-    if typeof(Target) ~= "CFrame" then
-        return false
-    end
-
-    RuntimeSupport.GrantCharacterIntegrityGrace(Player, GraceSeconds, "server-teleport")
-    local Character, Root = RuntimeSupport.ReadCharacterSnapshot(Player)
-    if Character == nil or Root == nil then
-        return false
-    end
-
-    local Success = pcall(function()
-        Character:PivotTo(Target)
-        Root.AssemblyLinearVelocity = Vector3.zero
-        Root.AssemblyAngularVelocity = Vector3.zero
-    end)
-    if Success then
-        RuntimeSupport.ReconcileCharacterIntegrity(Player, false)
-    end
-    return Success
-end
-
-function RuntimeSupport.CharacterPathBlocked(Character: any, Origin: Vector3, Delta: Vector3): boolean
-    if Delta.Magnitude <= 4 then
-        return false
-    end
-
-    local Success, Blocked = pcall(function()
-        local Workspace = game:GetService("Workspace")
-        local Params = RaycastParams.new()
-        Params.FilterType = Enum.RaycastFilterType.Exclude
-        Params.FilterDescendantsInstances = { Character }
-        Params.IgnoreWater = true
-        local Hit = Workspace:Raycast(Origin, Delta, Params)
-        return Hit ~= nil and Hit.Instance ~= nil and Hit.Instance:IsA("BasePart") and Hit.Instance.CanCollide
-    end)
-    return Success and Blocked == true
-end
-
-function RuntimeSupport.StepCharacterIntegrityPlayer(Player: any, Now: number)
-    local PlayerState = RuntimeSupport.GetCharacterIntegrityPlayer(Player)
-    RuntimeSupport.DecayCharacterIntegrityPlayer(PlayerState, Now)
-    if Now < PlayerState.NextSampleAt then
-        return
-    end
-    PlayerState.NextSampleAt = Now + math.max(0.05, RuntimeConfig.CharacterIntegritySampleIntervalSeconds)
-
-    local Character, Root, Humanoid, RootCFrame = RuntimeSupport.ReadCharacterSnapshot(Player)
-    if Character == nil or Root == nil or Humanoid == nil then
-        PlayerState.Character = nil
-        PlayerState.LastPosition = nil
-        PlayerState.LastSampleAt = 0
-        return
-    end
-
-    if PlayerState.Character ~= Character or PlayerState.LastPosition == nil or PlayerState.LastSampleAt <= 0 then
-        PlayerState.Character = Character
-        PlayerState.LastPosition = Root.Position
-        PlayerState.LastSafeCFrame = RootCFrame
-        PlayerState.LastSampleAt = Now
-        PlayerState.GraceUntil = math.max(
-            PlayerState.GraceUntil,
-            Now + math.max(0, RuntimeConfig.CharacterIntegrityJoinGraceSeconds)
-        )
-        return
-    end
-
-    local Position = Root.Position
-    local Delta = Position - PlayerState.LastPosition
-    local DeltaTime = Now - PlayerState.LastSampleAt
-    PlayerState.LastSampleAt = Now
-
-    if Now < PlayerState.GraceUntil then
-        PlayerState.LastPosition = Position
-        PlayerState.LastSafeCFrame = RootCFrame
-        PlayerState.ConsecutiveBreaches = 0
-        return
-    end
-
-    local HumanoidState = Humanoid:GetState()
-    local Ping = 0
-    pcall(function()
-        Ping = Player:GetNetworkPing()
-    end)
-    local HorizontalDelta = Vector3.new(Delta.X, 0, Delta.Z)
-    local Velocity = Root.AssemblyLinearVelocity
-    local HorizontalVelocity = Vector3.new(Velocity.X, 0, Velocity.Z).Magnitude
-    local Evaluation = RuntimeSupport.EvaluateCharacterMovement({
-        DeltaTime = DeltaTime,
-        HorizontalDistance = HorizontalDelta.Magnitude,
-        VerticalDistance = math.abs(Delta.Y),
-        WalkSpeed = Humanoid.WalkSpeed,
-        HorizontalVelocity = HorizontalVelocity,
-        VerticalVelocity = Velocity.Y,
-        Ping = Ping,
-        Seated = Humanoid.Sit or HumanoidState == Enum.HumanoidStateType.Seated,
-        Grounded = Humanoid.FloorMaterial ~= Enum.Material.Air,
-        PathBlocked = RuntimeSupport.CharacterPathBlocked(Character, PlayerState.LastPosition, Delta),
-    })
-
-    if Evaluation.Resync then
-        PlayerState.LastPosition = Position
-        PlayerState.LastSafeCFrame = RootCFrame
-        PlayerState.ConsecutiveBreaches = 0
-        return
-    end
-
-    if not Evaluation.Suspicious then
-        PlayerState.LastPosition = Position
-        PlayerState.LastSafeCFrame = RootCFrame
-        PlayerState.ConsecutiveBreaches = 0
-        return
-    end
-
-    PlayerState.ConsecutiveBreaches += 1
-    local Reason = table.concat(Evaluation.Reasons, "+")
-    local _, Action = RuntimeSupport.ReportCharacterIntegrity(
-        Player,
-        Reason,
-        Evaluation.Weight,
-        `horizontal:{math.floor(HorizontalDelta.Magnitude * 100) / 100};vertical:{math.floor(Delta.Y * 100) / 100};dt:{math.floor(DeltaTime * 1000) / 1000}`
-    )
-
-    if Action == "correct" and PlayerState.LastSafeCFrame ~= nil then
-        local Corrected = pcall(function()
-            Character:PivotTo(PlayerState.LastSafeCFrame)
-            Root.AssemblyLinearVelocity = Vector3.zero
-            Root.AssemblyAngularVelocity = Vector3.zero
-        end)
-        if Corrected then
-            PlayerState.LastCorrectionAt = Now + math.max(0, RuntimeConfig.CharacterIntegrityCorrectionCooldownSeconds)
-            PlayerState.GraceUntil = Now + math.max(0, RuntimeConfig.CharacterIntegrityTeleportGraceSeconds)
-            PlayerState.LastPosition = PlayerState.LastSafeCFrame.Position
-            PlayerState.LastSampleAt = Now
-            MetricAdd("CharacterIntegrityActions", "corrected")
-        else
-            PlayerState.LastPosition = Position
-        end
-    else
-        PlayerState.LastPosition = Position
-    end
-end
-
-function RuntimeSupport.StepCharacterIntegrity(PlayersList: {any})
-    if not RuntimeConfig.EnableCharacterIntegrity then
-        return
-    end
-
-    local Now = os.clock()
-    for _, Player in PlayersList do
-        if not IsPlayerActive(Player) then
-            continue
-        end
-        local Success, Failure = pcall(RuntimeSupport.StepCharacterIntegrityPlayer, Player, Now)
-        if not Success then
-            EmitTelemetry("security.characterIntegrityError", {
-                Player = Player,
-                UserId = TryGetUserId(Player),
-                Error = tostring(Failure),
-                Time = Now,
-            })
-        end
-    end
-end
-
 function RuntimeSupport.CopyCharacterIntegrityPlayer(PlayerState: any): any
     if PlayerState == nil then
         return nil
@@ -1587,6 +1258,7 @@ function RuntimeSupport.CopyCharacterIntegrityPlayer(PlayerState: any): any
         Score = PlayerState.Score,
         ConsecutiveBreaches = PlayerState.ConsecutiveBreaches,
         GraceUntil = PlayerState.GraceUntil,
+        Limits = if PlayerState.Limits then table.clone(PlayerState.Limits) else nil,
         LastSampleAt = PlayerState.LastSampleAt,
         LastReason = PlayerState.LastReason,
         LastAction = PlayerState.LastAction,
@@ -1826,6 +1498,56 @@ function RuntimeSupport.IsFiniteNumber(Value: any): boolean
     return type(Value) == "number" and Value == Value and Value ~= math.huge and Value ~= -math.huge
 end
 
+function RuntimeSupport.FiniteComponents(...: number): boolean
+    for Index = 1, select("#", ...) do
+        if not RuntimeSupport.FiniteNumber(select(Index, ...)) then
+            return false
+        end
+    end
+    return true
+end
+
+--> Roblox datatypes have their own typeof tags. Check the fields that can
+--> carry a non-finite value before delivering these types to a listener.
+function RuntimeSupport.ValidRobloxValue(Kind: string, Value: any): boolean
+    local Finite = RuntimeSupport.FiniteComponents
+    if Kind == "NumberRange" then
+        return Finite(Value.Min, Value.Max)
+    elseif Kind == "Vector2" then
+        return Finite(Value.X, Value.Y)
+    elseif Kind == "UDim" then
+        return Finite(Value.Scale)
+    elseif Kind == "UDim2" then
+        return Finite(Value.X.Scale, Value.Y.Scale)
+    elseif Kind == "Rect" then
+        return Finite(Value.Min.X, Value.Min.Y, Value.Max.X, Value.Max.Y)
+    elseif Kind == "Ray" then
+        local A, B = Value.Origin, Value.Direction
+        return Finite(A.X, A.Y, A.Z, B.X, B.Y, B.Z)
+    elseif Kind == "Region3" then
+        local A, B = Value.CFrame.Position, Value.Size
+        return Finite(A.X, A.Y, A.Z, B.X, B.Y, B.Z)
+    elseif Kind == "NumberSequenceKeypoint" then
+        return Finite(Value.Time, Value.Value, Value.Envelope)
+    elseif Kind == "ColorSequenceKeypoint" then
+        return Finite(Value.Time, Value.Value.R, Value.Value.G, Value.Value.B)
+    elseif Kind == "ColorSequence" or Kind == "NumberSequence" then
+        local PointKind = Kind .. "Keypoint"
+        for _, Point in Value.Keypoints do
+            if not RuntimeSupport.ValidRobloxValue(PointKind, Point) then
+                return false
+            end
+        end
+        return true
+    elseif Kind == "PhysicalProperties" then
+        return Finite(Value.Density, Value.Friction, Value.Elasticity, Value.FrictionWeight, Value.ElasticityWeight)
+    elseif Kind == "TweenInfo" then
+        return Finite(Value.Time, Value.DelayTime)
+    end
+    return Kind == "Region3int16" or Kind == "Vector2int16" or Kind == "Vector3int16"
+        or Kind == "Axes" or Kind == "Faces" or Kind == "BrickColor" or Kind == "DateTime" or Kind == "Font"
+end
+
 local function ValidateCanonicalValue(Source: any, Name: string, Channel: string, Value: any, Depth: number, Budget: any): boolean
     Budget.Operations += 1
     if Budget.Operations > RuntimeConfig.MaxDecodeOperations then
@@ -1856,9 +1578,7 @@ local function ValidateCanonicalValue(Source: any, Name: string, Channel: string
         end
     elseif Kind == "CFrame" then
         local Position = Value.Position
-        if not RuntimeSupport.IsFiniteNumber(Position.X)
-            or not RuntimeSupport.IsFiniteNumber(Position.Y)
-            or not RuntimeSupport.IsFiniteNumber(Position.Z)
+        if not RuntimeSupport.FiniteComponents(Value:GetComponents())
             or math.abs(Position.X) > 1e9
             or math.abs(Position.Y) > 1e9
             or math.abs(Position.Z) > 1e9
@@ -1913,7 +1633,7 @@ local function ValidateCanonicalValue(Source: any, Name: string, Channel: string
         Budget.Bytes += buffer.len(Value)
     elseif Kind == "userdata" then
         return true
-    elseif Kind ~= "nil" and Kind ~= "boolean" then
+    elseif Kind ~= "nil" and Kind ~= "boolean" and not RuntimeSupport.ValidRobloxValue(Kind, Value) then
         DropPacket(Source, Channel, TransportError.Canonicalization, Budget.Bytes, Name)
         return false
     end
@@ -2866,27 +2586,45 @@ function RuntimeSupport.CreateConnection(Config: {[string]: any}?)
         return Channel
     end
 
-    local function TrackDisconnect(Disconnect: any): () -> ()
-        if type(Disconnect) ~= "function" then
+    local function CallMember(Object: any, Member: (...any) -> ...any, ...: any): ...any
+        if type(Object) == "table" and Object.__cheetoUseColon then
+            return Member(Object, ...)
+        end
+        return Member(...)
+    end
+
+    local function TrackDisconnect(Resource: any): () -> ()
+        local Disconnect
+        if type(Resource) == "function" then
+            Disconnect = Resource
+        elseif typeof(Resource) == "RBXScriptConnection" or (type(Resource) == "table" and type(Resource.Disconnect) == "function") then
+            Disconnect = function() Resource:Disconnect() end
+        else
+            error("[Cheeto]: Expected a cleanup function or a connection with Disconnect().", 3)
+        end
+        if not Connection.Connected then
+            Disconnect()
             return function() end
         end
-
         local Active = true
         local function TrackedDisconnect()
-            if not Active then
-                return
+            if Active then
+                Active = false
+                local Index = table.find(Connection._disconnectors, TrackedDisconnect)
+                if Index then
+                    table.remove(Connection._disconnectors, Index)
+                end
+                Disconnect()
             end
-
-            Active = false
-            local Index = table.find(Connection._disconnectors, TrackedDisconnect)
-            if Index then
-                table.remove(Connection._disconnectors, Index)
-            end
-            Disconnect()
         end
 
         table.insert(Connection._disconnectors, TrackedDisconnect)
         return TrackedDisconnect
+    end
+
+    function Connection:Track(Resource: any): () -> ()
+        AssertConnected()
+        return TrackDisconnect(Resource)
     end
 
     function Connection:Bind(Name: string, Route: any)
@@ -2924,15 +2662,15 @@ function RuntimeSupport.CreateConnection(Config: {[string]: any}?)
     function Connection:Send(Name: string, ...: any): ...any
         AssertConnected()
         local Route = ResolveRoute(Name)
-        local Sender = if type(Route) == "function" then Route else Route.Fire or Route.Invoke or Route.Send
+        local Sender = if type(Route) == "function" then Route else Route.Fire or Route.fire or Route.Invoke or Route.invoke or Route.Send
         if type(Sender) ~= "function" then
             error(`[Cheeto]: Connection route "{Name}" cannot send on this side.`, 2)
         end
 
         if self.Target ~= nil then
-            return Sender(self.Target, ...)
+            return CallMember(Route, Sender, self.Target, ...)
         end
-        return Sender(...)
+        return CallMember(Route, Sender, ...)
     end
 
     function Connection:On(Name: string, Listener: (...any) -> ()): () -> ()
@@ -2946,23 +2684,40 @@ function RuntimeSupport.CreateConnection(Config: {[string]: any}?)
             error(`[Cheeto]: Connection route "{Name}" cannot receive on this side.`, 2)
         end
 
-        local Subscribe = Route.On or Route.Connect or Route.Subscribe
+        local Subscribe = Route.On or Route.on or Route.Connect or Route.Subscribe
         if type(Subscribe) ~= "function" then
             error(`[Cheeto]: Connection route "{Name}" cannot receive on this side.`, 2)
         end
 
-        return TrackDisconnect(Subscribe(Listener))
+        local Resource = CallMember(Route, Subscribe, Listener)
+        return if Resource == nil then function() end else TrackDisconnect(Resource)
     end
 
     function Connection:Once(Name: string, Listener: ((...any) -> ())?): () -> ()
         AssertConnected()
-        local Disconnect: () -> ()
+        local Disconnect
+        local Fired = false
+        local Queued
         Disconnect = self:On(Name, function(...: any)
+            if Fired then
+                return
+            end
+            Fired = true
+            if Disconnect == nil then
+                Queued = table.pack(...)
+                return
+            end
             Disconnect()
             if Listener then
                 Listener(...)
             end
         end)
+        if Queued then
+            Disconnect()
+            if Listener then
+                Listener(table.unpack(Queued, 1, Queued.n))
+            end
+        end
         return Disconnect
     end
 
@@ -2974,9 +2729,9 @@ function RuntimeSupport.CreateConnection(Config: {[string]: any}?)
         end
 
         if self.Target ~= nil then
-            return Channel.Get(self.Target)
+            return CallMember(Channel, Channel.Get, self.Target)
         end
-        return Channel.Get()
+        return CallMember(Channel, Channel.Get)
     end
 
     function Connection:OnState(Name: string, Listener: (...any) -> (), FireImmediately: boolean?): () -> ()
@@ -2990,11 +2745,18 @@ function RuntimeSupport.CreateConnection(Config: {[string]: any}?)
             error(`[Cheeto]: Connection state "{Name}" cannot be observed on this side.`, 2)
         end
 
-        local Disconnect = TrackDisconnect(Channel.On(Listener))
+        local Resource = CallMember(Channel, Channel.On, Listener)
+        local Disconnect = if Resource == nil then function() end else TrackDisconnect(Resource)
         if FireImmediately then
-            local Value = self:GetState(Name)
-            local Version = if type(Channel.Version) == "function" then Channel.Version() else nil
-            Listener(Value, Version, nil)
+            local Ok, Failure = pcall(function()
+                local Value = self:GetState(Name)
+                local Version = if type(Channel.Version) == "function" then CallMember(Channel, Channel.Version) else nil
+                Listener(Value, Version, nil)
+            end)
+            if not Ok then
+                Disconnect()
+                error(Failure, 0)
+            end
         end
         return Disconnect
     end
@@ -3028,9 +2790,9 @@ function RuntimeSupport.CreateConnection(Config: {[string]: any}?)
             end
 
             if self.Target ~= nil then
-                return Writer(self.Target, ...)
+                return CallMember(Channel, Writer, self.Target, ...)
             end
-            return Writer(...)
+            return CallMember(Channel, Writer, ...)
         end
     end
 
@@ -3046,8 +2808,15 @@ function RuntimeSupport.CreateConnection(Config: {[string]: any}?)
         self.Connected = false
         local Disconnectors = table.clone(self._disconnectors)
         table.clear(self._disconnectors)
+        local FirstFailure
         for _, Disconnect in Disconnectors do
-            Disconnect()
+            local Ok, Failure = pcall(Disconnect)
+            if not Ok then
+                FirstFailure = FirstFailure or tostring(Failure)
+            end
+        end
+        if FirstFailure then
+            error(FirstFailure, 0)
         end
     end
 
@@ -3495,7 +3264,21 @@ end
 --> write per field would cost more than these calls do per event.
 --> One local instead of eight: Luau caps a scope at 200 locals and the
 --> generated module sits just under it.
-local Frame = {}
+local Frame = { CollectionEntries = 0, InExport = false }
+
+function Frame.CheckCollection(Count: number)
+    Frame.CollectionEntries += Count
+    if Count > RuntimeConfig.MaxTableKeys or Frame.CollectionEntries > RuntimeConfig.MaxDecodeOperations then
+        error("[Cheeto]: Collection exceeds the configured decode limits.")
+    end
+end
+
+function Frame.NextInstance()
+    if RecieveFrameEnd > 0 and State.RecieveInstanceCursor >= RecieveFrameInstanceEnd then
+        error("[Cheeto]: Instance read exceeds the message boundary.")
+    end
+    State.RecieveInstanceCursor += 1
+end
 
 function Frame.Cursor(): number
     return SendCursor
@@ -3569,6 +3352,8 @@ function Frame.SaveFrame(): any
         Buffer = RecieveBuffer,
         Size = State.RecieveSize,
         FrameEnd = RecieveFrameEnd,
+        CollectionEntries = Frame.CollectionEntries,
+        InExport = Frame.InExport,
         FrameInstanceEnd = RecieveFrameInstanceEnd,
         BitByte = RecieveBitByte,
         BitCount = RecieveBitCount,
@@ -3581,28 +3366,33 @@ function Frame.SaveFrame(): any
 end
 
 function Frame.EnterFrame(Buffer: buffer)
+    local Size = buffer.len(Buffer)
     Frame.BeginMessages(Buffer)
-    State.RecieveSize = buffer.len(Buffer)
+    Frame.InExport = true
+    Frame.CollectionEntries = 0
+    State.RecieveSize = Size
     RecieveFrameEnd = 0
     RecieveFrameInstanceEnd = 0
     State.RecieveInstances = {}
     RecievePredictionId = nil
 end
 
-function Frame.RestoreFrame(Frame: any)
-    RecieveCursor = Frame.Cursor
-    RecieveBuffer = Frame.Buffer
-    State.RecieveBuffer = Frame.Buffer
-    State.RecieveSize = Frame.Size
-    RecieveFrameEnd = Frame.FrameEnd
-    RecieveFrameInstanceEnd = Frame.FrameInstanceEnd
-    RecieveBitByte = Frame.BitByte
-    RecieveBitCount = Frame.BitCount
-    RecieveStrings = Frame.Strings
-    NextRecieveStringId = Frame.NextStringId
-    State.RecieveInstances = Frame.Instances
-    State.RecieveInstanceCursor = Frame.InstanceCursor
-    RecievePredictionId = Frame.PredictionId
+function Frame.RestoreFrame(Saved: any)
+    Frame.CollectionEntries = Saved.CollectionEntries
+    Frame.InExport = Saved.InExport
+    RecieveCursor = Saved.Cursor
+    RecieveBuffer = Saved.Buffer
+    State.RecieveBuffer = Saved.Buffer
+    State.RecieveSize = Saved.Size
+    RecieveFrameEnd = Saved.FrameEnd
+    RecieveFrameInstanceEnd = Saved.FrameInstanceEnd
+    RecieveBitByte = Saved.BitByte
+    RecieveBitCount = Saved.BitCount
+    RecieveStrings = Saved.Strings
+    NextRecieveStringId = Saved.NextStringId
+    State.RecieveInstances = Saved.Instances
+    State.RecieveInstanceCursor = Saved.InstanceCursor
+    RecievePredictionId = Saved.PredictionId
 end
 
 local function WriteBit(Value: boolean)
@@ -3624,7 +3414,9 @@ end
 
 local function RawRead(Bytes: number)
     if RecieveCursor + Bytes > State.RecieveSize then
-        DropPacket(RecieveSource, RecieveChannel, "MalformedPacket", State.RecieveSize)
+        if not Frame.InExport then
+            DropPacket(RecieveSource, RecieveChannel, "MalformedPacket", State.RecieveSize)
+        end
         error(`[Cheeto]: Malformed {RecieveChannel} packet tried to read past the packet boundary.`)
     end
 
@@ -3947,7 +3739,9 @@ local function ValidateIncoming(Source: any, Channel: string, IncomingBuffer: an
     end
 
     local Limit = if Channel == "Reliable" then RuntimeConfig.MaxReliablePacketBytes else RuntimeConfig.MaxUnreliablePacketBytes
-    if Limit > 0 and Size > Limit then
+    --> The reliable cap applies to the logical batch. A fragment also has
+    --> two control bytes and up to six 5-byte varints around its payload.
+    if Limit > 0 and Size > Limit and not (Channel == "Reliable" and Size <= Limit + 32 and buffer.readu8(IncomingBuffer, 0) == FRAGMENT_INDEX) then
         DropPacket(Source, Channel, "MaxPacketBytes", Size)
         return nil
     end
@@ -4029,6 +3823,9 @@ local function ReadVarint(): number
     local Shift = 0
     for _ = 1, 5 do
         local Byte = buffer.readu8(RecieveBuffer, Read(1))
+        if Shift == 28 and Byte > 15 then
+            error("[Cheeto]: Varint exceeds 32 bits.")
+        end
         Result += bit32.lshift(bit32.band(Byte, 0x7F), Shift)
         if bit32.band(Byte, 0x80) == 0 then
             return Result
@@ -4040,7 +3837,8 @@ local function ReadVarint(): number
 end
 
 local function WriteSignedVarint(Value: number)
-    local Encoded = if Value < 0 then ((-Value) * 2) - 1 else Value * 2
+    local Integral = if Value < 0 then math.ceil(Value) else math.floor(Value)
+    local Encoded = if Integral < 0 then ((-Integral) * 2) - 1 else Integral * 2
     WriteVarint(Encoded)
 end
 
@@ -4054,6 +3852,9 @@ local function ReadSignedVarint(): number
 end
 
 local function WriteLength(Value: number, Bytes: number)
+    if Value >= 2 ^ (Bytes * 8) then
+        error("[Cheeto]: Length exceeds its declared width.")
+    end
     if UseVarints() then
         WriteVarint(Value)
     elseif Bytes == 1 then
@@ -4070,7 +3871,11 @@ end
 
 local function ReadLength(Bytes: number): number
     if UseVarints() then
-        return ReadVarint()
+        local Length = ReadVarint()
+        if Length >= 2 ^ (Bytes * 8) then
+            error("[Cheeto]: Length exceeds its declared width.")
+        end
+        return Length
     elseif Bytes == 1 then
         return buffer.readu8(RecieveBuffer, Read(1))
     elseif Bytes == 2 then
@@ -4119,6 +3924,9 @@ local function ReadVarintFrom(Buffer: buffer, Cursor: number, Limit: number): (n
 
         local Byte = buffer.readu8(Buffer, Cursor)
         Cursor += 1
+        if Shift == 28 and Byte > 15 then
+            return nil, Cursor
+        end
         Result += bit32.lshift(bit32.band(Byte, 0x7F), Shift)
         if bit32.band(Byte, 0x80) == 0 then
             return Result, Cursor
@@ -4154,16 +3962,11 @@ local function BuildControlFrame(Index: number, Payload: {number}, Source: buffe
     return Packet
 end
 
-function RuntimeSupport.FragmentReliablePacket(Target: any, Packet: buffer, Instances: {Instance}?): {any}
-    local Size = buffer.len(Packet)
+function RuntimeSupport.SendReliablePacket(Target: any, Packet: buffer, Size: number, Instances: {Instance}?)
     local FragmentBytes = RuntimeConfig.ReliableFragmentBytes
     if FragmentBytes <= 0 or Size <= FragmentBytes then
-        return {
-            {
-                Buffer = Packet,
-                Instances = Instances
-            }
-        }
+        RuntimeSupport.EmitReliable(Target, CloneBuffer(Packet, 0, Size), Instances)
+        return
     end
 
     RuntimeState.NextFragmentId = (RuntimeState.NextFragmentId + 1) % 2147483647
@@ -4179,10 +3982,7 @@ function RuntimeSupport.FragmentReliablePacket(Target: any, Packet: buffer, Inst
         WriteVarintTo(Payload, Index)
         WriteVarintTo(Payload, Count)
         WriteVarintTo(Payload, Size)
-        Fragments[Index] = {
-            Buffer = BuildControlFrame(FRAGMENT_INDEX, Payload, Packet, Start, Length),
-            Instances = Instances
-        }
+        Fragments[Index] = BuildControlFrame(FRAGMENT_INDEX, Payload, Packet, Start, Length)
     end
 
     EmitTelemetry("transport.fragment", {
@@ -4191,21 +3991,28 @@ function RuntimeSupport.FragmentReliablePacket(Target: any, Packet: buffer, Inst
         Count = Count,
         Size = Size
     })
-    return Fragments
+    for Index, Fragment in Fragments do
+        RuntimeSupport.EmitReliable(Target, Fragment, if Index == 1 then Instances else nil)
+    end
 end
 
-local function CleanupFragments(Source: any)
-    local Key = RuntimeSupport.PeerKey(Source)
-    local ById = RuntimeState.Fragments[Key]
-    if ById == nil then
+function RuntimeSupport.ExpireFragments()
+    local Now = os.clock()
+    if Now < RuntimeState.NextFragmentExpiry then
         return
     end
-
-    local Now = os.clock()
-    for FragmentId, Assembly in ById do
-        if Now - Assembly.Started >= RuntimeConfig.FragmentTimeoutSeconds then
-            ById[FragmentId] = nil
-            DropPacket(Source, "Reliable", TransportError.FragmentTimeout, Assembly.ReceivedBytes or 0)
+    RuntimeState.NextFragmentExpiry = math.huge
+    for Key, ById in RuntimeState.Fragments do
+        for Id, Assembly in ById do
+            if Now >= Assembly.Expires then
+                ById[Id] = nil
+                DropPacket(Assembly.Source, "Reliable", TransportError.FragmentTimeout, Assembly.ReceivedBytes)
+            else
+                RuntimeState.NextFragmentExpiry = math.min(RuntimeState.NextFragmentExpiry, Assembly.Expires)
+            end
+        end
+        if next(ById) == nil then
+            RuntimeState.Fragments[Key] = nil
         end
     end
 end
@@ -4221,7 +4028,7 @@ function RuntimeSupport.TryReassembleReliableFragment(Source: any, Packet: buffe
     PayloadLength, Cursor = ReadVarintFrom(Packet, Cursor, Size)
     local InstanceCount
     InstanceCount, Cursor = ReadVarintFrom(Packet, Cursor, Size)
-    if PayloadLength == nil or InstanceCount == nil or Cursor + PayloadLength > Size then
+    if PayloadLength == nil or InstanceCount ~= 0 or Cursor + PayloadLength ~= Size or buffer.readu8(Packet, 1) ~= 0 then
         DropPacket(Source, "Reliable", TransportError.MalformedPacket, Size)
         return nil, nil, false
     end
@@ -4243,40 +4050,56 @@ function RuntimeSupport.TryReassembleReliableFragment(Source: any, Packet: buffe
         or FragmentIndex < 1
         or FragmentIndex > FragmentCount
         or FragmentCount <= 1
-        or OriginalSize <= 0
+        or FragmentCount > OriginalSize
+        or Cursor >= PayloadEnd
     then
         DropPacket(Source, "Reliable", TransportError.MalformedPacket, Size)
         return nil, nil, false
     end
 
-    CleanupFragments(Source)
-    local Key = RuntimeSupport.PeerKey(Source)
-    local ById = RuntimeState.Fragments[Key]
-    if ById == nil then
-        ById = {}
-        RuntimeState.Fragments[Key] = ById
-    end
-
-    local InFlight = 0
-    for _ in ById do
-        InFlight += 1
-    end
-    if ById[FragmentId] == nil and RuntimeConfig.MaxInFlightFragments > 0 and InFlight >= RuntimeConfig.MaxInFlightFragments then
-        DropPacket(Source, "Reliable", TransportError.FragmentOverflow, Size)
+    if RuntimeConfig.MaxReliablePacketBytes > 0 and OriginalSize > RuntimeConfig.MaxReliablePacketBytes then
+        DropPacket(Source, "Reliable", TransportError.MaxPacketBytes, Size)
         return nil, nil, false
     end
 
-    local Assembly = ById[FragmentId]
+    RuntimeSupport.ExpireFragments()
+    local Key = RuntimeSupport.PeerKey(Source)
+    local ById = RuntimeState.Fragments[Key]
+    local Assembly = if ById then ById[FragmentId] else nil
     if Assembly == nil then
+        --> Reserve the payload plus an allowance per stored chunk. This also
+        --> bounds bookkeeping when the sender uses very small fragments.
+        local Reservation = OriginalSize + 64 * FragmentCount
+        local Reserved = Reservation
+        local InFlight = 0
+        if ById then
+            for _, Pending in ById do
+                Reserved += Pending.Reservation
+                InFlight += 1
+            end
+        end
+        if Reserved > RuntimeConfig.MaxFragmentBufferBytes
+            or (RuntimeConfig.MaxInFlightFragments > 0 and InFlight >= RuntimeConfig.MaxInFlightFragments)
+        then
+            DropPacket(Source, "Reliable", TransportError.FragmentOverflow, Size)
+            return nil, nil, false
+        end
+
         Assembly = {
-            Started = os.clock(),
+            Source = Source,
+            Expires = os.clock() + RuntimeConfig.FragmentTimeoutSeconds,
+            Reservation = Reservation,
             Count = FragmentCount,
             OriginalSize = OriginalSize,
             Parts = {},
-            Instances = Instances,
             Received = 0,
-            ReceivedBytes = 0
+            ReceivedBytes = 0,
         }
+        RuntimeState.NextFragmentExpiry = math.min(RuntimeState.NextFragmentExpiry, Assembly.Expires)
+        if ById == nil then
+            ById = {}
+            RuntimeState.Fragments[Key] = ById
+        end
         ById[FragmentId] = Assembly
     end
 
@@ -4288,12 +4111,19 @@ function RuntimeSupport.TryReassembleReliableFragment(Source: any, Packet: buffe
 
     if Assembly.Parts[FragmentIndex] == nil then
         local ChunkLength = PayloadEnd - Cursor
+        local RemainingParts = Assembly.Count - Assembly.Received - 1
+        local RemainingBytes = OriginalSize - Assembly.ReceivedBytes - ChunkLength
+        if RemainingBytes < RemainingParts or (RemainingParts == 0 and RemainingBytes ~= 0) then
+            ById[FragmentId] = nil
+            DropPacket(Source, "Reliable", TransportError.MalformedPacket, Size)
+            return nil, nil, false
+        end
         local Chunk = buffer.create(ChunkLength)
         buffer.copy(Chunk, 0, Packet, Cursor, ChunkLength)
         Assembly.Parts[FragmentIndex] = Chunk
         Assembly.Received += 1
         Assembly.ReceivedBytes += ChunkLength
-        if Instances ~= nil then
+        if FragmentIndex == 1 then
             Assembly.Instances = Instances
         end
     end
@@ -4306,20 +4136,15 @@ function RuntimeSupport.TryReassembleReliableFragment(Source: any, Packet: buffe
     local Offset = 0
     for Index = 1, Assembly.Count do
         local Chunk = Assembly.Parts[Index]
-        if Chunk == nil then
-            return nil, nil, false
-        end
         local ChunkLength = buffer.len(Chunk)
-        if Offset + ChunkLength > Assembly.OriginalSize then
-            ById[FragmentId] = nil
-            DropPacket(Source, "Reliable", TransportError.MalformedPacket, Size)
-            return nil, nil, false
-        end
         buffer.copy(Reassembled, Offset, Chunk, 0, ChunkLength)
         Offset += ChunkLength
     end
 
     ById[FragmentId] = nil
+    if next(ById) == nil then
+        RuntimeState.Fragments[Key] = nil
+    end
     EmitTelemetry("transport.reassembled", {
         Source = Source,
         FragmentId = FragmentId,
@@ -4381,6 +4206,7 @@ end
 
 local function BeginReadMessage(PacketSize: number): number?
     AlignReadBits()
+    Frame.CollectionEntries = 0
     RecieveMessageStart = RecieveCursor
     RecieveFrameEnd = 0
     RecieveFrameInstanceEnd = State.RecieveInstanceCursor
@@ -5056,6 +4882,33 @@ local function Load(Save: BufferSave?, Peer: boolean?)
     NextSendStringId = 1
 end
 
+function Frame.ReadExport(Buffer: buffer, Reader: () -> ...any): ...any
+    local Previous = Frame.SaveFrame()
+    Frame.EnterFrame(Buffer)
+    local Results = table.pack(pcall(Reader))
+    Frame.RestoreFrame(Previous)
+    if not Results[1] then
+        error(Results[2], 0)
+    end
+    return table.unpack(Results, 2, Results.n)
+end
+
+function Frame.WriteExport(Writer: () -> ()): buffer
+    local Previous = Save()
+    Load()
+    local Ok, Result = pcall(function()
+        Writer()
+        FlushBits()
+        return CloneBuffer(SendBuffer, 0, SendCursor)
+    end)
+    ReleaseBuffer(SendBuffer)
+    Load(Previous)
+    if not Ok then
+        error(Result, 0)
+    end
+    return Result
+end
+
 --> Invocation ids are one byte. Skip ids that are still awaiting a reply;
 --> handing one out twice made the second caller fail with "already awaiting a
 --> response" even while 254 other ids were free.
@@ -5351,6 +5204,7 @@ local function GetInterestDistancePlayers(ChannelName: string, Origin: Vector3, 
 end
 
 local function ClearPlayerRuntimeState(Player: Player)
+    RuntimeState.Fragments[Player] = nil
     RuntimeState.RateLimit[Player] = nil
     RuntimeState.Transport[Player] = nil
     RuntimeState.Replay[Player] = nil

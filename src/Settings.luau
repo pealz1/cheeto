@@ -220,6 +220,24 @@ local Primitives: { [string]: Primitive } = {
 		AllowsOptional = true,
 		AllowedComponents = 0,
 	},
+	Region3int16 = {
+		Component = false,
+		AllowsRange = false,
+		AllowsOptional = true,
+		AllowedComponents = 0,
+	},
+	NumberSequenceKeypoint = {
+		Component = false,
+		AllowsRange = false,
+		AllowsOptional = true,
+		AllowedComponents = 0,
+	},
+	ColorSequenceKeypoint = {
+		Component = false,
+		AllowsRange = false,
+		AllowsOptional = true,
+		AllowedComponents = 0,
+	},
 	UDim = {
 		Component = false,
 		AllowsRange = false,

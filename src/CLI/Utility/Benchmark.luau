@@ -133,6 +133,15 @@ local ROBLOX_SAMPLES: { [string]: () -> any } = {
 	NumberRange = function()
 		return roblox.NumberRange.new(1, 2)
 	end,
+	Region3int16 = function()
+		return roblox.Region3int16.new(roblox.Vector3int16.new(-1, 0, 0), roblox.Vector3int16.new(1, 2, 3))
+	end,
+	NumberSequenceKeypoint = function()
+		return roblox.NumberSequenceKeypoint.new(0.5, 1, 0)
+	end,
+	ColorSequenceKeypoint = function()
+		return roblox.ColorSequenceKeypoint.new(0.5, roblox.Color3.fromRGB(10, 20, 30))
+	end,
 	Region3 = function()
 		return roblox.Region3.new(roblox.Vector3.new(0, 0, 0), roblox.Vector3.new(2, 2, 2))
 	end,
@@ -351,6 +360,9 @@ local function Environment(IsServer: boolean, Player: any, Outbox: { any })
 		Ray = roblox.Ray,
 		NumberRange = roblox.NumberRange,
 		Region3 = roblox.Region3,
+		Region3int16 = roblox.Region3int16,
+		NumberSequenceKeypoint = roblox.NumberSequenceKeypoint,
+		ColorSequenceKeypoint = roblox.ColorSequenceKeypoint,
 		Instance = roblox.Instance,
 		Enum = roblox.Enum,
 		require = function()

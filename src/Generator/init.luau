@@ -311,6 +311,10 @@ local function RuntimeConfigLines(): { string }
 		`\tMaxPendingInvokes = {NumberLiteral(Options.MaxPendingInvokes, Defaults.MaxPendingInvokes)},\n`,
 		`\tInvokeTimeoutSeconds = {NumberLiteral(Options.InvokeTimeoutSeconds, Defaults.InvokeTimeoutSeconds)},\n`,
 		`\tReliableFragmentBytes = {NumberLiteral(Options.ReliableFragmentBytes, 49152)},\n`,
+		`\tMaxFragmentBufferBytes = {NumberLiteral(
+			Options.MaxFragmentBufferBytes,
+			math.max(2097152, (Options.MaxReliablePacketBytes or MaxPacketBytes) * 2)
+		)},\n`,
 		`\tMaxInFlightFragments = {NumberLiteral(Options.MaxInFlightFragments, 32)},\n`,
 		`\tFragmentTimeoutSeconds = {NumberLiteral(Options.FragmentTimeoutSeconds, 10)},\n`,
 		`\tReplayWindowSize = {NumberLiteral(Options.ReplayWindowSize, 128)},\n`,
@@ -797,6 +801,7 @@ local function PushRuntimeApi(Target: Builder.Builder, Indent: number, ReplayRaw
 		Target.Push(`GrantIntegrityGrace = RuntimeSupport.GrantClientIntegrityGrace,`, 0, Indent + 1)
 		Target.Push(`CharacterIntegrity = RuntimeSupport.CharacterIntegritySnapshot,`, 0, Indent + 1)
 		Target.Push(`ObserveCharacter = RuntimeSupport.ReportCharacterIntegrity,`, 0, Indent + 1)
+		Target.Push(`SetMovementLimits = RuntimeSupport.SetMovementLimits,`, 0, Indent + 1)
 		Target.Push(`GrantMovementGrace = RuntimeSupport.GrantCharacterIntegrityGrace,`, 0, Indent + 1)
 		Target.Push(`ReconcileCharacter = RuntimeSupport.ReconcileCharacterIntegrity,`, 0, Indent + 1)
 		Target.Push(`TeleportCharacter = RuntimeSupport.TeleportCharacterIntegrity,`, 0, Indent + 1)
@@ -1089,6 +1094,7 @@ function Declarations.Map(Declaration: Parser.Map, Read: Blocks.Block, Write: Bl
 		Write:Line(Check)
 		Read:Line(Check)
 	end
+	Read:Line(`Frame.CheckCollection({ElementsVariable})`)
 	Write:Line(`WriteLength({ElementsVariable}, {LengthBytes})`)
 
 	local ReadLoop = Read:Loop("_ = 1", ElementsVariable)
@@ -1215,6 +1221,10 @@ function Declarations.Event(Declaration: Parser.Event)
 
 	Body.Push(`{Declaration.Name} = \{`, 0, Indent)
 	Noop.Push(`{Declaration.Name} = \{`, 0, Indent)
+	if Options.UseColon then
+		Body.Push("__cheetoUseColon = true,", 0, Indent + 1)
+		Noop.Push("__cheetoUseColon = true,", 0, Indent + 1)
+	end
 
 	if Value.From ~= Context and IsPolling ~= true then
 		local IsSync = (Value.Call == "SingleSync" or Value.Call == "ManySync")
@@ -1591,6 +1601,10 @@ function Declarations.Function(Declaration: Parser.Function)
 
 	Noop.Push(`{Name} = \{`, 0, Indent)
 	Body.Push(`{Name} = \{`, 0, Indent)
+	if Options.UseColon then
+		Body.Push("__cheetoUseColon = true,", 0, Indent + 1)
+		Noop.Push("__cheetoUseColon = true,", 0, Indent + 1)
+	end
 
 	--> Create queue and event branch
 	Events.Push(`{Queue} = table.create(256)`)
@@ -1823,6 +1837,10 @@ function Declarations.Channel(Declaration: Parser.Channel)
 	local Body = Builder.new()
 	Body.Push(`{Declaration.Name} = \{`, 0, Indent)
 	Noop.Push(`{Declaration.Name} = \{`, 0, Indent)
+	if Options.UseColon then
+		Body.Push("__cheetoUseColon = true,", 0, Indent + 1)
+		Noop.Push("__cheetoUseColon = true,", 0, Indent + 1)
+	end
 
 	if Context == "Client" then
 		UserTypes.PushLines(ReadFull, 1, 0)
@@ -2359,6 +2377,7 @@ function Declarations.Array(Declaration: Parser.Array, Read: Blocks.Block, Write
 	end
 
 	--> Array
+	Read:Line("Frame.CheckCollection(Length)")
 	Read:Line(`{Read:Declare(Variable)} = table.create(Length)`)
 
 	--> Body
@@ -2385,7 +2404,7 @@ function Declarations.Optional(Declaration: Parser.Optional, Read: Blocks.Block,
 	local IsInstance = if Of.Type == "Primitive" then Of.Tokens.Primitive.Value == "Instance" else false
 
 	if IsInstance then
-		Read:Line("State.RecieveInstanceCursor += 1")
+		Read:Line("Frame.NextInstance()")
 		Read = Read:Compare("typeof(State.RecieveInstances[State.RecieveInstanceCursor])", '"Instance"', "Equals")
 		Read:Line("State.RecieveInstanceCursor -= 1")
 	else
@@ -2415,7 +2434,7 @@ function Generators.UserType(Declaration: Type, Read: Blocks.Block, Write: Block
 	if Declaration.Type == "Primitive" then
 		local Kind = (Declaration :: Parser.Primitive).Tokens.Primitive.Value
 		if Kind == "Instance" then
-			Read:Line("State.RecieveInstanceCursor += 1")
+			Read:Line("Frame.NextInstance()")
 		end
 
 		Declarations.Primitive(Declaration, Read, Write, Variable)
@@ -2580,46 +2599,16 @@ function Generators.Export(Declaration: Type)
 	local Indent = Util.GetScopeIndent(Scope)
 	Body.Push(`{Name} = \{`, 0, Indent)
 
-	--> Overwrite buffer
-	Read:Comment("Buffer overwrite")
-	Write:Comment("Buffer overwrite")
-
-	Read:Lines({
-		"local PreviousFrame = Frame.SaveFrame()\n",
-		"Frame.EnterFrame(Buffer)\n",
-	}, 1)
-
-	Write:Lines({
-		"local Previous = Save()\n",
-		"Load()\n",
-	}, 1)
-
-	Read:Advance(#Read.Content - 1)
-	Write:Advance(#Write.Content - 1)
-
-	--> Write to buffer
-	Read:Comment("Buffer read")
-	Write:Comment("Buffer write")
-
+	Read:Line("return Frame.ReadExport(Buffer, function()")
+	Write:Line("return Frame.WriteExport(function()")
+	Read.Indent += 1
+	Write.Indent += 1
 	Generators.UserType(Declaration, Read, Write)
-
-	--> Restore buffer
-	Read:Comment("Buffer restore")
-	Write:Comment("Buffer restore")
-
-	Read:Lines({
-		"Frame.RestoreFrame(PreviousFrame)\n",
-	}, 1)
-
-	--> Trim buffer
-	Write:Line("local Result = buffer.create(Frame.Cursor())")
-	Write:Line("buffer.copy(Result, 0, State.SendBuffer, 0, Frame.Cursor())")
-
-	Write:Line(`Load(Previous)`)
-
-	--> End export
 	Read:Return(Returns)
-	Write:Return("Result")
+	Read.Indent -= 1
+	Write.Indent -= 1
+	Read:Line("end)")
+	Write:Line("end)")
 
 	Read:End():Wrap("", ",")
 	Write:End()

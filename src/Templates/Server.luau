@@ -247,10 +247,380 @@ local function ChallengeClientIntegrity(Player: Player): number?
     return ChallengeId
 end
 
+function RuntimeSupport.GetCharacterIntegrityPlayer(Player: any): any
+    local Key = RuntimeSupport.PeerKey(Player)
+    local PlayerState = RuntimeState.CharacterIntegrity.Players[Key]
+    if PlayerState ~= nil then
+        PlayerState.Player = Player
+        return PlayerState
+    end
+
+    local Now = os.clock()
+    PlayerState = {
+        Player = Player,
+        Character = nil,
+        LastPosition = nil,
+        LastSafeCFrame = nil,
+        LastSampleAt = 0,
+        NextSampleAt = Now,
+        LastDecayAt = Now,
+        GraceUntil = Now + math.max(0, RuntimeConfig.CharacterIntegrityJoinGraceSeconds),
+        Score = 0,
+        ConsecutiveBreaches = 0,
+        LastCorrectionAt = 0,
+        LastReason = "",
+        LastAction = "none",
+        Reasons = {} :: {[string]: number},
+        History = {},
+    }
+    RuntimeState.CharacterIntegrity.Players[Key] = PlayerState
+    return PlayerState
+end
+
+function RuntimeSupport.DecayCharacterIntegrityPlayer(PlayerState: any, Now: number)
+    local Delta = math.max(0, Now - (PlayerState.LastDecayAt or Now))
+    PlayerState.LastDecayAt = Now
+    local Decay = Delta * math.max(0, RuntimeConfig.CharacterIntegrityScoreDecayPerSecond)
+    PlayerState.Score = math.max(0, PlayerState.Score - Decay)
+    if Decay > 0 then
+        for Reason, Score in PlayerState.Reasons do
+            local Next = math.max(0, Score - Decay)
+            PlayerState.Reasons[Reason] = if Next > 0 then Next else nil
+        end
+    end
+end
+
+function RuntimeSupport.CharacterIntegrityAction(PlayerState: any): string
+    local Mode = string.lower(tostring(RuntimeConfig.CharacterIntegrityMode))
+    if
+        Mode == "kick"
+        and RuntimeConfig.CharacterIntegrityKick
+        and PlayerState.Score >= RuntimeConfig.CharacterIntegrityKickScore
+        and PlayerState.ConsecutiveBreaches >= math.max(1, RuntimeConfig.CharacterIntegrityMaxConsecutiveBreaches)
+    then
+        return "kick"
+    end
+
+    if
+        (Mode == "correct" or Mode == "kick")
+        and PlayerState.Score >= RuntimeConfig.CharacterIntegrityCorrectionScore
+        and os.clock() >= PlayerState.LastCorrectionAt
+    then
+        return "correct"
+    end
+    return if Mode == "observe" then "observe" else "report"
+end
+
+function RuntimeSupport.ReportCharacterIntegrity(Player: any, Reason: string, Weight: number?, Detail: string?): (number, string)
+    local PlayerState = RuntimeSupport.GetCharacterIntegrityPlayer(Player)
+    local Now = os.clock()
+    RuntimeSupport.DecayCharacterIntegrityPlayer(PlayerState, Now)
+    local Amount = math.max(1, math.floor(Weight or 1))
+    PlayerState.Score = math.min(1000, PlayerState.Score + Amount)
+    PlayerState.Reasons[Reason] = math.min(1000, (PlayerState.Reasons[Reason] or 0) + Amount)
+    PlayerState.LastReason = Reason
+    local Action = RuntimeSupport.CharacterIntegrityAction(PlayerState)
+    PlayerState.LastAction = Action
+
+    local Key = RuntimeSupport.PeerKey(Player)
+    local ByReason = RuntimeState.CharacterIntegrity.LastEvidence[Key]
+    if ByReason == nil then
+        ByReason = {}
+        RuntimeState.CharacterIntegrity.LastEvidence[Key] = ByReason
+    end
+    local Last = ByReason[Reason]
+    local Throttled = Last ~= nil and Now - Last < math.max(0, RuntimeConfig.CharacterIntegrityReportCooldownSeconds)
+    if not Throttled or Action == "kick" then
+        ByReason[Reason] = Now
+        local Entry = {
+            Player = Player,
+            UserId = TryGetUserId(Player),
+            Reason = Reason,
+            Detail = Detail or "",
+            Weight = Amount,
+            Score = PlayerState.Score,
+            ConsecutiveBreaches = PlayerState.ConsecutiveBreaches,
+            Action = Action,
+            Time = Now,
+        }
+        table.insert(RuntimeState.CharacterIntegrity.Evidence, Entry)
+        while #RuntimeState.CharacterIntegrity.Evidence > math.max(1, RuntimeConfig.CharacterIntegrityHistoryLimit * 8) do
+            table.remove(RuntimeState.CharacterIntegrity.Evidence, 1)
+        end
+        table.insert(PlayerState.History, Entry)
+        while #PlayerState.History > math.max(1, RuntimeConfig.CharacterIntegrityHistoryLimit) do
+            table.remove(PlayerState.History, 1)
+        end
+
+        MetricAdd("CharacterIntegrityActions", Action)
+        if Action ~= "observe" then
+            ReportViolation(Player, "$characterIntegrity", "CharacterIntegrity", Reason, Amount, Action)
+        end
+        EmitTelemetry("security.characterIntegrity", Entry)
+    end
+
+    if Action == "kick" then
+        KickClientShieldSource(Player)
+    end
+    return PlayerState.Score, Action
+end
+
+function RuntimeSupport.SetMovementLimits(Player: any, Limits: {[string]: number}?)
+    if Limits ~= nil then
+        assert(type(Limits) == "table", "[Cheeto]: Expected a movement limits table.")
+        for Key, Value in Limits do
+            assert((Key == "Horizontal" or Key == "Vertical") and RuntimeSupport.FiniteNumber(Value) and Value >= 1,
+                "[Cheeto]: Movement limits must be finite speeds of at least one stud per second.")
+        end
+    end
+    RuntimeSupport.GetCharacterIntegrityPlayer(Player).Limits = if Limits then table.clone(Limits) else nil
+end
+
+function RuntimeSupport.GrantCharacterIntegrityGrace(Player: any, Seconds: number?, Reason: string?)
+    local PlayerState = RuntimeSupport.GetCharacterIntegrityPlayer(Player)
+    local Now = os.clock()
+    assert(Seconds == nil or RuntimeSupport.FiniteNumber(Seconds), "[Cheeto]: Expected finite grace seconds.")
+    local Duration = math.max(0, Seconds or RuntimeConfig.CharacterIntegrityTeleportGraceSeconds)
+    PlayerState.GraceUntil = math.max(PlayerState.GraceUntil, Now + Duration)
+    PlayerState.LastReason = Reason or "grace"
+    PlayerState.ConsecutiveBreaches = 0
+end
+
+function RuntimeSupport.ReadCharacterSnapshot(Player: any): (any, any, any, any)
+    local Success, Character, Root, Humanoid = pcall(function()
+        local Character = Player.Character
+        if Character == nil then
+            return nil, nil, nil
+        end
+        return Character, Character:FindFirstChild("HumanoidRootPart"), Character:FindFirstChildOfClass("Humanoid")
+    end)
+    if not Success or Character == nil or Root == nil or Humanoid == nil then
+        return nil, nil, nil, nil
+    end
+    return Character, Root, Humanoid, Root.CFrame
+end
+
+function RuntimeSupport.ReconcileCharacterIntegrity(Player: any, ResetScore: boolean?): boolean
+    local PlayerState = RuntimeSupport.GetCharacterIntegrityPlayer(Player)
+    local Character, Root, Humanoid, RootCFrame = RuntimeSupport.ReadCharacterSnapshot(Player)
+    if Character == nil or Root == nil or Humanoid == nil then
+        return false
+    end
+
+    if not RuntimeSupport.FiniteComponents(RootCFrame:GetComponents()) then
+        return false
+    end
+    PlayerState.Character = Character
+    PlayerState.LastPosition = Root.Position
+    PlayerState.LastSafeCFrame = RootCFrame
+    PlayerState.LastSampleAt = os.clock()
+    PlayerState.NextSampleAt = PlayerState.LastSampleAt + math.max(0.05, RuntimeConfig.CharacterIntegritySampleIntervalSeconds)
+    PlayerState.ConsecutiveBreaches = 0
+    if ResetScore == true then
+        PlayerState.Score = 0
+        table.clear(PlayerState.Reasons)
+    end
+    return true
+end
+
+function RuntimeSupport.TeleportCharacterIntegrity(Player: any, Target: CFrame, GraceSeconds: number?): boolean
+    if typeof(Target) ~= "CFrame" or not RuntimeSupport.FiniteComponents(Target:GetComponents()) then
+        return false
+    end
+
+    assert(GraceSeconds == nil or RuntimeSupport.FiniteNumber(GraceSeconds), "[Cheeto]: Expected finite grace seconds.")
+    local Character, Root = RuntimeSupport.ReadCharacterSnapshot(Player)
+    if Character == nil or Root == nil then
+        return false
+    end
+
+    local Success = pcall(function()
+        Character:PivotTo(Target)
+        Root.AssemblyLinearVelocity = Vector3.zero
+        Root.AssemblyAngularVelocity = Vector3.zero
+    end)
+    if Success then
+        RuntimeSupport.GrantCharacterIntegrityGrace(Player, GraceSeconds, "server-teleport")
+        RuntimeSupport.ReconcileCharacterIntegrity(Player, false)
+    end
+    return Success
+end
+
+function RuntimeSupport.CharacterPathBlocked(PlayerState: any, Root: any, Origin: Vector3, Delta: Vector3): boolean
+    if Delta.Magnitude <= 4 then
+        return false
+    end
+
+    local Success, Blocked = pcall(function()
+        local Workspace = game:GetService("Workspace")
+        local Params = PlayerState.RaycastParams
+        if Params == nil or PlayerState.RaycastCharacter ~= PlayerState.Character then
+            Params = RaycastParams.new()
+            Params.FilterType = Enum.RaycastFilterType.Exclude
+            Params.FilterDescendantsInstances = { PlayerState.Character }
+            Params.IgnoreWater = true
+            Params.RespectCanCollide = true
+            PlayerState.RaycastParams = Params
+            PlayerState.RaycastCharacter = PlayerState.Character
+        end
+        Params.CollisionGroup = Root.CollisionGroup
+        local Hit = Workspace:Raycast(Origin, Delta, Params)
+        return Hit ~= nil and Hit.Instance ~= nil and Hit.Instance:IsA("BasePart") and Hit.Instance.CanCollide
+    end)
+    return Success and Blocked == true
+end
+
+function RuntimeSupport.CorrectCharacter(PlayerState: any, Character: any, Root: any, Now: number): boolean
+    if PlayerState.LastSafeCFrame == nil or PlayerState.Character ~= Character then
+        return false
+    end
+    local Corrected = pcall(function()
+        Character:PivotTo(PlayerState.LastSafeCFrame)
+        Root.AssemblyLinearVelocity = Vector3.zero
+        Root.AssemblyAngularVelocity = Vector3.zero
+    end)
+    if Corrected then
+        PlayerState.LastCorrectionAt = Now + math.max(0, RuntimeConfig.CharacterIntegrityCorrectionCooldownSeconds)
+        PlayerState.GraceUntil = Now + math.max(0, RuntimeConfig.CharacterIntegrityTeleportGraceSeconds)
+        PlayerState.LastPosition = PlayerState.LastSafeCFrame.Position
+        PlayerState.LastSampleAt = Now
+        MetricAdd("CharacterIntegrityActions", "corrected")
+    end
+    return Corrected
+end
+
+function RuntimeSupport.StepCharacterIntegrityPlayer(Player: any, Now: number)
+    local PlayerState = RuntimeSupport.GetCharacterIntegrityPlayer(Player)
+    if Now < PlayerState.NextSampleAt then
+        return
+    end
+    RuntimeSupport.DecayCharacterIntegrityPlayer(PlayerState, Now)
+    PlayerState.NextSampleAt = Now + math.max(0.05, RuntimeConfig.CharacterIntegritySampleIntervalSeconds)
+
+    local Character, Root, Humanoid, RootCFrame = RuntimeSupport.ReadCharacterSnapshot(Player)
+    if Character == nil or Root == nil or Humanoid == nil then
+        PlayerState.Character = nil
+        PlayerState.LastPosition = nil
+        PlayerState.LastSampleAt = 0
+        return
+    end
+
+    if not RuntimeSupport.FiniteComponents(RootCFrame:GetComponents()) then
+        PlayerState.ConsecutiveBreaches += 1
+        local _, Action = RuntimeSupport.ReportCharacterIntegrity(Player, "NonFiniteMovement", 12, "root transform")
+        if Action == "correct" then
+            RuntimeSupport.CorrectCharacter(PlayerState, Character, Root, Now)
+        end
+        return
+    end
+
+    if PlayerState.Character ~= Character or PlayerState.LastPosition == nil or PlayerState.LastSampleAt <= 0 then
+        PlayerState.Character = Character
+        PlayerState.LastPosition = Root.Position
+        PlayerState.LastSafeCFrame = RootCFrame
+        PlayerState.LastSampleAt = Now
+        PlayerState.GraceUntil = math.max(
+            PlayerState.GraceUntil,
+            Now + math.max(0, RuntimeConfig.CharacterIntegrityJoinGraceSeconds)
+        )
+        return
+    end
+
+    local Position = Root.Position
+    local Delta = Position - PlayerState.LastPosition
+    local DeltaTime = Now - PlayerState.LastSampleAt
+    PlayerState.LastSampleAt = Now
+
+    if Now < PlayerState.GraceUntil then
+        PlayerState.LastPosition = Position
+        PlayerState.LastSafeCFrame = RootCFrame
+        PlayerState.ConsecutiveBreaches = 0
+        return
+    end
+
+    local Seat = Humanoid.SeatPart
+    local Seated = Seat ~= nil and Seat.Occupant == Humanoid
+    local Ping = 0
+    pcall(function()
+        Ping = Player:GetNetworkPing()
+    end)
+    local HorizontalDelta = Vector3.new(Delta.X, 0, Delta.Z)
+    local Velocity = Root.AssemblyLinearVelocity
+    local HorizontalVelocity = Vector3.new(Velocity.X, 0, Velocity.Z).Magnitude
+    local Evaluation = RuntimeSupport.EvaluateCharacterMovement({
+        DeltaTime = DeltaTime,
+        HorizontalDistance = HorizontalDelta.Magnitude,
+        VerticalDistance = math.abs(Delta.Y),
+        WalkSpeed = Humanoid.WalkSpeed,
+        HorizontalVelocity = HorizontalVelocity,
+        VerticalVelocity = Velocity.Y,
+        Ping = Ping,
+        Seated = Seated,
+        Grounded = Humanoid.FloorMaterial ~= Enum.Material.Air,
+        PathBlocked = not Seated and DeltaTime <= RuntimeConfig.CharacterIntegrityMaxStepSeconds
+            and HorizontalDelta.Magnitude > math.max(4, RuntimeConfig.CharacterIntegrityDistanceSlack * 0.5)
+            and RuntimeSupport.CharacterPathBlocked(PlayerState, Root, PlayerState.LastPosition, Delta),
+    }, PlayerState.Limits)
+
+    if Evaluation.Resync then
+        PlayerState.LastPosition = Position
+        PlayerState.LastSafeCFrame = RootCFrame
+        PlayerState.ConsecutiveBreaches = 0
+        return
+    end
+
+    if not Evaluation.Suspicious then
+        PlayerState.LastPosition = Position
+        PlayerState.LastSafeCFrame = RootCFrame
+        PlayerState.ConsecutiveBreaches = 0
+        return
+    end
+
+    PlayerState.ConsecutiveBreaches += 1
+    local Reason = table.concat(Evaluation.Reasons, "+")
+    local _, Action = RuntimeSupport.ReportCharacterIntegrity(
+        Player,
+        Reason,
+        Evaluation.Weight,
+        `horizontal:{math.floor(HorizontalDelta.Magnitude * 100) / 100};vertical:{math.floor(Delta.Y * 100) / 100};dt:{math.floor(DeltaTime * 1000) / 1000}`
+    )
+
+    if Action ~= "correct" or not RuntimeSupport.CorrectCharacter(PlayerState, Character, Root, Now) then
+        PlayerState.LastPosition = Position
+    end
+end
+
+function RuntimeSupport.StepCharacterIntegrity(PlayersList: {any})
+    if not RuntimeConfig.EnableCharacterIntegrity then
+        return
+    end
+
+    local Now = os.clock()
+    for _, Player in PlayersList do
+        if not IsPlayerActive(Player) then
+            continue
+        end
+        local Success, Failure = pcall(RuntimeSupport.StepCharacterIntegrityPlayer, Player, Now)
+        if not Success then
+            EmitTelemetry("security.characterIntegrityError", {
+                Player = Player,
+                UserId = TryGetUserId(Player),
+                Error = tostring(Failure),
+                Time = Now,
+            })
+        end
+    end
+end
+
 Players.PlayerRemoving:Connect(function(Player)
     PlayersMap[Player] = nil
     ClearPlayerRuntimeState(Player)
 end)
+
+function RuntimeSupport.EmitReliable(Target: any, Packet: buffer, Instances: {Instance}?)
+    Reliable:FireClient(Target, Packet, Instances)
+    TrackSend("Reliable", buffer.len(Packet), Target)
+end
 
 local function StepReplication()
     ProfileBegin("Cheeto.Flush.Server")
@@ -259,6 +629,7 @@ local function StepReplication()
     --> the life of the server -- a lost reply, or a peer that simply never
     --> answers, silently leaks a coroutine and hangs that caller forever.
     ExpireInvocations()
+    RuntimeSupport.ExpireFragments()
     RuntimeSupport.FlushLatest()
     RuntimeSupport.FlushUnreliableBatches()
     local ActivePlayers = Players:GetPlayers()
@@ -278,10 +649,12 @@ local function StepReplication()
         end
     end
     for Player, Send in PlayersMap do
-        Load(Send)
-        FlushBits()
-        PlayersMap[Player] = Save()
-        Send = PlayersMap[Player]
+        if Send.BitCount > 0 then
+            Load(Send)
+            FlushBits()
+            Send = Save()
+            PlayersMap[Player] = Send
+        end
         if Send.Cursor <= 0 then
             continue
         end
@@ -289,16 +662,11 @@ local function StepReplication()
             continue
         end
 
-        local Buffer = buffer.create(Send.Cursor)
-        buffer.copy(Buffer, 0, Send.Buffer, 0, Send.Cursor)
         if RuntimeConfig.MaxReliablePacketBytes > 0 and Send.Cursor > RuntimeConfig.MaxReliablePacketBytes then
             DropPacket(Player, "Reliable", "MaxPacketBytes", Send.Cursor)
             RuntimeSupport.RecordFlush(Player, "Reliable", 0)
         elseif IsPlayerActive(Player) then
-            for _, Fragment in RuntimeSupport.FragmentReliablePacket(Player, Buffer, InstancePayload(Send.Instances)) do
-                Reliable:FireClient(Player, Fragment.Buffer, Fragment.Instances)
-                TrackSend("Reliable", buffer.len(Fragment.Buffer), Player)
-            end
+            RuntimeSupport.SendReliablePacket(Player, Send.Buffer, Send.Cursor, InstancePayload(Send.Instances))
             RuntimeSupport.RecordFlush(Player, "Reliable", Send.Cursor)
         end
 

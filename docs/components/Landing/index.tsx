@@ -250,7 +250,7 @@ export default function Landing() {
         <span>Cheeto</span>
         <span>Networking compiler for Roblox</span>
         <span>Doc CH-001</span>
-        <span>Rev 1.0.0</span>
+        <span>Rev {process.env.NEXT_PUBLIC_CHEETO_VERSION}</span>
       </div>
 
       <section className={styles.hero}>
