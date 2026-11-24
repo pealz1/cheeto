@@ -102,7 +102,7 @@ Runs after an event is decoded and passes validation, just before its listener i
 Runs for every dropped packet or event, in either direction.
 
 ```lua
-{ Name: string?, Source: any, Channel: string, Reason: string, Size: number }
+{ Name: string?, Source: any, Channel: string, Direction: "send" | "receive", Reason: string, Size: number }
 ```
 
 `Reason` is one of the [drop reasons](/reference/drop-reasons), or a custom reason returned by a policy.
@@ -168,6 +168,7 @@ A single stream for internal events you may want to forward to logging.
 | `security.clientIntegrity` | Integrity evidence entry |
 | `security.characterIntegrity` | Movement evidence entry |
 | `security.characterIntegrityError` | `{ Player, UserId, Error, Time }` when sampling a character failed |
+| `transport.drop` | A local send was dropped. Includes `Name`, `Source` (the target), `Channel`, `Reason`, `Direction` and `Size`. |
 | `transport.flush` | `{ Target, Channel, Size, QueuedBytes, QueuedEvents }` |
 | `transport.fragment` | `{ Target, FragmentId, Count, Size }` |
 | `transport.reassembled` | `{ Source, FragmentId, Count, Size }` |

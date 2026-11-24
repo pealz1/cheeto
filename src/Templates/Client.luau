@@ -113,7 +113,7 @@ end
 function RuntimeSupport.SendUnreliable(_Targets: any?, _Except: any?, Priority: string?)
     local Size = SendCursor
     if RuntimeConfig.MaxUnreliablePacketBytes > 0 and Size > RuntimeConfig.MaxUnreliablePacketBytes then
-        DropPacket("Client", "Unreliable", "MaxPacketBytes", Size)
+        DropPacket("Client", "Unreliable", "MaxPacketBytes", Size, nil, true)
         return
     end
 
@@ -148,7 +148,7 @@ local function StepReplication()
     end
 
     if RuntimeConfig.MaxReliablePacketBytes > 0 and SendCursor > RuntimeConfig.MaxReliablePacketBytes then
-        DropPacket("Client", "Reliable", "MaxPacketBytes", SendCursor)
+        DropPacket("Client", "Reliable", "MaxPacketBytes", SendCursor, nil, true)
         RuntimeSupport.RecordFlush("Server", "Reliable", 0)
     else
         RuntimeSupport.SendReliablePacket("Server", SendBuffer, SendCursor, InstancePayload(SendInstances))

@@ -186,6 +186,11 @@ local Cheeto = luau.load(Bytecode, { debugName = "DatatypesClient", environment 
 
 local ServerEnv = table.clone(Environment)
 ServerEnv._G = {}
+local Now = 100
+ServerEnv.os = table.clone(os)
+ServerEnv.os.clock = function()
+	return Now
+end
 local Server = luau.load(fs.readFile("../Network/DatatypesServer.luau"), { environment = ServerEnv })()
 local Config =
 	{ EnableProtocolHandshake = false, ReliableFragmentBytes = 8, MaxReliablePacketBytes = 512, RateLimitPerSecond = 0 }
@@ -344,6 +349,189 @@ Cheeto.Appearance.Fire(Payload)
 Cheeto.StepReplication()
 assert(Delivered == 3, "Failed standalone codecs must preserve the queued batch and active receive frame")
 
+--> Exercise both transports with the same deterministic server clock.
+do
+	local Settings =
+		{ MaxBurstBytes = 1, UseStringDictionaries = true, ReliableFragmentBytes = 0, NoRawCaptureInProduction = false }
+	Cheeto.Configure(Settings)
+	Server.Configure(Settings)
+	Cheeto.Capture.Start({ Limit = 8 })
+	Server.Capture.Start({ Limit = 3, Redactions = "Secret" })
+	Server.Configure({ IngressBytesPerSecond = 16, IngressBurstBytes = 1 })
+	assert(Server.Transport.Ingress(TestPlayer) == nil, "An unread peer must have no ingress allocation")
+	local Pulses = 0
+	Server.Pulse.On(function()
+		Pulses += 1
+	end)
+	Cheeto.Pulse.Fire(1)
+	Cheeto.StepReplication()
+	local Drop = Server.Capture.Entries({ Reason = "IngressByteLimit", UserId = 1 })[1]
+	assert(
+		Pulses == 0 and Drop and Drop.Channel == "Unreliable" and Drop.Buffer == nil and Drop.Instances == nil,
+		"A dropped packet must carry only its own metadata"
+	)
+	local PacketBytes = Drop.Size
+	assert(
+		PacketBytes > 1 and Server.Transport.Ingress(TestPlayer).DroppedBytes == PacketBytes,
+		"The shared budget must count the physical packet bytes"
+	)
+	Server.Configure({ IngressBytesPerSecond = PacketBytes, IngressBurstBytes = PacketBytes })
+	Cheeto.Pulse.Fire(2)
+	Cheeto.StepReplication()
+	Deliver(1)
+	local Budget = Server.Transport.Ingress(TestPlayer)
+	assert(
+		Pulses == 1 and Budget.AdmittedBytes == PacketBytes and Budget.AvailableBytes == 0,
+		"An admitted unreliable packet must consume the balance"
+	)
+	assert(
+		Budget.DroppedPackets == 1 and Budget.DroppedBytes == buffer.len(SentParts[1][1]),
+		"Reliable fragments must use the same byte budget"
+	)
+	local Other = { Parent = {}, UserId = 2 }
+	local Unreliable = Environment.game:GetService("ReplicatedStorage"):FindFirstChild("CHEETO_UNRELIABLE_REMOTE")
+	local Accepted = Server.Capture.Entries({ Name = "Pulse", Direction = "receive" })[1]
+	Unreliable.OnServerEvent.Callback(Other, Accepted.Buffer)
+	assert(
+		Pulses == 2 and Server.Transport.Ingress(Other).AdmittedPackets == 1,
+		"A second peer must have an independent allowance"
+	)
+	Now += 1
+	assert(
+		Server.Transport.Ingress(TestPlayer).AvailableBytes == PacketBytes,
+		"Reading the budget must reflect elapsed refill time"
+	)
+	Cheeto.Pulse.Fire(3)
+	Cheeto.StepReplication()
+	assert(
+		Pulses == 3 and Server.Transport.Ingress(TestPlayer).AdmittedPackets == 2,
+		"The next packet must spend the refilled balance"
+	)
+	assert(
+		Server.Stats().CapturedPackets == 3 and #Server.Capture.Entries({ Limit = 0 }) == 0,
+		"The ring must enforce capacity and an empty query limit"
+	)
+	local Latest = Server.Capture.Entries({ Status = "accepted", Limit = 2 })
+	assert(
+		#Latest == 2 and Latest[1].UserId == 2 and Latest[2].UserId == 1,
+		"Newest matches must be returned in chronological order"
+	)
+	assert(
+		Latest[1].Redaction.Fields.Secret and Latest[2].Redaction.Fields.Secret,
+		"Configuring a traffic budget must preserve capture redactions"
+	)
+	Server.Capture.Start({ Limit = 1 })
+	assert(
+		#Server.Capture.Entries() == 1 and Server.Capture.Entries()[1].UserId == 1,
+		"Shrinking a ring must immediately retain its newest entry"
+	)
+	assert(
+		not pcall(Server.Capture.Start, { Limit = -1 }) and not pcall(Server.Configure, { CaptureLimit = 1.5 }),
+		"Invalid capture limits must be rejected"
+	)
+	Server.Configure({ IngressBytesPerSecond = 0 })
+	assert(
+		Server.Transport.Ingress(TestPlayer) == nil and Server.Transport.Ingress(Other) == nil,
+		"Disabling ingress must release both peer budgets"
+	)
+	Server.Capture.Start({ Limit = 8 })
+
+	local Notes = {}
+	local removeNotes = Server.InventoryNote.On(function(_, Note)
+		table.insert(Notes, Note)
+	end)
+	Cheeto.InventoryNote.Fire({ Label = "inventory", Reference = "first" })
+	Cheeto.InventoryNote.Fire({ Label = "inventory", Reference = "second" })
+	Cheeto.StepReplication()
+	local Received = Server.Capture.Entries({ Name = "InventoryNote" })
+	local Sent = Cheeto.Capture.Entries({ Name = "InventoryNote" })
+	assert(#Notes == 2 and #Received == 2 and #Sent == 2, "Both messages must reach the listener and both recorders")
+	for _, Entries in { Received, Sent } do
+		local Entry = Entries[2]
+		assert(
+			#Entry.Instances == 1 and Entry.Instances[1] == "second",
+			"Each recording must contain only its own reference"
+		)
+		assert(
+			Entry.StringContext and Entry.StringContext.Strings[1] == "inventory",
+			"A repeated label must retain its original dictionary id"
+		)
+		assert(
+			Server.Capture.ReplayRaw({ Entry }, TestPlayer).Replayed == 1,
+			"Raw replay must dispatch a standalone accepted entry"
+		)
+		assert(
+			Notes[#Notes].Label == "inventory" and Notes[#Notes].Reference == "second",
+			"Replay must resolve the original label and reference"
+		)
+	end
+	assert(#Notes == 4, "Both send-side and receive-side captures must replay")
+	assert(
+		Server.Capture.ReplayRaw({ { Status = "dropped", Buffer = Received[1].Buffer } }, TestPlayer).Replayed == 0,
+		"Historical dropped frames must never be injected"
+	)
+	assert(#Notes == 4, "Skipping a dropped frame must preserve the listener count")
+	local FirstByte = buffer.readu8(Received[1].Buffer, 0)
+	buffer.writeu8(Received[1].Buffer, 0, (FirstByte + 1) % 256)
+	assert(
+		buffer.readu8(Server.Capture.Entries({ Name = "InventoryNote" })[1].Buffer, 0) == FirstByte,
+		"Mutating a snapshot must preserve the recorded bytes"
+	)
+	Server.Configure({ MaxPacketReferences = 1 })
+	Cheeto.InventoryNote.Fire({ Label = "a", Reference = "one" })
+	Cheeto.InventoryNote.Fire({ Label = "b", Reference = "two" })
+	Cheeto.StepReplication()
+	assert(
+		#Notes == 4 and Server.Stats().DroppedPackets.ReferenceLimit == 1,
+		"Ordinary batched references must respect the configured cap"
+	)
+	Server.Configure({ MaxPacketReferences = 0 })
+	removeNotes()
+	local nested = false
+	local disconnect = Server.InventoryNote.On(function(_, note)
+		table.insert(Notes, note)
+		if note.Reference == "outer" then
+			nested = Server.Capture.ReplayRaw({ Received[2] }, TestPlayer).Replayed == 1
+		end
+	end)
+	Cheeto.InventoryNote.Fire({ Label = "nested", Reference = "outer" })
+	Cheeto.InventoryNote.Fire({ Label = "nested", Reference = "tail" })
+	Cheeto.StepReplication()
+	assert(
+		nested and #Notes == 7 and Notes[7].Reference == "tail",
+		"Replaying from a listener must preserve the rest of its outer batch"
+	)
+	disconnect()
+	local sheds = 0
+	local removeHook = Cheeto.Use("Telemetry", function(entry)
+		if entry.Name == "transport.drop" and entry.Payload.Direction == "send" then
+			sheds += 1
+		end
+	end)
+	Cheeto.Security.Kill("Pulse")
+	Cheeto.Pulse.Fire(5)
+	Cheeto.Security.Unkill("Pulse")
+	removeHook()
+	assert(
+		sheds == 1 and Cheeto.Stats().DroppedPackets.KillSwitch == 1,
+		"An outgoing kill switch must emit one transport drop"
+	)
+	assert(
+		Cheeto.Security.AbuseScores("Server").Pulse == nil,
+		"Local send failures must not increase a remote peer's abuse score"
+	)
+	assert(
+		#Cheeto.Capture.Entries({ Name = "Pulse", Direction = "send", Status = "dropped" }) == 1,
+		"Send-side drops must remain attributable"
+	)
+	Server.Capture.Start({ Limit = 0 })
+	Cheeto.Pulse.Fire(4)
+	Cheeto.StepReplication()
+	assert(Server.Stats().CapturedPackets == 0, "A zero limit must disable capture storage")
+	Cheeto.Capture.Stop()
+	Server.Capture.Stop()
+end
+
 --> Keep the live sampler on server-owned movement limits throughout a sprint.
 local Root =
 	{ Position = V3.zero, CFrame = roblox.CFrame.new(), AssemblyLinearVelocity = V3.zero, CollisionGroup = "Default" }
@@ -369,7 +557,7 @@ Server.Configure({
 })
 Server.StepReplication()
 local function MoveAndSample(X)
-	task.wait(0.06)
+	Now += 0.125
 	TestPlayer.Character:PivotTo(roblox.CFrame.new(X, 0, 0))
 	Server.StepReplication()
 	return Server.Security.CharacterIntegrity(TestPlayer)
@@ -388,6 +576,36 @@ assert(MoveAndSample(120).ConsecutiveBreaches == 1, "Sitting without an occupied
 Humanoid.SeatPart = { Occupant = Humanoid }
 assert(MoveAndSample(180).ConsecutiveBreaches == 0, "An occupied seat must exempt vehicle movement")
 Humanoid.SeatPart = nil
+Server.Configure({
+	CharacterIntegrityWindowSeconds = 0.5,
+	CharacterIntegrityDistanceSlack = 8,
+	CharacterIntegrityMaxHorizontalSpeed = 32,
+	CharacterIntegritySpeedMultiplier = 1,
+	CharacterIntegrityMode = "Correct",
+	CharacterIntegrityCorrectionScore = 1,
+})
+assert(Server.Security.ReconcileCharacter(TestPlayer, true), "The starting character sample must be valid")
+for X = 190, 210, 10 do
+	assert(MoveAndSample(X).ConsecutiveBreaches == 0, "Individual samples should fit within the burst allowance")
+end
+local Evidence = MoveAndSample(220)
+assert(
+	Evidence.LastReason == "SustainedHorizontalDisplacement" and Evidence.LastAction == "correct",
+	"Sustained excess must reach the configured correction action"
+)
+assert(Root.Position.X == 180, "Correction must use the last completed safe window")
+Server.Configure({ CharacterIntegrityMode = "Observe" })
+Now += 3
+assert(Server.Security.ReconcileCharacter(TestPlayer, true), "Reconciliation must establish the new movement baseline")
+for X = 184, 196, 4 do
+	assert(MoveAndSample(X).Score == 0, "Allowed movement across the full window should be accepted")
+end
+MoveAndSample(206)
+MoveAndSample(216)
+Server.Security.GrantMovementGrace(TestPlayer, 0.5)
+MoveAndSample(400)
+Now += 0.5
+assert(MoveAndSample(404).Score == 0, "Grace must discard the partial movement window")
 TestPlayer.Character = nil
 local Grace = Server.Security.CharacterIntegrity(TestPlayer).GraceUntil
 assert(

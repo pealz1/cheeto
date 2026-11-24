@@ -150,6 +150,7 @@ export declare const Protocol: {
 }
 export declare const Transport: {
 	Errors: Readonly<Record<string, string>>
+	Ingress: (Source?: unknown) => { AvailableBytes: number; AdmittedBytes: number; AdmittedPackets: number; DroppedBytes: number; DroppedPackets: number } | undefined
 	RecordQueuedEvent: (Target: unknown, Channel: string, Size: number, Priority?: string) => boolean
 	RecordFlush: (Target: unknown, Channel: string, Size: number) => void
 	ShouldFlush: (Target: unknown, Channel: string, Size: number, Priority?: string) => boolean
@@ -170,9 +171,9 @@ export declare const Capture: {
 	Start: (Options?: Record<string, unknown>) => void
 	Stop: () => void
 	Clear: () => void
-	Entries: () => Record<string, unknown>[]
-	Replay: (Entries: Record<string, unknown>[], Handlers?: Record<string, (Payload: unknown) => unknown>) => void
-	ReplayRaw: (Entries: Record<string, unknown>[], SourceOverride?: unknown) => void
+	Entries: (Filter?: { Limit?: number; Name?: string; Status?: "accepted" | "dropped"; Direction?: "send" | "receive"; Reason?: string; UserId?: number; Channel?: "Reliable" | "Unreliable" }) => Record<string, unknown>[]
+	Replay: (Entries: Record<string, unknown>[], Handlers?: Record<string, (Entry: Record<string, unknown>) => unknown>) => { Accepted: number; Dropped: number; Replayed: number }
+	ReplayRaw: (Entries: Record<string, unknown>[], SourceOverride?: unknown) => { Accepted: number; Dropped: number; Replayed: number; MissingRaw: number }
 	Redact: (Redactions: string | string[]) => void
 }
 export declare const Inspector: { Enable: (Enabled: boolean) => void; Snapshot: () => Record<string, unknown> }

@@ -39,7 +39,7 @@ Redaction only applies to the readable summary. Raw buffers, when kept, contain 
 
 <Spec type="number" default={<code>1024</code>} />
 
-Maximum number of capture entries kept. When full, the oldest entry is removed for each new one.
+Maximum number of capture entries kept. A full buffer replaces its oldest entry in constant time. Shrinking the limit immediately keeps the newest entries. Limits must be finite, nonnegative integers. Zero clears the history and suspends recording.
 
 ## `NoRawCaptureInProduction`
 

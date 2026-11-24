@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- Added shared per-peer ingress byte budgets.
+- Added packet reference limits.
+- Added sustained horizontal movement detection.
+- Added filtered packet capture queries.
+
+### Fixed
+
+- Fixed cross-player data in drop captures.
+- Fixed replaying batched references and strings.
+- Fixed outgoing drops increasing peer abuse scores.
+- Fixed capture limits resetting during configuration.
+- Fixed full capture buffer write performance.
+
 ## [1.2.0] - 2026-11-24
 
 ### Added

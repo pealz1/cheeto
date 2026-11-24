@@ -45,3 +45,14 @@ event Appearance {
     Call: SingleSync,
     Data: AppearanceData
 }
+
+event InventoryNote {
+    From: Client,
+    Type: Reliable,
+    Call: SingleSync,
+    Data: struct {
+        Label: string,
+        Reference: unknown
+    }
+}
+event Pulse { From: Client, Type: Unreliable, Call: SingleSync, Data: u8 }
