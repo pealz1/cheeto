@@ -10,6 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- Added a portable Lune compiler download.
 - Added per-player movement limits.
 - Added per-peer fragment memory budgets.
 - Added Region3int16 and standalone sequence keypoints.
