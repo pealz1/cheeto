@@ -59,6 +59,8 @@ Checks the schema for risky settings without writing anything, and prints each f
 - missing `ClientOutput` or `ServerOutput`;
 - client-origin events and functions with none of `Auth`, `Policy` or `PolicyGroup`.
 
+For schemas with functions, the request summary gives the identifier width, pending-call limit and server concurrency limits after applying the security profile. A warning flags a pending limit above 256 when the schema uses one-byte identifiers.
+
 It then lists every policy, policy group and auth rule name the schema uses, so you can check each one is registered: an unregistered name drops every packet on its endpoints.
 
 ```

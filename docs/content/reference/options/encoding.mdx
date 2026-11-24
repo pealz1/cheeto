@@ -19,6 +19,7 @@ Do not change the encoding options with `Configure` on only one side. A server w
 | [`UseVarints`](#usevarints) | boolean | `true` |
 | [`UseBitPacking`](#usebitpacking) | boolean | `true` |
 | [`UseStringDictionaries`](#usestringdictionaries) | boolean | `false` |
+| [`WideRequestIds`](#widerequestids) | boolean | `false` |
 | [`UseBufferPooling`](#usebufferpooling) | boolean | `true` |
 | [`BufferPoolLimit`](#bufferpoollimit) | number | `64` |
 
@@ -59,3 +60,11 @@ Reuses send buffers between flushes instead of allocating new ones, in power-of-
 <Spec type="number" default={<code>64</code>} />
 
 How many buffers each size bucket keeps for reuse. Buffers released beyond this are left to the garbage collector.
+
+## `WideRequestIds`
+
+<Spec type="boolean" default={<code>false</code>} />
+
+Uses a four-byte unsigned identifier for each function request and reply. Enable it for more than 256 outstanding calls or to avoid quickly reusing identifiers after a timeout. Each request and reply grows by three bytes. Pending-call and server concurrency limits still apply.
+
+This schema option changes the handshake fingerprint and is fixed when the module loads. Regenerate and deploy both ends together.

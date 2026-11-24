@@ -79,9 +79,11 @@ type BufferSave = {
 
 type Invocation = {
     Thread: thread,
+    Endpoint: number,
     Started: number,
     Name: string,
     Timeout: number,
+    Result: any?,
     --> Set by AwaitInvocation immediately before it yields, cleared on resume.
     --> Proof that Thread is parked on THIS invocation and may be resumed once.
     Parked: thread?
@@ -144,6 +146,7 @@ local TransportError = table.freeze({
     ReplayDuplicate = "ReplayDuplicate",
     ReplayStale = "ReplayStale",
     QueueFull = "QueueFull",
+    RequestBusy = "RequestBusy",
     Backpressure = "Backpressure",
     RateLimit = "RateLimit",
     IngressByteLimit = "IngressByteLimit",
@@ -245,6 +248,9 @@ local RuntimeState = {
     Transport = {} :: {[any]: any},
     Coalesce = {} :: {[any]: {[string]: any}},
     Replay = {} :: {[any]: {[string]: any}},
+    NextInvokeExpiry = math.huge,
+    ListenerQueues = {} :: {[any]: boolean},
+    PollingQueues = {} :: {[any]: boolean},
     InvokeNonces = {} :: {[any]: {[string]: number}},
     Abuse = {} :: {[any]: {[string]: number}},
     Listeners = {} :: {[string]: {[any]: true}},
@@ -700,13 +706,6 @@ local function ProfileEnd()
     end
 end
 
---> Frame ticker for the annotation bookkeeping above.
-if RuntimeConfig.EnableMicroProfiler then
-    RunService.Heartbeat:Connect(function()
-        RuntimeState.Profile.FrameId += 1
-    end)
-end
-
 local function EmitTelemetry(Name: string, Payload: any)
     RunHooks("Telemetry", {
         Name = Name,
@@ -787,7 +786,7 @@ local function DropPacket(Source: any, Channel: string, Reason: string, Size: nu
         Size = Size or 0
     }
     RunHooks("Drop", Drop)
-    if Outgoing then
+    if Outgoing or Reason == TransportError.RequestBusy then
         EmitTelemetry("transport.drop", Drop)
     else
         ReportViolation(Source, Name or Channel, Channel, Reason, Size, "drop")
@@ -1243,7 +1242,7 @@ end
 
 --> Pure movement classification used by the live server sampler and exposed for
 --> deterministic tests. Client-reported position is never an input here.
-function RuntimeSupport.EvaluateCharacterMovement(Sample: {[string]: any}, Limits: {[string]: number}?): any
+function RuntimeSupport.EvaluateCharacterMovement(Sample: {[string]: any}, Limits: {[string]: number}?, Allowance: {[string]: any}?): any
     local DeltaTime = Sample.DeltaTime
     local HorizontalDistance = Sample.HorizontalDistance
     local VerticalDistance = Sample.VerticalDistance
@@ -1295,11 +1294,11 @@ function RuntimeSupport.EvaluateCharacterMovement(Sample: {[string]: any}, Limit
     local VelocityVertical = math.min(math.abs(VerticalVelocity), ConfiguredVertical * 2)
     local HorizontalTravel = (NominalHorizontal + VelocityHorizontal * 0.5) * DeltaTime
     local HorizontalSlack = Slack + PingSeconds * NominalHorizontal * PingAllowance
-    local AllowedHorizontal = HorizontalTravel + HorizontalSlack
-    local AllowedVertical = ConfiguredVertical * DeltaTime
-        + VelocityVertical * DeltaTime * 0.5
-        + Slack
-        + PingSeconds * ConfiguredVertical * PingAllowance
+    local VerticalTravel = (ConfiguredVertical + VelocityVertical * 0.5) * DeltaTime
+    local ExtraHorizontal = if Allowance then math.min(Allowance.Horizontal, math.max(0, HorizontalDistance - HorizontalTravel)) else 0
+    local ExtraVertical = if Allowance then math.min(Allowance.Vertical, math.max(0, VerticalDistance - VerticalTravel)) else 0
+    local AllowedHorizontal = HorizontalTravel + ExtraHorizontal + HorizontalSlack
+    local AllowedVertical = VerticalTravel + ExtraVertical + Slack + PingSeconds * ConfiguredVertical * PingAllowance
 
     local Reasons = {}
     local Weight = 0
@@ -1325,7 +1324,9 @@ function RuntimeSupport.EvaluateCharacterMovement(Sample: {[string]: any}, Limit
         Resync = false,
         Reasons = Reasons,
         Weight = math.max(0, math.min(16, Weight)),
-        HorizontalTravel = HorizontalTravel,
+        HorizontalTravel = HorizontalTravel + ExtraHorizontal,
+        UsedHorizontal = ExtraHorizontal,
+        UsedVertical = ExtraVertical,
         HorizontalSlack = HorizontalSlack,
         AllowedHorizontal = AllowedHorizontal,
         AllowedVertical = AllowedVertical,
@@ -1342,6 +1343,9 @@ function RuntimeSupport.CopyCharacterIntegrityPlayer(PlayerState: any): any
         ConsecutiveBreaches = PlayerState.ConsecutiveBreaches,
         GraceUntil = PlayerState.GraceUntil,
         Limits = if PlayerState.Limits then table.clone(PlayerState.Limits) else nil,
+        Allowance = if PlayerState.Allowance and os.clock() < PlayerState.Allowance.ExpiresAt then {
+            Horizontal = PlayerState.Allowance.Horizontal, Vertical = PlayerState.Allowance.Vertical, ExpiresAt = PlayerState.Allowance.ExpiresAt
+        } else nil,
         LastSampleAt = PlayerState.LastSampleAt,
         LastReason = PlayerState.LastReason,
         LastAction = PlayerState.LastAction,
@@ -2083,12 +2087,38 @@ do
     local NUMBER = { number = true }
     local IDENTIFIER = { number = true, string = true }
 
-    function RuntimeSupport.RegisterKnownId(Id: any, Player: Player?)
-        RuntimeState.KnownIds[Id] = if Player ~= nil then Player else true
-    end
+    local OwnedIds = {}
 
     function RuntimeSupport.ForgetKnownId(Id: any)
+        local Owner = RuntimeState.KnownIds[Id]
+        if Owner ~= nil and Owner ~= true then
+            local Ids = OwnedIds[Owner]
+            Ids[Id] = nil
+            if next(Ids) == nil then
+                OwnedIds[Owner] = nil
+            end
+        end
         RuntimeState.KnownIds[Id] = nil
+    end
+
+    function RuntimeSupport.RegisterKnownId(Id: any, Player: Player?)
+        RuntimeSupport.ForgetKnownId(Id)
+        RuntimeState.KnownIds[Id] = Player or true
+        if Player then
+            local Ids = OwnedIds[Player] or {}
+            Ids[Id] = true
+            OwnedIds[Player] = Ids
+        end
+    end
+
+    function RuntimeSupport.ForgetPlayerKnownIds(Player)
+        local Ids = OwnedIds[Player]
+        if Ids then
+            for Id in Ids do
+                RuntimeState.KnownIds[Id] = nil
+            end
+            OwnedIds[Player] = nil
+        end
     end
 
     function RuntimeSupport.SetInventoryResolver(Resolver: ((Player, any) -> boolean)?)
@@ -2162,86 +2192,6 @@ do
 
         return true
     end
-end
-
-function RuntimeSupport.RegisterHandle(Object: any, Owner: Player?, ExpiresAt: number?): number
-    local Existing = RuntimeState.ObjectToHandle[Object]
-    if Existing then
-        local Entry = RuntimeState.Handles[Existing]
-        if Entry then
-            Entry.Owner = Owner
-            Entry.ExpiresAt = ExpiresAt
-            return Existing
-        end
-        RuntimeState.ObjectToHandle[Object] = nil
-    end
-
-    RuntimeState.NextHandleId = (RuntimeState.NextHandleId + 1) % 2147483647
-    if RuntimeState.NextHandleId == 0 then
-        RuntimeState.NextHandleId = 1
-    end
-    RuntimeState.Handles[RuntimeState.NextHandleId] = {
-        Object = Object,
-        Owner = Owner,
-        ExpiresAt = ExpiresAt
-    }
-    RuntimeState.ObjectToHandle[Object] = RuntimeState.NextHandleId
-    return RuntimeState.NextHandleId
-end
-
-function RuntimeSupport.ResolveHandle(Handle: number, Player: Player?): any
-    local Entry = RuntimeState.Handles[Handle]
-    if Entry == nil then
-        return nil
-    end
-    if Entry.ExpiresAt and os.clock() >= Entry.ExpiresAt then
-        RuntimeState.Handles[Handle] = nil
-        RuntimeState.ObjectToHandle[Entry.Object] = nil
-        return nil
-    end
-    if Entry.Owner ~= nil and Player ~= nil and Entry.Owner ~= Player then
-        return nil
-    end
-
-    return Entry.Object
-end
-
-function RuntimeSupport.RevokeHandle(Handle: number)
-    local Entry = RuntimeState.Handles[Handle]
-    if Entry then
-        RuntimeState.ObjectToHandle[Entry.Object] = nil
-        RuntimeState.Handles[Handle] = nil
-    end
-end
-
-function RuntimeSupport.IssueCapability(Object: any, Owner: Player?, Permissions: {[string]: boolean}?, DurationSeconds: number?): number
-    RuntimeState.NextCapabilityId = (RuntimeState.NextCapabilityId + 1) % 2147483647
-    if RuntimeState.NextCapabilityId == 0 then
-        RuntimeState.NextCapabilityId = 1
-    end
-    RuntimeState.Capabilities[RuntimeState.NextCapabilityId] = {
-        Object = Object,
-        Owner = Owner,
-        Permissions = Permissions or {},
-        ExpiresAt = os.clock() + (DurationSeconds or 30)
-    }
-    return RuntimeState.NextCapabilityId
-end
-
-function RuntimeSupport.ValidateCapability(Capability: number, Player: Player?, Permission: string?): any
-    local Entry = RuntimeState.Capabilities[Capability]
-    if Entry == nil or os.clock() >= Entry.ExpiresAt then
-        RuntimeState.Capabilities[Capability] = nil
-        return nil
-    end
-    if Entry.Owner ~= nil and Player ~= nil and Entry.Owner ~= Player then
-        return nil
-    end
-    if Permission and Entry.Permissions[Permission] ~= true then
-        return nil
-    end
-
-    return Entry.Object
 end
 
 local function TransportKey(Target: any): any
@@ -2425,13 +2375,18 @@ end
 
 local function SetScopedMembership(Store: {[any]: {[Player]: true}}, ScopeName: any, Player: Player, Enabled: boolean?)
     local Bucket = Store[ScopeName]
-    if Bucket == nil then
-        Bucket = {}
-        Store[ScopeName] = Bucket
-    end
     if Enabled == false then
-        Bucket[Player] = nil
+        if Bucket then
+            Bucket[Player] = nil
+            if next(Bucket) == nil then
+                Store[ScopeName] = nil
+            end
+        end
     else
+        if not Bucket then
+            Bucket = {}
+            Store[ScopeName] = Bucket
+        end
         Bucket[Player] = true
     end
 end
@@ -2472,16 +2427,7 @@ function RuntimeSupport.SetStreamedCell(CellName: string, Player: Player, Enable
 end
 
 function RuntimeSupport.SetObjectOwner(Object: any, Player: Player, Enabled: boolean?)
-    local Owners = RuntimeState.ObjectOwners[Object]
-    if Owners == nil then
-        Owners = {}
-        RuntimeState.ObjectOwners[Object] = Owners
-    end
-    if Enabled == false then
-        Owners[Player] = nil
-    else
-        Owners[Player] = true
-    end
+    SetScopedMembership(RuntimeState.ObjectOwners, Object, Player, Enabled)
 end
 
 function RuntimeSupport.GetInterestPlayers(Scope: string, Key: any): {Player}
@@ -3024,6 +2970,9 @@ local function Configure(Options: {[string]: any})
             error(`[Cheeto]: Unknown runtime option "{Key}".`)
         end
 
+        if Key == "WideRequestIds" and Value ~= RuntimeConfig.WideRequestIds then
+            error("[Cheeto]: Set WideRequestIds in the schema and regenerate both modules.")
+        end
         if Key == "CharacterIntegrityMode" then
             local Mode = string.lower(tostring(Value))
             if Mode ~= "observe" and Mode ~= "report" and Mode ~= "correct" and Mode ~= "kick" then
@@ -3033,7 +2982,7 @@ local function Configure(Options: {[string]: any})
 
         if Key == "CaptureRedactions" then
             RuntimeSupport.CheckRedactions(Value)
-        elseif Key == "CaptureLimit" or Key == "MaxPacketReferences" then
+        elseif Key == "MaxQueuedEvents" or Key == "CaptureLimit" or Key == "MaxPacketReferences" or Key == "MaxActiveRequests" or Key == "MaxActiveRequestsPerPlayer" then
             RuntimeSupport.CheckCountLimit(Value)
         elseif Key == "IngressBytesPerSecond" or Key == "IngressBurstBytes" or Key == "CharacterIntegrityWindowSeconds" then
             assert(RuntimeSupport.FiniteNumber(Value) and Value >= 0, "[Cheeto]: Expected a finite nonnegative limit.")
@@ -5137,53 +5086,212 @@ function Frame.WriteExport(Writer: () -> ()): buffer
     return Result
 end
 
---> Invocation ids are one byte. Skip ids that are still awaiting a reply;
---> handing one out twice made the second caller fail with "already awaiting a
---> response" even while 254 other ids were free.
-local function Invoke()
-    for _ = 1, 256 do
-        local Invocation = Invocations
-        Invocations = (Invocations + 1) % 256
-        if Calls[Invocation] == nil then
-            return Invocation
+-- NETWORK RUNTIME --
+
+--> Frame ticker for the annotation bookkeeping above.
+if RuntimeConfig.EnableMicroProfiler then
+    RunService.Heartbeat:Connect(function()
+        RuntimeState.Profile.FrameId += 1
+    end)
+end
+
+do
+    local ByOwner = {}
+    local Expiring = {}
+    local NextSweep = math.huge
+
+    local function Forget(Entry)
+        if Entry.Owner ~= nil then
+            local Owned = ByOwner[Entry.Owner]
+            Owned[Entry] = nil
+            if next(Owned) == nil then
+                ByOwner[Entry.Owner] = nil
+            end
+        end
+        Expiring[Entry] = nil
+        Entry.Store[Entry.Id] = nil
+        if Entry.Store == RuntimeState.Handles then
+            RuntimeState.ObjectToHandle[Entry.Object] = nil
         end
     end
 
-    error("[Cheeto]: 256 calls are already awaiting a response.")
-end
-
---> Resuming an invocation is the ONE resume an attacker can aim: the identifier
---> that selects which invocation to resolve is a u8 read straight off the wire.
--->
---> "The entry is in Calls" is not proof that its thread is waiting for it. If
---> anything throws between taking an identifier and reaching the yield --
---> serialization of an out-of-range value, a pending-invoke limit, a dead
---> Instance -- the thread unwinds while the entry survives. Resuming that stale
---> entry later delivers a resume to a thread that has since parked on something
---> completely unrelated, consuming the resume its real awaiter needed. The thread
---> is left dead or hung and the fault surfaces nowhere near the cause.
--->
---> So a resume requires positive proof of parking: AwaitInvocation records the
---> thread on the entry immediately before yielding, and only that recorded thread
---> is ever resumed, exactly once.
-local function AwaitInvocation(Identifier: number)
-    local Invocation = Calls[Identifier]
-    if Invocation ~= nil then
-        Invocation.Parked = coroutine.running()
+    local function Track(Entry)
+        Entry.Store[Entry.Id] = Entry
+        if Entry.Owner ~= nil then
+            local Owned = ByOwner[Entry.Owner] or {}
+            ByOwner[Entry.Owner] = Owned
+            Owned[Entry] = true
+        end
+        if Entry.ExpiresAt ~= nil then
+            Expiring[Entry] = true
+            NextSweep = math.min(NextSweep, math.ceil(Entry.ExpiresAt))
+        end
     end
 
+    function RuntimeSupport.ExpireGrants()
+        local Now = os.clock()
+        if Now < NextSweep then
+            return
+        end
+        NextSweep = math.huge
+        for Entry in Expiring do
+            if Now >= Entry.ExpiresAt then
+                Forget(Entry)
+            else
+                NextSweep = math.min(NextSweep, math.ceil(Entry.ExpiresAt))
+            end
+        end
+    end
+
+    function RuntimeSupport.ForgetPlayerGrants(Player)
+        local Owned = ByOwner[Player]
+        if Owned then
+            for Entry in Owned do
+                Forget(Entry)
+            end
+        end
+    end
+
+    local function Live(Store, Id)
+        local Entry = Store[Id]
+        if Entry and Entry.ExpiresAt ~= nil and os.clock() >= Entry.ExpiresAt then
+            Forget(Entry)
+            return nil
+        end
+        return Entry
+    end
+
+    local function NextId(Store, Previous)
+        local Id = Previous
+        repeat
+            Id = Id % 2147483646 + 1
+        until Store[Id] == nil
+        return Id
+    end
+
+    function RuntimeSupport.RegisterHandle(Object: any, Owner: Player?, ExpiresAt: number?): number
+        assert(Object ~= nil and (ExpiresAt == nil or RuntimeSupport.FiniteNumber(ExpiresAt)), "[Cheeto]: Expected an object and finite handle expiry.")
+        local Existing = Live(RuntimeState.Handles, RuntimeState.ObjectToHandle[Object])
+        local Id
+        if Existing then
+            Id = Existing.Id
+            Forget(Existing)
+        else
+            Id = NextId(RuntimeState.Handles, RuntimeState.NextHandleId)
+            RuntimeState.NextHandleId = Id
+        end
+        Track({Store = RuntimeState.Handles, Id = Id, Object = Object, Owner = Owner, ExpiresAt = ExpiresAt})
+        RuntimeState.ObjectToHandle[Object] = Id
+        return Id
+    end
+
+    function RuntimeSupport.ResolveHandle(Handle: number, Player: Player?): any
+        local Entry = Live(RuntimeState.Handles, Handle)
+        if Entry and (Entry.Owner == nil or Player == nil or Entry.Owner == Player) then
+            return Entry.Object
+        end
+        return nil
+    end
+
+    function RuntimeSupport.RevokeHandle(Handle: number)
+        local Entry = RuntimeState.Handles[Handle]
+        if Entry then
+            Forget(Entry)
+        end
+    end
+
+    function RuntimeSupport.IssueCapability(Object: any, Owner: Player?, Permissions: {[string]: boolean}?, DurationSeconds: number?): number
+        local Duration = DurationSeconds or 30
+        assert(Object ~= nil and RuntimeSupport.FiniteNumber(Duration) and Duration >= 0, "[Cheeto]: Expected an object and a finite nonnegative capability lifetime.")
+        local Allowed = {}
+        for Name, Enabled in Permissions or {} do
+            if Enabled == true then
+                Allowed[Name] = true
+            end
+        end
+        local Id = NextId(RuntimeState.Capabilities, RuntimeState.NextCapabilityId)
+        RuntimeState.NextCapabilityId = Id
+        Track({Store = RuntimeState.Capabilities, Id = Id, Object = Object, Owner = Owner, Permissions = Allowed, ExpiresAt = os.clock() + Duration})
+        return Id
+    end
+
+    local function CheckCapability(Id, Player, Permission)
+        local Entry = Live(RuntimeState.Capabilities, Id)
+        if Entry and (Entry.Owner == nil or Entry.Owner == Player) and (Permission == nil or Entry.Permissions[Permission] == true) then
+            return Entry
+        end
+        return nil
+    end
+
+    function RuntimeSupport.ValidateCapability(Id: number, Player: Player?, Permission: string?): any
+        local Entry = CheckCapability(Id, Player, Permission)
+        return if Entry then Entry.Object else nil
+    end
+
+    function RuntimeSupport.ConsumeCapability(Id: number, Player: Player?, Permission: string?): any
+        local Entry = CheckCapability(Id, Player, Permission)
+        if Entry then
+            Forget(Entry)
+            return Entry.Object
+        end
+        return nil
+    end
+
+    function RuntimeSupport.RevokeCapability(Id: number)
+        local Entry = RuntimeState.Capabilities[Id]
+        if Entry then
+            Forget(Entry)
+        end
+    end
+end
+
+function RuntimeSupport.ReadRequestId(): number
+    if RuntimeConfig.WideRequestIds then
+        return buffer.readu32(RecieveBuffer, Read(4))
+    end
+    return buffer.readu8(RecieveBuffer, Read(1))
+end
+
+function RuntimeSupport.WriteRequestId(Id: number)
+    if RuntimeConfig.WideRequestIds then
+        local Offset = Allocate(4)
+        buffer.writeu32(SendBuffer, Offset, Id)
+    else
+        local Offset = Allocate(1)
+        buffer.writeu8(SendBuffer, Offset, Id)
+    end
+end
+
+local function Invoke()
+    local Space = if RuntimeConfig.WideRequestIds then 4294967296 else 256
+    for _ = 1, math.min(Space, PendingInvokes + 1) do
+        local Id = Invocations
+        Invocations = (Invocations + 1) % Space
+        if Calls[Id] == nil then
+            return Id
+        end
+    end
+    error(`[Cheeto]: {Space} calls are already awaiting a response.`)
+end
+
+--> Middleware may flush the request or cancel it before the caller yields.
+--> Store early results on this request. Only resume a thread parked for it.
+local function AwaitInvocation(Invocation: Invocation)
+    local Result = Invocation.Result
+    if Result then
+        return table.unpack(Result, 1, Result.n)
+    end
+    Invocation.Parked = coroutine.running()
     return coroutine.yield()
 end
 
 local function ResumeInvocation(Invocation: Invocation, Success: boolean, ...)
     local Parked = Invocation.Parked
-    if Parked == nil or Parked ~= Invocation.Thread then
-        --> Never parked (threw before the yield) or already resumed.
-        MetricAdd("HookErrors", "InvocationNotParked")
+    if Parked == nil then
+        Invocation.Result = table.pack(Success, ...)
         return
     end
-
-    if coroutine.status(Parked) ~= "suspended" then
+    if Parked ~= Invocation.Thread or coroutine.status(Parked) ~= "suspended" then
         MetricAdd("HookErrors", "InvocationNotSuspended")
         return
     end
@@ -5192,21 +5300,41 @@ local function ResumeInvocation(Invocation: Invocation, Success: boolean, ...)
     task.spawn(Parked, Success, ...)
 end
 
+local function ClearInvocation(Identifier: number, Endpoint: number?, Expected: Invocation?): Invocation?
+    local Invocation = Calls[Identifier]
+    if Invocation and ((Endpoint ~= nil and Invocation.Endpoint ~= Endpoint) or (Expected and Invocation ~= Expected)) then
+        return nil
+    end
+    if Invocation ~= nil then
+        Calls[Identifier] = nil
+        PendingInvokes = math.max(0, PendingInvokes - 1)
+        PendingInvokesByName[Invocation.Name] = math.max(0, (PendingInvokesByName[Invocation.Name] or 1) - 1)
+    end
+
+    return Invocation
+end
+
 local function ExpireInvocations()
     local Now = os.clock()
+    if Now < RuntimeState.NextInvokeExpiry then
+        return
+    end
+    RuntimeState.NextInvokeExpiry = math.huge
+    local Expired = {}
     for Identifier, Invocation in Calls do
-        local Timeout = Invocation.Timeout
-        if Timeout <= 0 then
-            continue
+        if Invocation.Timeout > 0 then
+            local Deadline = Invocation.Started + Invocation.Timeout
+            if Now >= Deadline then
+                ClearInvocation(Identifier)
+                table.insert(Expired, Invocation)
+            else
+                RuntimeState.NextInvokeExpiry = math.min(RuntimeState.NextInvokeExpiry, Deadline)
+            end
         end
-
-        if Now - Invocation.Started >= Timeout then
-            Calls[Identifier] = nil
-            PendingInvokes = math.max(0, PendingInvokes - 1)
-            PendingInvokesByName[Invocation.Name] = math.max(0, (PendingInvokesByName[Invocation.Name] or 1) - 1)
-            MetricAdd("InvokeTimeouts", Invocation.Name)
-            ResumeInvocation(Invocation, false, `[Cheeto]: Invoke timed out after {Timeout} seconds.`)
-        end
+    end
+    for _, Invocation in Expired do
+        MetricAdd("InvokeTimeouts", Invocation.Name)
+        ResumeInvocation(Invocation, false, `[Cheeto]: Invoke timed out after {Invocation.Timeout} seconds.`)
     end
 end
 
@@ -5228,67 +5356,48 @@ end
 --> A failed reply: the invocation id, a zero success byte and the reason.
 function RuntimeSupport.WriteInvocationFailure(Index: number, Identifier: number, Reason: string?)
     local Message = BeginMessage(Index)
-    local Offset = Allocate(2)
-    buffer.writeu8(SendBuffer, Offset, Identifier)
-    buffer.writeu8(SendBuffer, Offset + 1, 0)
+    RuntimeSupport.WriteRequestId(Identifier)
+    local Offset = Allocate(1)
+    buffer.writeu8(SendBuffer, Offset, 0)
     WriteStringValue(string.sub(Reason or "Rejected", 1, 255), 1)
     EndMessage(Message)
 end
 
-local function RegisterInvocation(Identifier: number, Thread: thread, Name: string?, MaxPending: number?, Timeout: number?)
-    ExpireInvocations()
-    local InvocationName = Name or "Client"
-    local GlobalLimit = RuntimeConfig.MaxPendingInvokes
-    local NameLimit = MaxPending or GlobalLimit
-
-    if GlobalLimit > 0 and PendingInvokes >= GlobalLimit then
-        error(`[Cheeto]: More than {GlobalLimit} calls are awaiting a response, this packet has been dropped.`)
-    end
-
-    if NameLimit > 0 and (PendingInvokesByName[InvocationName] or 0) >= NameLimit then
-        error(`[Cheeto]: More than {NameLimit} calls for "{InvocationName}" are awaiting a response, this packet has been dropped.`)
-    end
-
-    if Calls[Identifier] ~= nil then
-        error("[Cheeto]: Invocation id is already awaiting a response, this packet has been dropped.")
-    end
-
-    Calls[Identifier] = {
-        Thread = Thread,
+local function RegisterInvocation(Endpoint: number, InvocationName: string, MaxPending: number?, Timeout: number?)
+    CheckInvocationCapacity(InvocationName, MaxPending)
+    local Identifier = Invoke()
+    local Invocation = {
+        Thread = coroutine.running(),
+        Endpoint = Endpoint,
         Started = os.clock(),
         Name = InvocationName,
         Timeout = Timeout or RuntimeConfig.InvokeTimeoutSeconds
     }
+    Calls[Identifier] = Invocation
+    if Invocation.Timeout > 0 then
+        RuntimeState.NextInvokeExpiry = math.min(RuntimeState.NextInvokeExpiry, Invocation.Started + Invocation.Timeout)
+    end
     PendingInvokes += 1
     PendingInvokesByName[InvocationName] = (PendingInvokesByName[InvocationName] or 0) + 1
+    return Identifier, Invocation
 end
 
-local function ClearInvocation(Identifier: number): Invocation?
-    local Invocation = Calls[Identifier]
+function RuntimeSupport.FailInvocation(Identifier: number, Endpoint: number, Reason: string?)
+    local Invocation = ClearInvocation(Identifier, Endpoint)
     if Invocation ~= nil then
-        Calls[Identifier] = nil
-        PendingInvokes = math.max(0, PendingInvokes - 1)
-        PendingInvokesByName[Invocation.Name] = math.max(0, (PendingInvokesByName[Invocation.Name] or 1) - 1)
-    end
-
-    return Invocation
-end
-
-function RuntimeSupport.FailInvocation(Identifier: number, Name: string, Reason: string?)
-    local Invocation = ClearInvocation(Identifier)
-    if Invocation ~= nil then
-        ResumeInvocation(Invocation, false, `[Cheeto]: The reply to "{Name}" was dropped: {Reason or "Rejected"}`)
+        ResumeInvocation(Invocation, false, `[Cheeto]: The reply to "{Invocation.Name}" was dropped: {Reason or "Rejected"}`)
     end
 end
 
 local function CancelInvocations(Reason: string?)
-    for Identifier, Invocation in Calls do
-        Calls[Identifier] = nil
-        ResumeInvocation(Invocation, false, Reason or "[Cheeto]: Invoke was cancelled.")
-    end
-
+    local Cancelled = table.clone(Calls)
+    table.clear(Calls)
     table.clear(PendingInvokesByName)
     PendingInvokes = 0
+    RuntimeState.NextInvokeExpiry = math.huge
+    for _, Invocation in Cancelled do
+        ResumeInvocation(Invocation, false, Reason or "[Cheeto]: Invoke was cancelled.")
+    end
 end
 
 local function InvocationErrorMessage(Default: string, ...: any): string
@@ -5315,6 +5424,10 @@ local function Pop(queue: Queue): any
     end
 
     queue.head = head.next
+    if queue.head == nil then
+        queue.tail = nil
+        RuntimeState.PollingQueues[queue] = nil
+    end
     queue.size = math.max(0, queue.size - 1)
     return head.value
 end
@@ -5333,6 +5446,9 @@ local function Push(queue: Queue, value: any)
 
     if queue.head == nil then
         queue.head = entry
+        if RuntimeSupport.IsServer then
+            RuntimeState.PollingQueues[queue] = true
+        end
     end
 
     queue.size += 1
@@ -5431,7 +5547,58 @@ local function GetInterestDistancePlayers(ChannelName: string, Origin: Vector3, 
     return Players
 end
 
+function RuntimeSupport.QueueListenerArguments(Queue, ...)
+    if RuntimeSupport.IsServer and #Queue == 0 then
+        RuntimeState.ListenerQueues[Queue] = true
+    end
+    table.insert(Queue, table.pack(...))
+end
+
+function RuntimeSupport.RemoveQueuedPlayer(Player)
+    for Queue in RuntimeState.PollingQueues do
+        local Previous = nil
+        local Entry = Queue.head
+        while Entry do
+            if Entry.value[1] == Player then
+                if Previous then
+                    Previous.next = Entry.next
+                else
+                    Queue.head = Entry.next
+                end
+                Queue.size -= 1
+            else
+                Previous = Entry
+            end
+            Entry = Entry.next
+        end
+        Queue.tail = Previous
+        if Previous == nil then
+            RuntimeState.PollingQueues[Queue] = nil
+        end
+    end
+    for Queue in RuntimeState.ListenerQueues do
+        local Count = 0
+        local Length = #Queue
+        for Index = 1, Length do
+            local Arguments = Queue[Index]
+            if Arguments[1] ~= Player then
+                Count += 1
+                Queue[Count] = Arguments
+            end
+        end
+        for Index = Count + 1, Length do
+            Queue[Index] = nil
+        end
+        if Count == 0 then
+            RuntimeState.ListenerQueues[Queue] = nil
+        end
+    end
+end
+
 local function ClearPlayerRuntimeState(Player: Player)
+    RuntimeSupport.RemoveQueuedPlayer(Player)
+    RuntimeSupport.ForgetPlayerGrants(Player)
+    RuntimeSupport.ForgetPlayerKnownIds(Player)
     RuntimeState.Fragments[Player] = nil
     RuntimeState.RateLimit[Player] = nil
     RuntimeState.Ingress[Player] = nil
@@ -5454,20 +5621,10 @@ local function ClearPlayerRuntimeState(Player: Player)
     for _, Group in RuntimeState.Groups do
         Group[Player] = nil
     end
-    for _, Party in RuntimeState.Parties do
-        Party[Player] = nil
-    end
-    for _, Match in RuntimeState.Matches do
-        Match[Player] = nil
-    end
-    for _, Team in RuntimeState.Teams do
-        Team[Player] = nil
-    end
-    for _, Cell in RuntimeState.StreamedCells do
-        Cell[Player] = nil
-    end
-    for _, Owners in RuntimeState.ObjectOwners do
-        Owners[Player] = nil
+    for _, Store in {RuntimeState.Parties, RuntimeState.Matches, RuntimeState.Teams, RuntimeState.StreamedCells, RuntimeState.ObjectOwners} do
+        for ScopeName in Store do
+            SetScopedMembership(Store, ScopeName, Player, false)
+        end
     end
     for _, ChannelZones in RuntimeState.InterestZones do
         ChannelZones[Player] = nil

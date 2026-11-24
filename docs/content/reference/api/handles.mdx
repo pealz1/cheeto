@@ -47,7 +47,7 @@ Removes a handle immediately.
 
 <Sig side="both">{"IssueCapability(object: any, owner: Player?, permissions: {[string]: boolean}?, durationSeconds: number?): number"}</Sig>
 
-Returns a one-off token granting `owner` the listed permissions on `object` for `durationSeconds` (default 30). Unlike handles, each call returns a new token.
+Returns a token granting `owner` the listed permissions on `object` for `durationSeconds` (default 30). Each call issues a new token and copies the permission set.
 
 ```lua copy
 local token = Network.Handles.IssueCapability(plot, player, { Edit = true }, 15)
@@ -58,3 +58,24 @@ local token = Network.Handles.IssueCapability(plot, player, { Edit = true }, 15)
 <Sig side="both">{"ValidateCapability(token: number, player: Player?, permission: string?): any?"}</Sig>
 
 Returns the object if the token exists, has not expired, belongs to `player`, and grants `permission`. Otherwise returns `nil`; expired tokens are removed.
+
+An owner-bound token requires the issuing player, including when the caller omits the player argument. The replication step removes unused expired grants, and player departure removes all grants and handles owned by that player.
+
+## ConsumeCapability
+
+<Sig side="both">{"ConsumeCapability(token: number, player: Player?, permission: string?): any?"}</Sig>
+
+Validates and spends a token in one call. The first successful caller receives the object. A failed owner or permission check leaves the token available for its owner.
+
+```lua copy
+local trade = Network.Handles.ConsumeCapability(token, player, "ConfirmTrade")
+if trade then
+    Trades.Confirm(trade, player)
+end
+```
+
+## RevokeCapability
+
+<Sig side="both">{"RevokeCapability(token: number): ()"}</Sig>
+
+Closes a grant immediately. Calling it again is safe.

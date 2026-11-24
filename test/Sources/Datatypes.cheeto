@@ -1,3 +1,5 @@
+option WideRequestIds = true
+option EnableMicroProfiler = true
 option Casing = Pascal
 option Typescript = true
 option TypesOutput = "../../Network/DatatypesTypes.luau"
@@ -56,3 +58,8 @@ event InventoryNote {
     }
 }
 event Pulse { From: Client, Type: Unreliable, Call: SingleSync, Data: u8 }
+
+function Lookup { Yield: Coroutine, Data: u8, Return: u8 }
+event DeferredNote { From: Client, Type: Reliable, Call: SingleSync, Data: (u8, string?) }
+event PollRequest { From: Client, Type: Reliable, Call: Polling, Data: u8 }
+event RedeemId { From: Client, Type: Reliable, Call: SingleSync, RequireServerKnownId: true, Data: u8 }

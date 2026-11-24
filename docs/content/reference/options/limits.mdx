@@ -8,7 +8,7 @@ import { Spec } from '../../../components/Reference'
 
 # Transport limits
 
-These options bound how much a peer can send and how much work a packet can cost. Every drop they cause is reported through [`Security.OnViolation`](/reference/api/security#onviolation) with one of the [drop reasons](/reference/drop-reasons).
+These options bound how much a peer can send and how much work a packet can cost. Inspect [drop reasons](/reference/drop-reasons) and subscribe to the [Drop hook](/reference/api/hooks#drop) for both security and capacity decisions.
 
 Defaults come from [`SecurityProfile`](/reference/options/security#securityprofile). `SecurityPreset = Maximum` without an explicit profile uses `Competitive`.
 
@@ -24,8 +24,11 @@ Defaults come from [`SecurityProfile`](/reference/options/security#securityprofi
 | [`MaxQueuedBytes`](#maxqueuedbytes) | 262,144 | 131,072 | 65,536 |
 | [`MaxBurstBytes`](#maxburstbytes) | 65,536 | 32,768 | 16,384 |
 | [`MaxPendingInvokes`](#maxpendinginvokes) | 256 | 64 | 32 |
+| [`MaxActiveRequests`](#maxactiverequests) | 0 | 0 | 0 |
+| [`MaxActiveRequestsPerPlayer`](#maxactiverequestsperplayer) | 256 | 64 | 32 |
+| [`MaxQueuedEvents`](#maxqueuedevents) | 256 | 128 | 64 |
 
-The remaining limits have one default regardless of profile: [`ReliableFragmentBytes`](#reliablefragmentbytes) 49,152 · [`MaxInFlightFragments`](#maxinflightfragments) 32 · [`FragmentTimeoutSeconds`](#fragmenttimeoutseconds) 10 · [`ReplayWindowSize`](#replaywindowsize) 128 · [`ReplayStaleSeconds`](#replaystaleseconds) 30 · [`MaxDecodeOperations`](#maxdecodeoperations) 100,000 · [`MaxPayloadDepth`](#maxpayloaddepth) 16 · [`MaxPayloadStringBytes`](#maxpayloadstringbytes) 8,192 · [`MaxTableKeys`](#maxtablekeys) 2,048 · [`MaxQueuedEvents`](#maxqueuedevents) 256 · [`LowPriorityShedding`](#lowpriorityshedding) `true` · [`InvokeTimeoutSeconds`](#invoketimeoutseconds) 0.
+The remaining limits have one default regardless of profile: [`ReliableFragmentBytes`](#reliablefragmentbytes) 49,152 · [`MaxInFlightFragments`](#maxinflightfragments) 32 · [`FragmentTimeoutSeconds`](#fragmenttimeoutseconds) 10 · [`ReplayWindowSize`](#replaywindowsize) 128 · [`ReplayStaleSeconds`](#replaystaleseconds) 30 · [`MaxDecodeOperations`](#maxdecodeoperations) 100,000 · [`MaxPayloadDepth`](#maxpayloaddepth) 16 · [`MaxPayloadStringBytes`](#maxpayloadstringbytes) 8,192 · [`MaxTableKeys`](#maxtablekeys) 2,048 · [`LowPriorityShedding`](#lowpriorityshedding) `true` · [`InvokeTimeoutSeconds`](#invoketimeoutseconds) 0.
 
 ## Packet size
 
@@ -105,11 +108,11 @@ Caps the numbered slots in a packet's reference table and the total slots its me
 
 ### `MaxQueuedEvents`
 
-<Spec type="number" default={<code>256</code>} on="option, event, function, channel" />
+<Spec type="number" default="256 / 128 / 64 by profile" on="option, event, function, channel" />
 
 The per-endpoint inbound queue length. Reliable events that arrive before any `On` listener is connected are queued and delivered when one connects; polling events wait in a queue until `Iter` reads them. When the queue is full, further events are dropped with `QueueFull`.
 
-This value is compiled into the endpoints. Security profiles do not change it and `Configure` has no effect on it.
+An endpoint override takes precedence. Otherwise `Configure({ MaxQueuedEvents = n })` changes admission for subsequent events and requests. Zero disables waiting for a listener or poll.
 
 ### `MaxQueuedBytes`
 
@@ -141,7 +144,19 @@ Allows `Backpressure` drops of Cosmetic and Background events when [`MaxQueuedBy
 
 How many `Invoke` calls can be waiting for a reply at once. Two limits apply: the module-wide runtime value, and a per-function limit taken from the function's `MaxPendingInvokes` field, or this option if set, or 256. Going over either makes `Invoke` raise `More than N calls ... are awaiting a response`.
 
-Independently of this option, invocation ids are one byte, so at most 255 invokes can be outstanding per module.
+The default one-byte identifier fits 256 outstanding calls. For more concurrent calls, enable [`WideRequestIds`](/reference/options/encoding#widerequestids) and raise `MaxPendingInvokes`.
+
+### `MaxActiveRequests`
+
+<Spec type="integer" default={<code>0</code>} />
+
+Limits how many server function handlers can run across all players. A yielding handler occupies one slot until it returns or raises an error. Zero disables this limit. If either concurrency limit is full, the caller receives `RequestBusy`. Use [Diagnostics.Requests](/reference/api/diagnostics#requests) to measure peak concurrency.
+
+### `MaxActiveRequestsPerPlayer`
+
+<Spec type="integer" default="256 / 64 / 32 by profile" />
+
+Limits concurrent handlers for one player across every function. This applies when dispatching a live call and when binding a handler to queued calls. Zero disables the per-player limit. Queue size and request frequency have separate settings.
 
 ### `InvokeTimeoutSeconds`
 

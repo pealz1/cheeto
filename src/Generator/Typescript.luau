@@ -159,13 +159,15 @@ export declare const Transport: {
 	Coalesce: (Target: unknown, Key: string, Priority: string, Payload: unknown) => void
 	FlushCoalesced: (Target: unknown) => Record<string, unknown>
 }
-export declare const Diagnostics: { Listeners: () => Record<string, number> }
+export interface CheetoRequestStats { Active: number; Peak: number; Accepted: number; Limited: number; Failed: number; Cancelled: number }
 export declare const Handles: {
 	Register: (Object: unknown, Owner?: Player, ExpiresAt?: number) => number
 	Resolve: (Handle: number, Player?: Player) => unknown
 	Revoke: (Handle: number) => void
 	IssueCapability: (Object: unknown, Owner?: Player, Permissions?: Record<string, boolean>, DurationSeconds?: number) => number
 	ValidateCapability: (Capability: number, Player?: Player, Permission?: string) => unknown
+	ConsumeCapability: (Capability: number, Player?: Player, Permission?: string) => unknown
+	RevokeCapability: (Capability: number) => void
 }
 export declare const Capture: {
 	Start: (Options?: Record<string, unknown>) => void
@@ -260,6 +262,7 @@ local SECURITY_SERVER = {
 	"CharacterIntegrity: (Player?: Player) => Record<string, unknown>",
 	"ObserveCharacter: (Player: Player, Reason: string, Weight?: number, Detail?: string) => LuaTuple<[number, string]>",
 	"SetMovementLimits: (Player: Player, Limits?: CheetoMovementLimits) => void",
+	"GrantMovementAllowance: (Player: Player, Horizontal: number, Vertical: number, Seconds: number) => boolean",
 	"GrantMovementGrace: (Player: Player, Seconds?: number, Reason?: string) => void",
 	"ReconcileCharacter: (Player: Player, ResetScore?: boolean) => boolean",
 	"TeleportCharacter: (Player: Player, Target: CFrame, GraceSeconds?: number) => boolean",
@@ -640,6 +643,10 @@ return function(FileContext: Context, AbstractSyntaxTree: AbstractSyntaxTree): s
 	StringBuilder.Push(`export declare const {Casing.StepReplication}: () => void`)
 	StringBuilder.Push("export interface CheetoFuture<T> { Await(): LuaTuple<[boolean, T]> }")
 	StringBuilder.Push(RUNTIME_API)
+	local Requests = if FileContext == "Server"
+		then "; Requests: { (): CheetoRequestStats; (Player: Player): CheetoRequestStats | undefined }"
+		else ""
+	StringBuilder.Push(`export declare const Diagnostics: \{ Listeners: () => Record<string, number>{Requests} \}`)
 	StringBuilder.Push(Security(FileContext))
 
 	local State: State = {

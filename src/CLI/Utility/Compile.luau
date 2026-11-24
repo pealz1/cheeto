@@ -12,6 +12,7 @@ local Generator = require("../../Generator")
 local GetDefinitionFilePath = require("./GetDefinitionFilePath")
 local Parser = require("../../Parser")
 local PathParser = require("../../Modules/Path")
+local Settings = require("../../Settings")
 local Wire = require("../../Generator/Wire")
 
 ---- Settings ----
@@ -363,13 +364,13 @@ local function CollectProductionDiagnostics(
 		end
 	end
 
-	local Profile = FileOptions.SecurityProfile or "Development"
+	local Profile, Defaults = Settings.GetProfile(FileOptions.SecurityProfile, FileOptions.SecurityPreset)
 	local RateLimit = FileOptions.RateLimitPerSecond
 	local ReliableLimit = FileOptions.MaxReliablePacketBytes or FileOptions.MaxPacketBytes
 	local UnreliableLimit = FileOptions.MaxUnreliablePacketBytes or FileOptions.MaxPacketBytes
 	local InvokeTimeout = FileOptions.InvokeTimeoutSeconds
 
-	if (ReliableLimit or math.huge) > 1024 * 1024 then
+	if (ReliableLimit or Defaults.MaxPacketBytes) > 1024 * 1024 then
 		Warn(
 			"MaxReliablePacketBytes/MaxPacketBytes is above 1 MiB; lower this for public servers.",
 			FindOptionSpan(
@@ -432,13 +433,19 @@ local function CollectProductionDiagnostics(
 		end
 	end
 
-	if (RateLimit or 0) == 0 and Profile ~= "Development" then
+	if (RateLimit or Defaults.RateLimitPerSecond) == 0 and Profile ~= "Development" then
 		Warn(
 			"RateLimitPerSecond is disabled outside the Development profile.",
 			FindOptionSpan(Source, "RateLimitPerSecond")
 		)
 	end
 
+	if not FileOptions.WideRequestIds and (FileOptions.MaxPendingInvokes or 0) > 256 then
+		Warn(
+			"MaxPendingInvokes exceeds 256 one-byte identifiers. Enable WideRequestIds to use the larger limit.",
+			FindOptionSpan(Source, "MaxPendingInvokes")
+		)
+	end
 	if not FileOptions.ClientOutput then
 		Warn("ClientOutput is missing; CLI generation requires it.", nil)
 	end
@@ -628,6 +635,14 @@ function Utility.Doctor(Path: string, Options: CompileOptions)
 	local Ast, Source, FilePath = ParseForUtility(Path, Options)
 	local Warnings, Errors = CollectProductionDiagnostics(Ast, false, Source, FilePath)
 	PrintDiagnostics("Doctor", Options, Warnings, Errors, Source)
+
+	if CountDeclarations(Ast.Value.Declarations).Function > 0 then
+		local Config = Ast.Value.Options
+		local _, Defaults = Settings.GetProfile(Config.SecurityProfile, Config.SecurityPreset)
+		print(
+			`requests: idBits={if Config.WideRequestIds then 32 else 8} pending={Config.MaxPendingInvokes or Defaults.MaxPendingInvokes} activePerPlayer={Config.MaxActiveRequestsPerPlayer or Defaults.MaxPendingInvokes} activeServer={Config.MaxActiveRequests or 0}`
+		)
+	end
 
 	--> Every rule the schema names must be registered on the server, or its
 	--> endpoints drop everything. List them so none is forgotten.
