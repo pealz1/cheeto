@@ -93,7 +93,7 @@ Checking `Damage` against `0..500`, enforcing the cooldown, running the policy a
 - State channels with delta replication, and client prediction with server acknowledgement.
 
 **Fits your workflow**
-- A single binary for Windows, macOS and Linux, a pesde package, and a Roblox Studio plugin.
+- Native binaries for Windows, macOS and Linux, a portable Lune compiler, and a Roblox Studio plugin.
 - Watch mode recompiles whenever a schema or one of its imports changes.
 
 ## Installation
@@ -104,13 +104,13 @@ With [Rokit](https://github.com/rojo-rbx/rokit) (recommended):
 rokit add pealz1/cheeto
 ```
 
-With [pesde](https://pesde.dev):
+With Lune, download `cheeto_pesde.luau` from the [release assets](https://github.com/pealz1/cheeto/releases/latest), then run:
 
 ```sh
-pesde add --dev pealz1/cheeto
+lune run cheeto_pesde.luau network.cheeto -- --yes
 ```
 
-Or download a binary or the Studio plugin from the [latest release](https://github.com/pealz1/cheeto/releases/latest).
+The [installation guide](https://pealz.cc/cheeto/getting-started/installation) also covers native binaries, the Studio plugin and pesde.
 
 ## Usage
 

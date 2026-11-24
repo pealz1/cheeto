@@ -78,7 +78,7 @@ A reply frame uses the function's index. Its payload is the invocation id (`u8`)
 
 ## Fragmentation
 
-A reliable batch larger than [`ReliableFragmentBytes`](/reference/options/limits#reliablefragmentbytes) is cut into slices, each wrapped in a fragment frame and sent as its own remote call. The receiver collects slices by fragment id and processes the reassembled packet once every slice has arrived. Reassembly is bounded by [`MaxInFlightFragments`](/reference/options/limits#maxinflightfragments) and [`FragmentTimeoutSeconds`](/reference/options/limits#fragmenttimeoutseconds).
+A reliable batch larger than [`ReliableFragmentBytes`](/reference/options/limits#reliablefragmentbytes) is cut into slices, each wrapped in a fragment frame and sent as its own remote call. The receiver collects slices by fragment id and processes the reassembled packet once every slice has arrived. Only the first fragment carries the instance array. The receiver checks the logical packet size and reserves space against the [per-peer byte budget](/reference/options/limits#maxfragmentbufferbytes). Reassembly is also bounded by [`MaxInFlightFragments`](/reference/options/limits#maxinflightfragments) and [`FragmentTimeoutSeconds`](/reference/options/limits#fragmenttimeoutseconds).
 
 <Callout type="info">
 The byte layout depends on the [encoding options](/reference/options/encoding). Both sides read them from their own configuration, so they must agree.

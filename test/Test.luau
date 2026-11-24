@@ -894,6 +894,47 @@ RunClosure("State Channel Snapshot And Patch", function()
 	Disconnect()
 end)
 
+RunClosure("Connection scopes external subscriptions and buffered Once listeners", function()
+	local Removed = 0
+	local Received = {}
+	local Connection = Client.Connection.new({
+		Routes = {
+			Buffered = {
+				On = function(Callback)
+					Callback("first", nil, 42)
+					Callback("second")
+					return function()
+						Removed += 1
+					end
+				end,
+			},
+		},
+	})
+	Connection:Once("Buffered", function(...)
+		Received = table.pack(...)
+	end)
+	assert(
+		Received.n == 3 and Received[1] == "first" and Received[3] == 42 and Removed == 1,
+		"Once must release its route and preserve the first buffered payload"
+	)
+	local Early = Connection:Track({
+		Disconnect = function()
+			Removed += 1
+		end,
+	})
+	Early()
+	Early()
+	Connection:Track(function()
+		error("broken cleanup")
+	end)
+	Connection:Track(function()
+		Removed += 1
+	end)
+	assert(not pcall(Connection.Destroy, Connection), "Teardown must report cleanup errors")
+	Connection:Destroy()
+	assert(Removed == 3, "All tracked resources must be released exactly once")
+end)
+
 RunClosure("Controller Connection Routes And State", function()
 	local SentTarget
 	local SentValue
@@ -1624,7 +1665,7 @@ RunClosure("Golden binary snapshots", function()
 		{
 			Name = "optional:nil",
 			Buffer = Client.GoldenOptional.Write(nil),
-			Expected = {},
+			Expected = { 0 },
 		},
 		{
 			Name = "optional:u16",
@@ -2916,6 +2957,16 @@ RunClosure("Large schemas and UseColon compile and load", function()
 		assert(Compiled, `{Name} does not load: {Error}`)
 		assert(string.find(Source, "_: any", 1, true), `{Name} ignored UseColon.`)
 	end
+	local Environment = Shared.GetEnvironment()
+	for _, Name in { "CHEETO_RELIABLE_REMOTE", "CHEETO_UNRELIABLE_REMOTE" } do
+		Environment.Instances[Name] = { OnClientEvent = Shared.Signal.new(), FireServer = function() end }
+	end
+	local Network = MockRequire("../Network/CapacityClient.luau", Environment)
+	local Connection = Network.Connection.new({ Routes = { Publish = Network.Event1 } })
+	Connection:Send("Publish", { A = 1, B = 2, C = "test" })
+	Network.stepReplication()
+	assert(Network.Stats().PacketsSent.Reliable == 1, "Expected the generated Camel/UseColon route to send")
+	Connection:Destroy()
 end)
 
 RunClosure("Rate limits can be changed at runtime", function()

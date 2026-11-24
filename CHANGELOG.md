@@ -6,9 +6,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-11-24
+
+### Added
+
+- Added a portable Lune compiler download.
+- Added per-player movement limits.
+- Added per-peer fragment memory budgets.
+- Added Region3int16 and standalone sequence keypoints.
+- Added typed controller connections and cleanup tracking.
+
 ### Fixed
 
-- The client shield's weak-service probe reported every live player. It forced a collection with `collectgarbage("collect")`, which Roblox does not allow (only `"count"`), so the service it watched was never collected and the probe always reported `DexExplorer`, `InfiniteYield` or `SaveInstance`. The probe is removed. The shield is off in Studio, so this only showed on live servers. Regenerate the client module.
+- Fixed incomplete fragment cleanup.
+- Fixed heartbeat deadlines on handshake retries.
+- Fixed Roblox datatype delivery to listeners.
+- Fixed trailing bits in exported buffers.
+- Fixed failed exports disrupting pending messages.
+- Fixed idle replication buffer allocations.
+- Fixed controller routing for colon-style endpoints.
+- Fixed client shield false positives.
 
 ## [1.1.2] - 2026-09-30
 
@@ -125,7 +142,9 @@ The first public release.
 - Standalone Infinite Yield detection and movement anti-cheat in `extras/security`.
 - Prebuilt binaries for Windows, macOS and Linux, and a pesde package.
 
-[Unreleased]: https://github.com/pealz1/cheeto/compare/v1.1.1...HEAD
+[Unreleased]: https://github.com/pealz1/cheeto/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/pealz1/cheeto/compare/v1.1.2...v1.2.0
+[1.1.2]: https://github.com/pealz1/cheeto/compare/v1.1.1...v1.1.2
 [1.1.1]: https://github.com/pealz1/cheeto/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/pealz1/cheeto/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/pealz1/cheeto/releases/tag/v1.0.0

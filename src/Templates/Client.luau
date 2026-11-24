@@ -122,6 +122,11 @@ end
 
 RuntimeSupport.StartClientShield()
 
+function RuntimeSupport.EmitReliable(_Target: any, Packet: buffer, Instances: {Instance}?)
+    Reliable:FireServer(Packet, Instances)
+    TrackSend("Reliable", buffer.len(Packet), nil)
+end
+
 local function StepReplication()
     ProfileBegin("Cheeto.Flush.Client")
     --> Invocation timeouts are only meaningful if something sweeps them. Without
@@ -129,6 +134,7 @@ local function StepReplication()
     --> the life of the server -- a lost reply, or a peer that simply never
     --> answers, silently leaks a coroutine and hangs that caller forever.
     ExpireInvocations()
+    RuntimeSupport.ExpireFragments()
     RuntimeSupport.FlushLatest()
     RuntimeSupport.FlushUnreliableBatches()
     FlushBits()
@@ -141,16 +147,11 @@ local function StepReplication()
         return
     end
 
-    local Buffer = buffer.create(SendCursor)
-    buffer.copy(Buffer, 0, SendBuffer, 0, SendCursor)
     if RuntimeConfig.MaxReliablePacketBytes > 0 and SendCursor > RuntimeConfig.MaxReliablePacketBytes then
         DropPacket("Client", "Reliable", "MaxPacketBytes", SendCursor)
         RuntimeSupport.RecordFlush("Server", "Reliable", 0)
     else
-        for _, Fragment in RuntimeSupport.FragmentReliablePacket("Server", Buffer, InstancePayload(SendInstances)) do
-            Reliable:FireServer(Fragment.Buffer, Fragment.Instances)
-            TrackSend("Reliable", buffer.len(Fragment.Buffer), nil)
-        end
+        RuntimeSupport.SendReliablePacket("Server", SendBuffer, SendCursor, InstancePayload(SendInstances))
         RuntimeSupport.RecordFlush("Server", "Reliable", SendCursor)
     end
 

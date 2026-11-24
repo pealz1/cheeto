@@ -2,17 +2,10 @@
 --[[
 	Signed report helpers for the security channel.
 
-	The server issues each client a random per-session secret and a rolling nonce.
-	Every client message (a detection report or a heartbeat) is signed over the
-	current nonce + a monotonic sequence number + the payload, then the server
-	re-issues a fresh nonce. That stops naive replay and off-the-shelf spoofing of
-	a "clean" heartbeat.
-
-	Honest limit: the session secret lives in client memory, so an exploiter who
-	reads this script can reproduce the signature. The signature is defence in
-	depth, not a guarantee. The load-bearing protection is the heartbeat-timeout
-	kick on the server (see IYGuard.server.luau): if the detector is removed to
-	avoid sending a report, the heartbeats stop and the server kicks anyway.
+    The server issues a secret and nonce for each handshake. Signed reports
+    include the session nonce, sequence, kind and payload. The server uses the
+    sequence to reject duplicates. A client controls its copy of the secret,
+    so gameplay decisions still need independent server validation.
 ]]
 
 --> FNV-1a style 32-bit hash with an avalanche step. Same construction as the

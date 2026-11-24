@@ -15,6 +15,8 @@ Every type declared with [`export`](/reference/declarations/export) becomes `Net
 
 Serializes `value` into a new buffer sized exactly to fit, using the module's current [encoding options](/reference/options/encoding). Errors if the value does not match the type.
 
+Packed booleans and optional markers include their final byte. Older compilers could omit that byte from a standalone export. If you persisted an affected buffer, re-encode it from the original value. The missing bits cannot be recovered from the buffer.
+
 ## Read
 
 <Sig side="both">{"Read(data: buffer): T"}</Sig>

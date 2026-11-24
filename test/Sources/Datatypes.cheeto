@@ -1,5 +1,5 @@
 option Casing = Pascal
-option Typescript = false
+option Typescript = true
 option TypesOutput = "../../Network/DatatypesTypes.luau"
 option ClientOutput = "../../Network/DatatypesClient.luau"
 option ServerOutput = "../../Network/DatatypesServer.luau"
@@ -27,3 +27,21 @@ export type EOptionalUDim = UDim2?
 export type EArrayVector2 = Vector2[4]
 export type ECFrameMixed = CFrame<i16, f16>
 export type EByte = u8
+
+export type ERegion3int16 = Region3int16
+export type ENumberSequenceKeypoint = NumberSequenceKeypoint
+export type EColorSequenceKeypoint = ColorSequenceKeypoint
+export type EFlag = boolean
+
+struct AppearanceData {
+    Bounds: Region3int16,
+    Opacity: NumberSequenceKeypoint,
+    Tint: ColorSequenceKeypoint,
+    Size: UDim2
+}
+event Appearance {
+    From: Client,
+    Type: Reliable,
+    Call: SingleSync,
+    Data: AppearanceData
+}

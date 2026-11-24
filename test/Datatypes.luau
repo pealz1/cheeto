@@ -71,6 +71,7 @@ local Environment = {
 	Vector3int16 = roblox.Vector3int16,
 	Vector3 = roblox.Vector3,
 	Region3 = roblox.Region3,
+	Region3int16 = roblox.Region3int16,
 	UDim = roblox.UDim,
 	UDim2 = roblox.UDim2,
 	Rect = roblox.Rect,
@@ -96,15 +97,21 @@ local Environment = {
 	end,
 }
 
---> The generated module resolves ReplicatedStorage/RunService and the two
---> remotes at load time, even though the export Read/Write functions never touch
---> the network. Provide a minimal, loop-free game so init succeeds and the
---> process still exits cleanly (no Heartbeat driver task).
+--> The two generated modules share synchronous remote signals for the
+--> transport tests. Manual steps drive delivery without a Heartbeat loop.
+local TestPlayer = { Parent = {}, UserId = 1 }
+local SentParts = {}
+local HoldParts = false
 do
 	local function StubSignal()
 		return {
-			Connect = function()
-				return { Disconnect = function() end }
+			Connect = function(self, Callback)
+				self.Callback = Callback
+				return {
+					Disconnect = function()
+						self.Callback = nil
+					end,
+				}
 			end,
 		}
 	end
@@ -112,9 +119,16 @@ do
 		return {
 			OnClientEvent = StubSignal(),
 			OnServerEvent = StubSignal(),
-			FireServer = function() end,
-			FireClient = function() end,
-			FireAllClients = function() end,
+			FireServer = function(self, Packet, Instances)
+				if HoldParts then
+					table.insert(SentParts, { Packet, Instances })
+				else
+					self.OnServerEvent.Callback(TestPlayer, Packet, Instances)
+				end
+			end,
+			FireClient = function(self, _, Packet, Instances)
+				self.OnClientEvent.Callback(Packet, Instances)
+			end,
 		}
 	end
 	local Instances = {
@@ -136,7 +150,7 @@ do
 				return true
 			end,
 			IsServer = function()
-				return false
+				return true
 			end,
 			IsRunning = function()
 				return true
@@ -145,7 +159,7 @@ do
 		Players = {
 			PlayerRemoving = StubSignal(),
 			GetPlayers = function()
-				return {}
+				return { TestPlayer }
 			end,
 		},
 	}
@@ -169,6 +183,14 @@ end
 
 local Bytecode = luau.compile(fs.readFile("../Network/DatatypesClient.luau"), { optimizationLevel = 1, debugLevel = 2 })
 local Cheeto = luau.load(Bytecode, { debugName = "DatatypesClient", environment = Environment })()
+
+local ServerEnv = table.clone(Environment)
+ServerEnv._G = {}
+local Server = luau.load(fs.readFile("../Network/DatatypesServer.luau"), { environment = ServerEnv })()
+local Config =
+	{ EnableProtocolHandshake = false, ReliableFragmentBytes = 8, MaxReliablePacketBytes = 512, RateLimitPerSecond = 0 }
+Cheeto.Configure(Config)
+Server.Configure(Config)
 
 local function Roundtrip(Name: string, Export: string, Value: any)
 	stdio.write(`{stdio.color("cyan")}Testing: {Name}...{stdio.color("reset")}`)
@@ -196,6 +218,13 @@ local V3 = roblox.Vector3
 
 Roundtrip("Vector2", "EVector2", roblox.Vector2.new(3.5, -7.25))
 Roundtrip("Vector2<i16>", "EVector2Encoded", roblox.Vector2.new(120, -40))
+assert(
+	Equals(
+		Cheeto.EVector2Encoded.Read(Cheeto.EVector2Encoded.Write(roblox.Vector2.new(1.75, -2.75))),
+		roblox.Vector2.new(1, -2)
+	),
+	"Signed vector components must truncate toward zero"
+)
 Roundtrip("Vector2int16", "EVector2int16", roblox.Vector2int16.new(120, -40))
 Roundtrip("Vector3int16", "EVector3int16", roblox.Vector3int16.new(1, -2, 3))
 Roundtrip("Region3", "ERegion3", roblox.Region3.new(V3.new(0, 0, 0), V3.new(2, 4, 6)))
@@ -231,10 +260,20 @@ Roundtrip(
 		roblox.ColorSequenceKeypoint.new(1, roblox.Color3.new(0, 0, 1)),
 	})
 )
---> Optional-present exercises the optional wrapper around a new type. The nil
---> case is not tested here: cheeto's export Read cannot roundtrip a top-level nil
---> optional (the existing `u16?` export fails identically), so it is a property
---> of the export API, not of these datatype prefabs.
+Roundtrip(
+	"Region3int16",
+	"ERegion3int16",
+	roblox.Region3int16.new(roblox.Vector3int16.new(-32, 0, 1), roblox.Vector3int16.new(30, 1, 90))
+)
+Roundtrip(
+	"ColorSequenceKeypoint",
+	"EColorSequenceKeypoint",
+	roblox.ColorSequenceKeypoint.new(0.25, roblox.Color3.fromRGB(1, 25, 250))
+)
+Roundtrip("NumberSequenceKeypoint", "ENumberSequenceKeypoint", roblox.NumberSequenceKeypoint.new(0.5, 3, 1))
+Roundtrip("UDim2? (absent)", "EOptionalUDim", nil)
+Roundtrip("boolean (true)", "EFlag", true)
+Roundtrip("boolean (false)", "EFlag", false)
 Roundtrip("UDim2? (present)", "EOptionalUDim", roblox.UDim2.new(1, 0, 1, 0))
 Roundtrip("Vector2[4]", "EArrayVector2", {
 	roblox.Vector2.new(1, 1),
@@ -242,6 +281,123 @@ Roundtrip("Vector2[4]", "EArrayVector2", {
 	roblox.Vector2.new(3, 3),
 	roblox.Vector2.new(4, 4),
 })
+
+--> Exercise the normal client-to-server listener, including out-of-order and
+--> duplicate delivery of frames produced by the sender's own fragmenter.
+local Payload = {
+	Bounds = roblox.Region3int16.new(roblox.Vector3int16.new(-2, 0, 1), roblox.Vector3int16.new(2, 4, 6)),
+	Opacity = roblox.NumberSequenceKeypoint.new(0.25, 1, 0),
+	Tint = roblox.ColorSequenceKeypoint.new(0.5, roblox.Color3.fromRGB(12, 34, 56)),
+	Size = roblox.UDim2.new(0.5, 4, 0.5, -4),
+}
+local Delivered = 0
+local CheckNestedRead = false
+Server.Appearance.On(function(Player, Data)
+	assert(
+		Player == TestPlayer and Equals(Data, Payload),
+		"Decoded appearance must match the sending player and payload"
+	)
+	if CheckNestedRead then
+		assert(not pcall(Server.EByte.Read, buffer.create(0)), "A truncated export must raise")
+	end
+	Delivered += 1
+end)
+HoldParts = true
+Cheeto.Appearance.Fire(Payload)
+Cheeto.StepReplication()
+assert(#SentParts > 2, "Expected a multi-fragment batch")
+local Remote = Environment.game:GetService("ReplicatedStorage"):FindFirstChild("CHEETO_RELIABLE_REMOTE")
+local function Deliver(Index)
+	Remote.OnServerEvent.Callback(TestPlayer, table.unpack(SentParts[Index]))
+end
+local function DeliverAll()
+	for Index = #SentParts, 1, -1 do
+		Deliver(Index)
+	end
+end
+Server.Configure({ MaxFragmentBufferBytes = 1 })
+DeliverAll()
+assert(
+	Delivered == 0 and Server.Stats().DroppedPackets.FragmentOverflow > 0,
+	"Fragment reservation must respect the peer budget"
+)
+Server.Configure({ MaxFragmentBufferBytes = 4096, MaxReliablePacketBytes = 20 })
+DeliverAll()
+assert(
+	Delivered == 0 and Server.Stats().DroppedPackets.MaxPacketBytes > 0,
+	"Logical size must respect the reliable packet limit"
+)
+Server.Configure({ MaxReliablePacketBytes = 512, FragmentTimeoutSeconds = 0 })
+Deliver(1)
+Server.StepReplication()
+assert(Server.Stats().DroppedPackets.FragmentTimeout > 0, "An idle incomplete assembly must expire during replication")
+Server.Configure({ FragmentTimeoutSeconds = 10 })
+Deliver(#SentParts)
+DeliverAll()
+assert(Delivered == 1, "Expected one validated reassembled payload")
+HoldParts = false
+task.wait(0.02)
+CheckNestedRead = true
+Cheeto.Appearance.Fire(Payload)
+assert(not pcall(Cheeto.EByte.Write, 300), "Invalid export must raise")
+Cheeto.Appearance.Fire(Payload)
+Cheeto.StepReplication()
+assert(Delivered == 3, "Failed standalone codecs must preserve the queued batch and active receive frame")
+
+--> Keep the live sampler on server-owned movement limits throughout a sprint.
+local Root =
+	{ Position = V3.zero, CFrame = roblox.CFrame.new(), AssemblyLinearVelocity = V3.zero, CollisionGroup = "Default" }
+local Humanoid = { WalkSpeed = 16, Sit = true, FloorMaterial = Enum.Material.Grass }
+TestPlayer.Character = {
+	FindFirstChild = function()
+		return Root
+	end,
+	FindFirstChildOfClass = function()
+		return Humanoid
+	end,
+	PivotTo = function(_, Target)
+		Root.CFrame = Target
+		Root.Position = Target.Position
+	end,
+}
+Server.Configure({
+	EnableCharacterIntegrity = true,
+	CharacterIntegrityMode = "Observe",
+	CharacterIntegrityJoinGraceSeconds = 0,
+	CharacterIntegritySampleIntervalSeconds = 0.05,
+	CharacterIntegrityDistanceSlack = 0,
+})
+Server.StepReplication()
+local function MoveAndSample(X)
+	task.wait(0.06)
+	TestPlayer.Character:PivotTo(roblox.CFrame.new(X, 0, 0))
+	Server.StepReplication()
+	return Server.Security.CharacterIntegrity(TestPlayer)
+end
+local Limits = { Horizontal = 2000 }
+Server.Security.SetMovementLimits(TestPlayer, Limits)
+Limits.Horizontal = 1
+assert(MoveAndSample(60).ConsecutiveBreaches == 0, "The server-granted sprint must stay within its limits")
+assert(Server.Security.CharacterIntegrity(TestPlayer).Limits.Horizontal == 2000, "Movement limits must be copied")
+assert(
+	not pcall(Server.Security.SetMovementLimits, TestPlayer, { Horizontal = math.huge }),
+	"Movement limits must be finite"
+)
+Server.Security.SetMovementLimits(TestPlayer, nil)
+assert(MoveAndSample(120).ConsecutiveBreaches == 1, "Sitting without an occupied seat must still be scored")
+Humanoid.SeatPart = { Occupant = Humanoid }
+assert(MoveAndSample(180).ConsecutiveBreaches == 0, "An occupied seat must exempt vehicle movement")
+Humanoid.SeatPart = nil
+TestPlayer.Character = nil
+local Grace = Server.Security.CharacterIntegrity(TestPlayer).GraceUntil
+assert(
+	not Server.Security.TeleportCharacter(TestPlayer, roblox.CFrame.new(), 50),
+	"Teleport must fail without a character"
+)
+assert(
+	Server.Security.CharacterIntegrity(TestPlayer).GraceUntil == Grace,
+	"A failed teleport must preserve the grace deadline"
+)
 
 --> CFrame<Position, Rotation>: whole-number position, half-float rotation.
 do

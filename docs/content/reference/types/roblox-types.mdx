@@ -23,6 +23,9 @@ Each of these is written into the buffer with a fixed layout. Sizes assume the d
 | `Rect` | Min and Max as `Vector2` | 16 bytes |
 | `Ray` | Origin and Direction as `vector` | 24 bytes |
 | `Region3` | Minimum and maximum corners as `vector` | 24 bytes |
+| `Region3int16` | Min and Max as `Vector3int16` | 6–18 bytes |
+| `NumberSequenceKeypoint` | Time, Value and Envelope as `f32` | 12 bytes |
+| `ColorSequenceKeypoint` | Time as `f32` and Value as `Color3` | 7 bytes |
 | `NumberRange` | Min, Max as `f32` | 8 bytes |
 | `NumberSequence` | Count, then Time, Value, Envelope as `f32` per keypoint | 1–3 + 12 per keypoint |
 | `ColorSequence` | Count, then Time `f32` and `Color3` per keypoint | 1–3 + 7 per keypoint |

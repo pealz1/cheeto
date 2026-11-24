@@ -144,6 +144,12 @@ option InvokeTimeoutSeconds = 10
 
 An outgoing reliable batch larger than this is split into fragments of at most this many bytes, each sent as its own remote call and reassembled on the other side. `0` disables fragmentation. Fragmentation happens after the [`MaxReliablePacketBytes`](#maxreliablepacketbytes) check, so it cannot be used to send a batch larger than that cap.
 
+### `MaxFragmentBufferBytes`
+
+<Spec type="number (bytes)" default={<code>2 MiB or twice the reliable packet limit, whichever is larger</code>} />
+
+Each peer has a budget for incomplete reliable batches. The receiver reserves the declared payload size plus 64 bytes per fragment for bookkeeping. It drops a new batch with `FragmentOverflow` if the reservation would exceed the budget. A value of `0` rejects all fragmented batches. Completed, discarded and expired batches release their reservations. Expiration runs during replication even when the peer stops sending.
+
 ### `MaxInFlightFragments`
 
 <Spec type="number" default={<code>32</code>} />
@@ -176,7 +182,7 @@ How long a seen sequence number is remembered before it may be reused. Same prec
 
 ## Decode budgets
 
-After a payload is decoded and before any listener runs, the runtime walks the decoded value. These options bound that walk. Violations are dropped with `Canonicalization` or `DecodeBudget`. They apply to every endpoint on both sides, including data the server sends to clients.
+The decoder checks array, map and sequence counts before allocating or looping. It also walks the decoded value before invoking listeners. These options bound that walk. Violations are dropped with `Canonicalization` or `DecodeBudget`. They apply to every endpoint on both sides, including data the server sends to clients.
 
 ### `MaxDecodeOperations`
 

@@ -2,11 +2,11 @@ import { Callout, Steps, Tabs } from 'nextra/components'
 
 # Installation
 
-Cheeto ships as a single self-contained binary for Windows, macOS and Linux, as a [pesde](https://pesde.dev) package, and as a Roblox Studio plugin. Pick whichever fits your workflow; every option compiles the same language.
+Cheeto ships a compiler for Windows, macOS and Linux, a portable Lune script, and a Roblox Studio plugin. All three compile the same schema language.
 
 ## Command-line compiler
 
-<Tabs items={['Rokit', 'pesde', 'Manual']}>
+<Tabs items={['Rokit', 'Lune', 'pesde', 'Manual']}>
 <Tabs.Tab>
 
 [Rokit](https://github.com/rojo-rbx/rokit) is the recommended toolchain manager for Roblox projects. It pins the compiler version in your project's `rokit.toml` so every contributor builds with the same version.
@@ -32,7 +32,18 @@ rokit update pealz1/cheeto
 </Tabs.Tab>
 <Tabs.Tab>
 
-Install Cheeto as a development dependency with [pesde](https://pesde.dev):
+Download `cheeto_pesde.luau` from the [GitHub release](https://github.com/pealz1/cheeto/releases/latest). Put it in your project's `tools` directory and run it with Lune 0.10.4:
+
+```sh copy
+lune run tools/cheeto_pesde.luau network.cheeto -- --yes
+```
+
+Pin the release in your build tool when several projects share the same compiler.
+
+</Tabs.Tab>
+<Tabs.Tab>
+
+For versions published to the [pesde registry](https://pesde.dev/packages/pealz1/cheeto), install Cheeto as a development dependency:
 
 ```sh copy
 pesde add --dev pealz1/cheeto

@@ -7,6 +7,7 @@ import { bundledLanguages, createHighlighter } from 'shiki'
 const basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? ''
 
 const readJson = (path) => JSON.parse(readFileSync(path, 'utf8'))
+const version = readJson('../build/.darklua.json').rules.find(rule => rule.identifier === 'VERSION').value
 const cheeto = { ...readJson('./public/syntax/cheeto.tmLanguage.json'), name: 'cheeto' }
 
 // The highlighter options hold functions, which Turbopack cannot pass to its
@@ -27,6 +28,7 @@ const withNextra = nextra({
 
 export default withNextra({
   output: 'export',
+  env: { NEXT_PUBLIC_CHEETO_VERSION: version },
   basePath,
   images: { unoptimized: true },
   reactStrictMode: true

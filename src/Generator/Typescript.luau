@@ -34,6 +34,26 @@ local TESTING_HEADER = table.concat({
 	"type buffer = { readonly __buffer: never }",
 	"type DateTime = { readonly UnixTimestamp: number }",
 	"type BrickColor = { readonly Number: number }",
+	'type Axes = { readonly __type: "Axes" }',
+	'type ColorSequence = { readonly __type: "ColorSequence" }',
+	'type ColorSequenceKeypoint = { readonly __type: "ColorSequenceKeypoint" }',
+	'type EnumItem = { readonly __type: "EnumItem" }',
+	'type Faces = { readonly __type: "Faces" }',
+	'type Font = { readonly __type: "Font" }',
+	'type NumberRange = { readonly __type: "NumberRange" }',
+	'type NumberSequence = { readonly __type: "NumberSequence" }',
+	'type NumberSequenceKeypoint = { readonly __type: "NumberSequenceKeypoint" }',
+	'type PhysicalProperties = { readonly __type: "PhysicalProperties" }',
+	'type Ray = { readonly __type: "Ray" }',
+	'type Rect = { readonly __type: "Rect" }',
+	'type Region3 = { readonly __type: "Region3" }',
+	'type Region3int16 = { readonly __type: "Region3int16" }',
+	'type TweenInfo = { readonly __type: "TweenInfo" }',
+	'type UDim = { readonly __type: "UDim" }',
+	'type UDim2 = { readonly __type: "UDim2" }',
+	'type Vector2 = { readonly __type: "Vector2" }',
+	'type Vector2int16 = { readonly __type: "Vector2int16" }',
+	'type Vector3int16 = { readonly __type: "Vector3int16" }',
 	"type LuaTuple<T extends unknown[]> = T",
 	"type IterableFunction<T> = () => T",
 	"",
@@ -46,6 +66,10 @@ local VERSION_HEADER =
 --> reference. Kept deliberately structural: payloads that depend on the
 --> schema are `unknown`.
 local RUNTIME_API = [[
+export interface CheetoMovementLimits {
+	readonly Horizontal?: number
+	readonly Vertical?: number
+}
 export type CheetoDisconnect = () => void
 export type CheetoHook =
 	| "BeforeSend"
@@ -93,7 +117,32 @@ export declare const Configure: (Options: Record<string, unknown>) => void
 export declare const Use: (Hook: CheetoHook, Callback: (Context: any) => boolean | void) => CheetoDisconnect
 export declare const UseAuth: (Rule: string, Callback: (Context: any) => boolean) => void
 export declare const CancelInvocations: (Reason?: string) => void
-export declare const Connection: { new: (Config?: Record<string, unknown>) => unknown }
+export type CheetoCleanup = CheetoDisconnect | { Disconnect(): void }
+export interface CheetoConnectionConfig {
+    Routes?: Record<string, unknown>
+    State?: Record<string, unknown>
+    States?: Record<string, unknown>
+    Target?: Player
+}
+export interface CheetoConnection {
+    Bind(Name: string, Route: unknown): this
+    BindState(Name: string, Channel: unknown): this
+    SetTarget(Target?: Player): this
+    Send(Name: string, ...Data: unknown[]): unknown
+    On(Name: string, Listener: (...Data: any[]) => void): CheetoDisconnect
+    Once(Name: string, Listener?: (...Data: any[]) => void): CheetoDisconnect
+    GetState(Name: string): unknown
+    OnState(Name: string, Listener: (...Data: any[]) => void, FireImmediately?: boolean): CheetoDisconnect
+    SetState(Name: string, ...Data: unknown[]): void
+    PatchState(Name: string, ...Data: unknown[]): void
+    ClearState(Name: string, ...Data: unknown[]): void
+    FlushState(Name: string, ...Data: unknown[]): void
+    Track(Resource: CheetoCleanup): CheetoDisconnect
+    IsConnected(): boolean
+    Disconnect(): void
+    Destroy(): void
+}
+export declare const Connection: { new: (Config?: CheetoConnectionConfig) => CheetoConnection }
 export declare const Protocol: {
 	Info: (Peer?: unknown) => CheetoProtocolInfo
 	QueueHandshake: (Target?: unknown) => void
@@ -201,7 +250,7 @@ local SECURITY_COMMON = {
 	"ClientShield: () => Record<string, unknown>",
 	"StartClientShield: () => void",
 	"ClientIntegrity: (Source?: unknown) => Record<string, unknown>",
-	"EvaluateMovement: (Sample: Record<string, unknown>) => Record<string, unknown>",
+	"EvaluateMovement: (Sample: Record<string, unknown>, Limits?: CheetoMovementLimits) => Record<string, unknown>",
 }
 
 local SECURITY_SERVER = {
@@ -209,6 +258,7 @@ local SECURITY_SERVER = {
 	"GrantIntegrityGrace: (Player: Player, Seconds?: number, Reason?: string) => void",
 	"CharacterIntegrity: (Player?: Player) => Record<string, unknown>",
 	"ObserveCharacter: (Player: Player, Reason: string, Weight?: number, Detail?: string) => LuaTuple<[number, string]>",
+	"SetMovementLimits: (Player: Player, Limits?: CheetoMovementLimits) => void",
 	"GrantMovementGrace: (Player: Player, Seconds?: number, Reason?: string) => void",
 	"ReconcileCharacter: (Player: Player, ResetScore?: boolean) => boolean",
 	"TeleportCharacter: (Player: Player, Target: CFrame, GraceSeconds?: number) => boolean",

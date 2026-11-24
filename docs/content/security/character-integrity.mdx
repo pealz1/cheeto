@@ -20,7 +20,7 @@ Every [`CharacterIntegritySampleIntervalSeconds`](/reference/options/character-i
 - a flat slack distance;
 - the player's ping.
 
-Sitting players are skipped. Gaps longer than [`CharacterIntegrityMaxStepSeconds`](/reference/options/character-integrity#characterintegritymaxstepseconds) (server hitches) resynchronize instead of scoring. New characters and joins get a grace period.
+The sampler skips displacement checks while the server sees the humanoid occupying its seat. Traversal rays use the root part’s collision group and respect `CanCollide`. Gaps longer than [`CharacterIntegrityMaxStepSeconds`](/reference/options/character-integrity#characterintegritymaxstepseconds) (server hitches) resynchronize instead of scoring. New characters and joins get a grace period.
 
 | Reason | Meaning |
 | --- | --- |
@@ -31,6 +31,16 @@ Sitting players are skipped. Gaps longer than [`CharacterIntegrityMaxStepSeconds
 | `NonFiniteMovement` | Position or velocity contained NaN or infinity |
 
 Several reasons in one sample are joined with `+`, for example `HorizontalDisplacement+CollidableTraversal`.
+
+## Sprinting and custom movement
+
+Set a per-player base speed when your server grants a sprint or flight ability. Movement scoring stays active through the ability, including traversal checks.
+
+```lua copy
+Network.Security.SetMovementLimits(player, { Horizontal = 96 })
+-- When the server ends the sprint
+Network.Security.SetMovementLimits(player, nil)
+```
 
 ## Modes
 
